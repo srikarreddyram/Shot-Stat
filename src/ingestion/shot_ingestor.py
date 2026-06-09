@@ -167,8 +167,12 @@ def ingest_shots(seasons: list[str]):
 
                 with Session() as session:
                     if shots_to_insert:
-                        # Fast bulk insert since we know we won't insert duplicates for a checked player
-                        session.bulk_insert_mappings(Shot, shots_to_insert)
+                        # Use SQLite's INSERT OR IGNORE via ON CONFLICT DO NOTHING.
+                        # This is extremely fast (uses executemany) and completely
+                        # prevents crashes if we resume a partially inserted player.
+                        from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
+                        stmt = sqlite_upsert(Shot.__table__).values(shots_to_insert).on_conflict_do_nothing()
+                        session.execute(stmt)
                         season_shots += len(shots_to_insert)
                     
                     # Flip the flag so we never check this player for this season type again
