@@ -1,0 +1,125 @@
+"""
+SQLAlchemy ORM models for the NBA Shot Quality Engine.
+
+Tables:
+  - Game   — one row per NBA game
+  - Player — one row per player per season (stats are season-specific)
+  - Shot   — one row per shot attempt
+"""
+from sqlalchemy import (
+    Column, String, Integer, Float, Date, ForeignKey, ForeignKeyConstraint,
+    UniqueConstraint, Index, Boolean
+)
+from sqlalchemy.orm import DeclarativeBase, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Game(Base):
+    __tablename__ = "games"
+
+    game_id = Column(String, primary_key=True)
+    date = Column(Date, nullable=False)
+    home_team = Column(String, nullable=False)
+    away_team = Column(String, nullable=False)
+    playoff_flag = Column(Integer, nullable=False, default=0)  # 0 = regular, 1 = playoff
+    home_team_win = Column(Integer, nullable=True)
+
+    # Relationships
+    shots = relationship("Shot", back_populates="game")
+
+    def __repr__(self):
+        return f"<Game {self.game_id} {self.home_team} vs {self.away_team} ({self.date})>"
+
+
+class Player(Base):
+    """
+    One row per player per season. Physical attributes (height, weight, wingspan)
+    are relatively stable but stats change each season.
+    """
+    __tablename__ = "players"
+
+    player_id = Column(String, primary_key=True)
+    season = Column(String, primary_key=True)  # e.g. "2023-24"
+
+    name = Column(String, nullable=False)
+    height = Column(Float, nullable=True)          # inches
+    weight = Column(Float, nullable=True)           # lbs
+    wingspan = Column(Float, nullable=True)         # inches
+    wingspan_source = Column(String, nullable=True) # e.g. "NBA_API", "BREF"
+    shots_fetched_reg = Column(Boolean, default=False)
+    shots_fetched_ply = Column(Boolean, default=False)
+    position = Column(String, nullable=True)        # PG, SG, SF, PF, C
+
+    # Offensive stats
+    career_fg_pct = Column(Float, nullable=True)
+    career_3p_pct = Column(Float, nullable=True)
+    season_fg_pct = Column(Float, nullable=True)
+
+    # Defensive stats (Phase 2 — nullable for now)
+    def_rating = Column(Float, nullable=True)
+    contest_rate = Column(Float, nullable=True)
+    def_fg_pct_allowed = Column(Float, nullable=True)
+
+    def __repr__(self):
+        return f"<Player {self.name} ({self.player_id}) {self.season}>"
+
+
+class Shot(Base):
+    """
+    One row per shot attempt. Links to Game and Player (attacker).
+    defender_id is nullable — populated in Phase 2.
+    Tracking fields (touch_time, dribbles, etc.) are nullable — populated in Phase 4.
+    """
+    __tablename__ = "shots"
+
+    shot_id = Column(String, primary_key=True)
+    game_id = Column(String, ForeignKey("games.game_id"), nullable=False)
+    player_id = Column(String, nullable=False)       # attacker
+    season = Column(String, nullable=False)           # needed for Player FK
+    defender_id = Column(String, nullable=True)       # Phase 2
+
+    # Outcome
+    shot_made = Column(Integer, nullable=False)       # 0 or 1
+
+    # Spatial
+    loc_x = Column(Float, nullable=True)
+    loc_y = Column(Float, nullable=True)
+    shot_distance = Column(Float, nullable=True)      # feet from basket
+    shot_type = Column(String, nullable=True)          # "2PT Field Goal" / "3PT Field Goal"
+    zone = Column(String, nullable=True)               # classified court zone
+    shot_angle = Column(Float, nullable=True)          # derived from coordinates
+
+    # Game context
+    quarter = Column(Integer, nullable=True)           # 1-4 or 5+ for OT
+    time_remaining = Column(Float, nullable=True)      # seconds left in period
+    score_diff = Column(Integer, nullable=True)        # attacker team - opponent
+    home_away = Column(Integer, nullable=True)         # 0 = away, 1 = home
+    playoff_flag = Column(Integer, nullable=True)      # 0 or 1
+
+    # Tracking data (Phase 4 — nullable)
+    touch_time = Column(Float, nullable=True)
+    dribbles = Column(Integer, nullable=True)
+    catch_and_shoot = Column(Integer, nullable=True)   # 0 or 1
+    closest_defender_dist = Column(Float, nullable=True)
+
+    # Foreign key to Player (composite: player_id + season)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["player_id", "season"],
+            ["players.player_id", "players.season"],
+        ),
+        Index("ix_shots_game_id", "game_id"),
+        Index("ix_shots_player_season", "player_id", "season"),
+        Index("ix_shots_zone", "zone"),
+    )
+
+    # Relationships
+    game = relationship("Game", back_populates="shots")
+    player = relationship("Player", foreign_keys=[player_id, season])
+
+    def __repr__(self):
+        result = "Made" if self.shot_made else "Missed"
+        return f"<Shot {self.shot_id} {result} by {self.player_id}>"
