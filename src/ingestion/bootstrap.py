@@ -21,6 +21,7 @@ from src.ingestion.game_ingestor import ingest_games
 from src.ingestion.roster_ingestor import ingest_rosters
 from src.ingestion.physical_ingestor_nba import ingest_physicals_nba
 from src.ingestion.physical_ingestor_bref import ingest_physicals_bref
+from src.ingestion.physical_ingestor_2k import ingest_physicals_2k
 from src.ingestion.shot_ingestor import ingest_shots
 from src.ingestion.export_csv import export_all as export_csvs
 
@@ -89,6 +90,9 @@ def validate_database():
         bref_wingspan = session.execute(
             select(func.count(Player.player_id.distinct())).where(Player.wingspan_source == "BREF")
         ).scalar()
+        twok_wingspan = session.execute(
+            select(func.count(Player.player_id.distinct())).where(Player.wingspan_source == "2K")
+        ).scalar()
 
         print(f"     Total unique players:     {total_players}")
         print(f"     With height:              {has_height} ({has_height/max(total_players,1)*100:.1f}%)")
@@ -96,6 +100,7 @@ def validate_database():
         print(f"     With wingspan:            {has_wingspan} ({has_wingspan/max(total_players,1)*100:.1f}%)")
         print(f"     Wingspan source NBA API:  {nba_wingspan} ({nba_wingspan/max(total_players,1)*100:.1f}%)")
         print(f"     Wingspan source BRef:     {bref_wingspan} ({bref_wingspan/max(total_players,1)*100:.1f}%)")
+        print(f"     Wingspan source 2K:       {twok_wingspan} ({twok_wingspan/max(total_players,1)*100:.1f}%)")
 
         # ── Spot check: a well-known player ──
         print(f"\n  🔎 Spot Check (LeBron James, player_id=2544):")
@@ -282,13 +287,14 @@ def run_bootstrap(seasons: list[str]):
     # game_count = ingest_games(seasons)
     all_issues += _check_games(seasons, Session)
 
-    # Step 3: Phase 1 (Roster) & Phase 2 (Physicals)
+    # Step 3: Phase 1 (Roster) & Phase 2 (Physicals: NBA API → BRef → 2K)
     print("\n" + "━" * 40)
     print("  Step 3/5: Roster & Physical Attributes")
     print("━" * 40)
     ingest_rosters(seasons)
-    ingest_physicals_nba()
-    ingest_physicals_bref()
+    ingest_physicals_nba()     # Phase 2A: NBA API (CommonPlayerInfo + Draft Combine)
+    ingest_physicals_bref()    # Phase 2B: Basketball Reference fallback
+    ingest_physicals_2k()      # Phase 2C: 2K Ratings final fallback
     player_issues = _check_players(seasons, Session)
     all_issues += player_issues
 
