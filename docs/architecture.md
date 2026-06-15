@@ -24,8 +24,10 @@ These are separate pipelines sharing the same database and model registry.
 ┌─────────────────────────────────────────────────────┐
 │                  DATA SOURCES                       │
 │  nba_api (ShotChartDetail, DefenseDashboard,        │
-│           Tracking, GameLogs, SynergyPlayTypes)     │
+│           ShootingSplits, Tracking, GameLogs,        │
+│           SynergyPlayTypes)                          │
 │  Basketball Reference (Height, Weight, Wingspan)    │
+│  2kratings.com (Wingspan final fallback)            │
 └────────────────────┬────────────────────────────────┘
                      │
                      ▼
@@ -41,6 +43,7 @@ These are separate pipelines sharing the same database and model registry.
 ┌─────────────────────────────────────────────────────┐
 │              STORAGE (SQLite → PostgreSQL)          │
 │  Games · Players (per season) · Shots + defender_id │
+│  PlayerZoneStats (per player-season-zone)           │
 └────────────────────┬────────────────────────────────┘
                      │
                      ▼
@@ -88,8 +91,9 @@ These are separate pipelines sharing the same database and model registry.
 - Rate-limit handling via exponential backoff.
 
 **Web Scraper:**
-- `requests` + `BeautifulSoup` for Basketball Reference. No Selenium.
+- `requests` + `BeautifulSoup` for Basketball Reference and 2kratings.com. No Selenium.
 - Targets: height, weight, wingspan (combine data), positional designation.
+- **Waterfall priority:** NBA API → Basketball Reference → 2K Ratings (never overwrites upstream data).
 - Cache all responses aggressively to avoid rate limits.
 
 **Storage:**
@@ -97,7 +101,8 @@ These are separate pipelines sharing the same database and model registry.
 - **Prod:** PostgreSQL via `SQLAlchemy` — same schema, swap connection string.
 - **Tables:**
   - `Games` — `game_id`, `date`, `home_team`, `away_team`, `playoff_flag`
-  - `Players` (per-season) — `player_id`, `season`, `name`, `height`, `weight`, `wingspan`, `position`, `career_fg_pct`, `career_3p_pct`, `season_fg_pct`, `def_rating`, `contest_rate`, `def_fg_pct_allowed`
+  - `Players` (per-season) — `player_id`, `season`, `name`, `height`, `weight`, `wingspan`, `wingspan_source`, `position`, `career_fg_pct`, `career_3p_pct`, `season_fg_pct`, `def_rating`, `contest_rate`, `def_fg_pct_allowed`
+  - `PlayerZoneStats` (per-player-season-zone) — `player_id`, `season`, `zone`, `fgm`, `fga`, `fg_pct`, `fg3m`, `fg3a`, `fg3_pct` — captures rim finishing %, paint %, mid-range %, corner 3 %, above-the-break 3 % per player
   - `Shots` — `shot_id`, `game_id`, `player_id`, `defender_id`, `shot_made`, `loc_x`, `loc_y`, `shot_distance`, `shot_type`, `zone`, `shot_angle`, `quarter`, `time_remaining`, `score_diff`, `home_away`, `playoff_flag`, `touch_time`, `dribbles`, `catch_and_shoot`, `closest_defender_dist`
 
 ### 3.2 Feature Engineering Pipeline (Pandas)
@@ -107,6 +112,7 @@ These are separate pipelines sharing the same database and model registry.
 | **Spatial** | `shot_angle`, `distance_from_center`, `zone` | `zone` is rule-based from coordinates |
 | **Game Context** | `score_diff`, `time_remaining`, `quarter`, `home_away`, `playoff_flag` | Direct or simple derivations |
 | **Player Form** | `recent_10_fg`, `recent_20_fg`, `fatigue_proxy` | Leakage-safe: strictly prior games only |
+| **Zone Efficiency** | `fg_pct_restricted_area`, `fg_pct_paint`, `fg_pct_midrange`, `fg_pct_corner3`, `fg_pct_above_break3` | From `PlayerZoneStats` table |
 | **Physical Matchup** | `height_diff`, `wingspan_diff`, `reach_advantage`, `size_mismatch_flag` | Derived at inference time from Players table |
 | **Defender Tendencies** | `def_fg_pct_allowed_by_zone`, `contest_rate`, `def_rating` | From `DefenseDashboard` endpoints |
 
@@ -224,7 +230,7 @@ The model is XGBoost loaded in memory. Inference for a full court grid takes und
 | Risk | Impact | Mitigation |
 |---|---|---|
 | No live defender coordinates | Can't know exact defender position in real-time | Use pre-game matchup assignment + defensive tendency features as proxy |
-| Wingspan data sparse pre-2010 | Missing physical matchup signal | Impute from position-level averages; flag imputed records |
+| Wingspan data sparse pre-2010 | Missing physical matchup signal | 3-source waterfall: NBA API → BRef → 2K Ratings. Remaining NULLs accepted; model must be robust. |
 | `nba_api` rate limiting | Slow historical ingestion | Exponential backoff; incremental daily pulls after bootstrap |
 | Rolling feature leakage | Inflated evaluation metrics | Strictly enforce lookback window excludes current game |
 | Model staleness mid-season | Recommendations miss recent form | Nightly retraining with warm start addresses this |

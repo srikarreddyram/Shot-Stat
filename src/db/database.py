@@ -19,8 +19,10 @@ def get_engine(echo=False):
     return create_engine(
         config.SQLALCHEMY_DATABASE_URL,
         echo=echo,
-        # SQLite-specific: enable WAL mode for better concurrent read performance
-        connect_args={"check_same_thread": False},
+        # SQLite-specific:
+        #   check_same_thread=False  → allow cross-thread access
+        #   timeout=30               → wait up to 30s if DB is locked instead of crashing
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
 
 

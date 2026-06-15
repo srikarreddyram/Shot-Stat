@@ -16,12 +16,13 @@ from sqlalchemy import select, func, text
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config
 from src.db.database import get_engine, init_db, get_session_factory
-from src.db.models import Game, Player, Shot
+from src.db.models import Game, Player, Shot, PlayerZoneStats
 from src.ingestion.game_ingestor import ingest_games
 from src.ingestion.roster_ingestor import ingest_rosters
 from src.ingestion.physical_ingestor_nba import ingest_physicals_nba
 from src.ingestion.physical_ingestor_bref import ingest_physicals_bref
 from src.ingestion.physical_ingestor_2k import ingest_physicals_2k
+from src.ingestion.zone_stats_ingestor import ingest_zone_stats
 from src.ingestion.shot_ingestor import ingest_shots
 from src.ingestion.export_csv import export_all as export_csvs
 
@@ -101,6 +102,17 @@ def validate_database():
         print(f"     Wingspan source NBA API:  {nba_wingspan} ({nba_wingspan/max(total_players,1)*100:.1f}%)")
         print(f"     Wingspan source BRef:     {bref_wingspan} ({bref_wingspan/max(total_players,1)*100:.1f}%)")
         print(f"     Wingspan source 2K:       {twok_wingspan} ({twok_wingspan/max(total_players,1)*100:.1f}%)")
+
+        # ── Zone stats coverage ──
+        print(f"\n  📊 Zone Stats Coverage:")
+        zone_player_seasons = session.execute(
+            select(func.count(PlayerZoneStats.player_id.distinct()))
+        ).scalar()
+        zone_rows_total = session.execute(
+            select(func.count()).select_from(PlayerZoneStats)
+        ).scalar()
+        print(f"     Player-seasons with zone data: {zone_player_seasons:,}")
+        print(f"     Total zone-stat rows:          {zone_rows_total:,}")
 
         # ── Spot check: a well-known player ──
         print(f"\n  🔎 Spot Check (LeBron James, player_id=2544):")
@@ -289,7 +301,7 @@ def run_bootstrap(seasons: list[str]):
 
     # Step 3: Phase 1 (Roster) & Phase 2 (Physicals: NBA API → BRef → 2K)
     print("\n" + "━" * 40)
-    print("  Step 3/5: Roster & Physical Attributes")
+    print("  Step 3/6: Roster & Physical Attributes")
     print("━" * 40)
     ingest_rosters(seasons)
     ingest_physicals_nba()     # Phase 2A: NBA API (CommonPlayerInfo + Draft Combine)
@@ -298,9 +310,15 @@ def run_bootstrap(seasons: list[str]):
     player_issues = _check_players(seasons, Session)
     all_issues += player_issues
 
+    # Step 3B: Zone-level shooting efficiency
+    print("\n" + "━" * 40)
+    print("  Step 3B/6: Zone-Level Shooting Stats")
+    print("━" * 40)
+    ingest_zone_stats(seasons=seasons)  # rim%, paint%, mid-range%, corner3%, ATB3%
+
     # Step 4: Ingest shots (heaviest step)
     print("\n" + "━" * 40)
-    print("  Step 4/5: Shot Chart Data (this takes a while...)")
+    print("  Step 4/6: Shot Chart Data (this takes a while...)")
     print("━" * 40)
     shot_count = ingest_shots(seasons)
     all_issues += _check_shots(seasons, Session)

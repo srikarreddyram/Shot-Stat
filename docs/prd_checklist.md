@@ -31,11 +31,11 @@ The system predicts make probability for any NBA shot given **attacker + defende
 ## 4. Data Sources
 
 ### 4.1 NBA Stats API (`nba_api`)
-- [ ] `ShotChartDetail` — Shot coordinates, outcome, distance, shot type, game context
-- [ ] `CommonPlayerInfo` — Height, weight (⚠️ **returns current listed values only**, not season-specific; see Known Risks)
-- [ ] `DraftCombineStats` — Wingspan (one-time measurement at draft; imputed by position average if missing)
-- [ ] `LeagueDashPlayerStats` — Season FG%, position, games played
-- [ ] `PlayerDashboardByShootingSplits` — Zone-level FG% splits per player-season
+- [x] `ShotChartDetail` — Shot coordinates, outcome, distance, shot type, game context
+- [x] `CommonPlayerInfo` — Height, weight (⚠️ **returns current listed values only**, not season-specific; see Known Risks)
+- [x] `DraftCombineStats` — Wingspan (one-time measurement at draft)
+- [x] `LeagueDashPlayerStats` — Season FG%, position, games played
+- [ ] `PlayerDashboardByShootingSplits` — Zone-level FG% splits per player-season (rim, paint, mid-range, corner 3, above-the-break 3)
 - [ ] `SynergyPlayTypes` — Pull-up vs. catch-and-shoot vs. post-up tendencies
 - [ ] `DefenseDashboardPtDefend` — Defender FG% allowed by zone and shot type
 - [ ] `PlayerDefenseDashboard` — Contest rate, defensive rating per defender
@@ -43,10 +43,14 @@ The system predicts make probability for any NBA shot given **attacker + defende
 - [ ] Tracking endpoints — Touch time, dribbles per shot, closest defender distance (2013–14 onward)
 
 ### 4.2 Basketball Reference (Scraped)
-- [ ] Height, weight, wingspan fallback (strict mode — NO imputation allowed)
-- [ ] Tracking physicals not found on `nba_api`
+- [x] Height, weight, wingspan fallback (strict mode — NO imputation allowed)
+- [x] Tracking physicals not found on `nba_api`
 
-### 4.3 Pre-Game Matchup Assignment
+### 4.3 NBA 2K Ratings (Scraped — 2kratings.com)
+- [x] Wingspan final fallback for players missing from NBA API and BRef
+- [x] Height/weight gap-fill (only updates NULL columns, never overwrites official data)
+
+### 4.4 Pre-Game Matchup Assignment
 - [ ] `nba_api` → `DefenseDashboardPtDefend` (which defender guarded which offensive player)
 - [ ] Supplemented by play-by-play matchup inference where available
 
@@ -61,7 +65,7 @@ The system predicts make probability for any NBA shot given **attacker + defende
 | `reach_advantage` | `(height_diff × 0.6) + (wingspan_diff × 0.4)` | Composite physical edge |
 | `size_mismatch_flag` | `1 if abs(height_diff) > 4 inches` | Significant positional mismatches |
 
-> **Strict Data Policy:** We DO NOT impute physical attributes. All data must be exact measurements from `nba_api` or scraped from Basketball Reference. If not found in either source, the value remains `NULL` to avoid introducing noise to the model.
+> **Strict Data Policy:** We DO NOT impute physical attributes. All data must be exact measurements from `nba_api`, Basketball Reference, or NBA 2K Ratings. If not found in any source, the value remains `NULL` to avoid introducing noise to the model.
 
 ---
 
@@ -107,12 +111,27 @@ The system predicts make probability for any NBA shot given **attacker + defende
 - [ ] `def_fg_pct_allowed` — float, opponent FG% when this player defends
 
 ### 6.3 Games Table
-- [ ] `game_id` — string
-- [ ] `date` — date
-- [ ] `home_team` — string
-- [ ] `away_team` — string
-- [ ] `playoff_flag` — int (0/1)
-- [ ] `home_team_win` — int (0/1)
+- [x] `game_id` — string
+- [x] `date` — date
+- [x] `home_team` — string
+- [x] `away_team` — string
+- [x] `playoff_flag` — int (0/1)
+- [x] `home_team_win` — int (0/1)
+
+### 6.4 PlayerZoneStats Table (NEW — Zone-Level Shooting Efficiency)
+One row per player per season per zone. Captures where each player is deadly vs. where they struggle (e.g., Shaun Livingston's elite mid-range, Steph Curry's above-the-break 3).
+
+- [ ] `player_id` — string, PK (part 1)
+- [ ] `season` — string, PK (part 2)
+- [ ] `zone` — string, PK (part 3) — one of: `Restricted Area`, `In The Paint (Non-RA)`, `Mid-Range`, `Left Corner 3`, `Right Corner 3`, `Above the Break 3`
+- [ ] `fgm` — int, field goals made in this zone
+- [ ] `fga` — int, field goal attempts in this zone
+- [ ] `fg_pct` — float, FG% in this zone
+- [ ] `fg3m` — int, 3-point field goals made (non-zero only for 3PT zones)
+- [ ] `fg3a` — int, 3-point field goal attempts
+- [ ] `fg3_pct` — float, 3PT% (non-zero only for 3PT zones)
+
+**Source:** `PlayerDashboardByShootingSplits` → DataFrame 3 ("Shot Area")
 
 ---
 
@@ -177,12 +196,15 @@ The system predicts make probability for any NBA shot given **attacker + defende
 ## 10. Phased Rollout
 
 ### Phase 1 — Data Collection (Strict Mode)
-- [x] Pull 15 seasons (2010–2025) of game metadata via `LeagueGameLog`
-- [ ] Build base rosters via `LeagueDashPlayerStats`
-- [ ] **Physicals (Strict):** Pull height, weight, wingspan from `nba_api`
-- [ ] **Physicals (Fallback):** Scrape missing physicals from Basketball Reference
+- [x] Pull 15+ seasons (2010–2026) of game metadata via `LeagueGameLog`
+- [x] Build base rosters via `LeagueDashPlayerStats`
+- [x] **Physicals (Phase 2A):** Pull height, weight, wingspan from `nba_api` (CommonPlayerInfo + DraftCombine)
+- [x] **Physicals (Phase 2B):** Scrape missing physicals from Basketball Reference
+- [x] **Physicals (Phase 2C):** Scrape remaining wingspans from 2kratings.com (NBA 2K data)
+- [ ] **Zone Stats:** Pull per-player zone-level FG% via `PlayerDashboardByShootingSplits` (rim finishing, paint, mid-range, corner 3, above-the-break 3)
+- [ ] **Career Stats:** Pull career FG% and 3PT% via `LeagueDashPlayerStats` (CareerTotals)
 - [ ] **Verification:** Generate missing data report
-- [ ] Pull shot data via `ShotChartDetail` (ONLY after physicals are 100% complete)
+- [x] Pull shot data via `ShotChartDetail` (ONLY after physicals are complete)
 - [x] Build SQLite schema with idempotent upserts and strict resume flags
 - [ ] Train baseline LR and XGBoost models **without** defender data
 - [ ] Validate log-loss beats zone-average baseline

@@ -2,9 +2,10 @@
 SQLAlchemy ORM models for the NBA Shot Quality Engine.
 
 Tables:
-  - Game   — one row per NBA game
-  - Player — one row per player per season (stats are season-specific)
-  - Shot   — one row per shot attempt
+  - Game            — one row per NBA game
+  - Player          — one row per player per season (stats are season-specific)
+  - PlayerZoneStats — one row per player per season per court zone (shooting efficiency)
+  - Shot            — one row per shot attempt
 """
 from sqlalchemy import (
     Column, String, Integer, Float, Date, ForeignKey, ForeignKeyConstraint,
@@ -65,6 +66,47 @@ class Player(Base):
 
     def __repr__(self):
         return f"<Player {self.name} ({self.player_id}) {self.season}>"
+
+
+class PlayerZoneStats(Base):
+    """
+    Zone-level shooting efficiency per player per season.
+
+    One row per (player_id, season, zone) — the composite PK ensures idempotent upserts.
+
+    Zones exactly match the NBA API 'Shot Area' breakdown:
+        - Restricted Area         (at the rim)
+        - In The Paint (Non-RA)   (paint outside the circle)
+        - Mid-Range               (all mid-range jumpers)
+        - Left Corner 3
+        - Right Corner 3
+        - Above the Break 3
+
+    Populated by zone_stats_ingestor.py using PlayerDashboardByShootingSplits.
+    """
+    __tablename__ = "player_zone_stats"
+
+    player_id = Column(String, primary_key=True)
+    season    = Column(String, primary_key=True)  # e.g. "2023-24"
+    zone      = Column(String, primary_key=True)  # one of the 6 zones above
+
+    # Shot volume
+    fgm = Column(Integer, nullable=True)   # field goals made
+    fga = Column(Integer, nullable=True)   # field goal attempts
+    fg_pct = Column(Float, nullable=True)  # FG%
+
+    # 3-point breakdown (non-zero for the three 3PT zones only)
+    fg3m   = Column(Integer, nullable=True)
+    fg3a   = Column(Integer, nullable=True)
+    fg3_pct = Column(Float, nullable=True)
+
+    __table_args__ = (
+        # Explicit composite PK already defined above; add index for fast lookups
+        Index("ix_zone_stats_player_season", "player_id", "season"),
+    )
+
+    def __repr__(self):
+        return f"<PlayerZoneStats {self.player_id} {self.season} | {self.zone}: {self.fg_pct:.3f}>"
 
 
 class Shot(Base):
