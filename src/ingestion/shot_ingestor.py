@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 
 from nba_api.stats.endpoints import shotchartdetail
+from nba_api.stats.static import teams as nba_teams_static
 from sqlalchemy import select, update
 from tqdm import tqdm
 
@@ -40,10 +41,25 @@ def _compute_shot_angle(loc_x: float, loc_y: float) -> float | None:
     try: return math.degrees(math.atan2(loc_y, loc_x))
     except (ValueError, ZeroDivisionError): return None
 
+# Build a lookup from full team name -> abbreviation (e.g. "Los Angeles Lakers" -> "LAL")
+# HTM/VTM from ShotChartDetail are abbreviations, but TEAM_NAME is the full name.
+_TEAM_NAME_TO_ABBR = {t['full_name']: t['abbreviation'] for t in nba_teams_static.get_teams()}
+# Also add historical names that may appear in older seasons
+_TEAM_NAME_TO_ABBR.update({
+    "New Jersey Nets": "NJN",
+    "Charlotte Bobcats": "CHA",
+    "New Orleans Hornets": "NOH",
+    "New Orleans/Oklahoma City Hornets": "NOK",
+    "Seattle SuperSonics": "SEA",
+    "Vancouver Grizzlies": "VAN",
+})
+
 def _determine_home_away(htm: str, vtm: str, team_name: str) -> int | None:
     if not team_name or (not htm and not vtm): return None
-    if team_name == htm: return 1
-    elif team_name == vtm: return 0
+    # Convert full team name to abbreviation so it matches HTM/VTM
+    team_abbr = _TEAM_NAME_TO_ABBR.get(team_name, team_name)
+    if team_abbr == htm: return 1
+    elif team_abbr == vtm: return 0
     return None
 
 def _is_playoff_game(game_id: str) -> int:
@@ -196,8 +212,18 @@ def ingest_shots(seasons: list[str]):
     return total_shots
 
 if __name__ == "__main__":
-    seasons = config.TEST_SEASONS
-    if len(sys.argv) > 1 and sys.argv[1] == "--full":
+    import argparse
+    parser = argparse.ArgumentParser(description="Ingest NBA shot data.")
+    parser.add_argument("--seasons", nargs="+", default=None, help="Specific seasons to process. Default: TEST_SEASONS. Use --full for all.")
+    parser.add_argument("--full", action="store_true", help="Process all seasons defined in config.")
+    args = parser.parse_args()
+
+    if args.seasons:
+        seasons = args.seasons
+    elif args.full:
         seasons = config.ALL_SEASONS
+    else:
+        seasons = config.TEST_SEASONS
+
     ingest_shots(seasons)
 

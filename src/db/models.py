@@ -58,6 +58,9 @@ class Player(Base):
     career_fg_pct = Column(Float, nullable=True)
     career_3p_pct = Column(Float, nullable=True)
     season_fg_pct = Column(Float, nullable=True)
+    ast = Column(Float, nullable=True)
+    tov = Column(Float, nullable=True)
+    ft_pct = Column(Float, nullable=True)
 
     # Defensive stats (Phase 2 — nullable for now)
     def_rating = Column(Float, nullable=True)
@@ -165,3 +168,114 @@ class Shot(Base):
     def __repr__(self):
         result = "Made" if self.shot_made else "Missed"
         return f"<Shot {self.shot_id} {result} by {self.player_id}>"
+
+
+class DefenderStats(Base):
+    """
+    Season-level defensive metrics per player per defense category.
+
+    Tells us how good each player is at defending different shot zones.
+    One row per (player_id, season, defense_category).
+
+    Defense categories (from LeagueDashPtDefend):
+        - Overall
+        - 3 Pointers
+        - 2 Pointers
+        - Less Than 6Ft
+        - Less Than 10Ft
+        - Greater Than 15Ft
+
+    Populated by defender_stats_ingestor.py.
+    """
+    __tablename__ = "defender_stats"
+
+    player_id = Column(String, primary_key=True)
+    season = Column(String, primary_key=True)           # e.g. "2023-24"
+    defense_category = Column(String, primary_key=True)  # e.g. "Overall"
+
+    gp = Column(Integer, nullable=True)              # games played
+    freq = Column(Float, nullable=True)              # frequency of defensive assignments
+    d_fgm = Column(Integer, nullable=True)           # FG made against this defender
+    d_fga = Column(Integer, nullable=True)           # FG attempted against this defender
+    d_fg_pct = Column(Float, nullable=True)          # FG% allowed when defending
+    normal_fg_pct = Column(Float, nullable=True)     # expected FG% (league baseline)
+    pct_plusminus = Column(Float, nullable=True)     # difference (negative = good D)
+
+    __table_args__ = (
+        Index("ix_defender_stats_player_season", "player_id", "season"),
+    )
+
+    def __repr__(self):
+        return f"<DefenderStats {self.player_id} {self.season} | {self.defense_category}: {self.d_fg_pct}>"
+
+
+class Matchup(Base):
+    """
+    Game-level matchup data: who guarded whom for how long.
+
+    One row per (game_id, offense_player_id, defense_player_id).
+    Available from 2016-17 onward only.
+
+    Populated by matchup_ingestor.py using BoxScoreMatchupsV3.
+    """
+    __tablename__ = "matchups"
+
+    game_id = Column(String, primary_key=True)
+    offense_player_id = Column(String, primary_key=True)
+    defense_player_id = Column(String, primary_key=True)
+
+    matchup_minutes = Column(Float, nullable=True)       # seconds of matchup time
+    partial_possessions = Column(Float, nullable=True)   # possessions in matchup
+    player_points = Column(Integer, nullable=True)       # points scored in matchup
+    matchup_fgm = Column(Integer, nullable=True)         # FGM in matchup
+    matchup_fga = Column(Integer, nullable=True)         # FGA in matchup
+    matchup_fg_pct = Column(Float, nullable=True)        # FG% in matchup
+
+    __table_args__ = (
+        Index("ix_matchups_game", "game_id"),
+        Index("ix_matchups_offense", "game_id", "offense_player_id"),
+    )
+
+    def __repr__(self):
+        return f"<Matchup {self.game_id} OFF:{self.offense_player_id} DEF:{self.defense_player_id}>"
+
+
+class TeamStats(Base):
+    """
+    Season-level team statistics (defensive rating, etc.).
+    """
+    __tablename__ = "team_stats"
+
+    team_id = Column(String, primary_key=True)
+    season = Column(String, primary_key=True)  # e.g. "2023-24"
+
+    team_name = Column(String, nullable=True)
+    team_abbrev = Column(String, nullable=True)  # e.g. "ATL", "BOS"
+    def_rating = Column(Float, nullable=True)  # Defensive rating
+    
+    def __repr__(self):
+        return f"<TeamStats {self.team_name} {self.season} DefRtg:{self.def_rating}>"
+
+
+class TeamSchedule(Base):
+    """
+    Game-level schedule data to compute rest days and back-to-backs.
+    """
+    __tablename__ = "team_schedule"
+
+    team_id = Column(String, primary_key=True)
+    game_id = Column(String, primary_key=True)
+    
+    date = Column(Date, nullable=False)
+    season = Column(String, nullable=False)
+    
+    rest_days = Column(Integer, nullable=True)
+    is_back_to_back = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_team_schedule_game", "game_id"),
+        Index("ix_team_schedule_team_season", "team_id", "season"),
+    )
+
+    def __repr__(self):
+        return f"<TeamSchedule {self.team_id} Game:{self.game_id} Date:{self.date}>"

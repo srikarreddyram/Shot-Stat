@@ -61,6 +61,9 @@ def ingest_rosters(seasons: list[str]):
                 "name": row["PLAYER_NAME"],
                 "position": _normalize_position(str(row.get("PLAYER_POSITION", ""))),
                 "season_fg_pct": _safe_float(row.get("FG_PCT")),
+                "ast": _safe_float(row.get("AST")) / max(1, _safe_float(row.get("GP"), 1)),
+                "tov": _safe_float(row.get("TOV")) / max(1, _safe_float(row.get("GP"), 1)),
+                "ft_pct": _safe_float(row.get("FT_PCT")),
                 # Physicals remain NULL
                 "height": None,
                 "weight": None,
@@ -78,6 +81,9 @@ def ingest_rosters(seasons: list[str]):
                             "name": stmt.excluded.name,
                             "position": stmt.excluded.position,
                             "season_fg_pct": stmt.excluded.season_fg_pct,
+                            "ast": stmt.excluded.ast,
+                            "tov": stmt.excluded.tov,
+                            "ft_pct": stmt.excluded.ft_pct,
                         }
                     )
                     session.execute(stmt)
@@ -89,7 +95,17 @@ def ingest_rosters(seasons: list[str]):
     print(f"\n✓ Roster ingestion complete: {total_players} records")
 
 if __name__ == "__main__":
-    seasons = config.TEST_SEASONS
-    if len(sys.argv) > 1 and sys.argv[1] == "--full":
+    import argparse
+    parser = argparse.ArgumentParser(description="Ingest NBA rosters.")
+    parser.add_argument("--seasons", nargs="+", default=None, help="Specific seasons to process. Default: TEST_SEASONS. Use --full for all.")
+    parser.add_argument("--full", action="store_true", help="Process all seasons defined in config.")
+    args = parser.parse_args()
+
+    if args.seasons:
+        seasons = args.seasons
+    elif args.full:
         seasons = config.ALL_SEASONS
+    else:
+        seasons = config.TEST_SEASONS
+
     ingest_rosters(seasons)

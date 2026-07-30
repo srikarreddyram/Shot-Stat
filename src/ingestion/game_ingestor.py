@@ -133,8 +133,17 @@ def ingest_games(seasons: list[str], include_playoffs: bool = True):
 
 
 if __name__ == "__main__":
-    # Default: test with single season
-    seasons = config.TEST_SEASONS
-    if len(sys.argv) > 1 and sys.argv[1] == "--full":
+    import argparse
+    parser = argparse.ArgumentParser(description="Ingest NBA game schedules and results.")
+    parser.add_argument("--seasons", nargs="+", default=None, help="Specific seasons to process, e.g. 2023-24 2024-25. Default: TEST_SEASONS. Use --full for all.")
+    parser.add_argument("--full", action="store_true", help="Process all seasons defined in config.")
+    args = parser.parse_args()
+
+    if args.seasons:
+        seasons = args.seasons
+    elif args.full:
         seasons = config.ALL_SEASONS
+    else:
+        seasons = config.TEST_SEASONS
+
     ingest_games(seasons)

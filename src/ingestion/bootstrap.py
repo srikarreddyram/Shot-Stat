@@ -292,11 +292,11 @@ def run_bootstrap(seasons: list[str]):
     print("━" * 40)
     engine = init_db()
 
-    # Step 2: Ingest games (Skipped per user request)
-    # print("\n" + "━" * 40)
-    # print("  Step 2/5: Game Metadata")
-    # print("━" * 40)
-    # game_count = ingest_games(seasons)
+    # Step 2: Ingest games
+    print("\n" + "━" * 40)
+    print("  Step 2/5: Game Metadata")
+    print("━" * 40)
+    game_count = ingest_games(seasons)
     all_issues += _check_games(seasons, Session)
 
     # Step 3: Phase 1 (Roster) & Phase 2 (Physicals: NBA API → BRef → 2K)
@@ -353,10 +353,21 @@ def run_bootstrap(seasons: list[str]):
 
 
 if __name__ == "__main__":
-    if "--validate" in sys.argv:
+    import argparse
+    parser = argparse.ArgumentParser(description="Run the full ingestion pipeline.")
+    parser.add_argument("--validate", action="store_true", help="Run database validation only.")
+    parser.add_argument("--seasons", nargs="+", default=None, help="Specific seasons to process. Default: TEST_SEASONS. Use --full for all.")
+    parser.add_argument("--full", action="store_true", help="Process all seasons defined in config.")
+    args = parser.parse_args()
+
+    if args.validate:
         validate_database()
-    elif "--full" in sys.argv:
-        run_bootstrap(config.ALL_SEASONS)
     else:
-        run_bootstrap(config.TEST_SEASONS)
+        if args.seasons:
+            seasons = args.seasons
+        elif args.full:
+            seasons = config.ALL_SEASONS
+        else:
+            seasons = config.TEST_SEASONS
+        run_bootstrap(seasons)
 
