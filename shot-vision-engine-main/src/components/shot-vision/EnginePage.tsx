@@ -42,8 +42,8 @@ export default function EnginePage({ onBack }: Props) {
           const bZone = backendZones.find((bz: any) => bz.zone === z.label);
           return {
             zone: z,
-            ep: bZone ? bZone.best_ep : z.baseEP,
-            makeProb: bZone ? bZone.best_make_prob : 0.35,
+            ep: bZone ? bZone.avg_ep : z.baseEP,
+            makeProb: bZone ? bZone.avg_make_prob : 0.35,
           };
         }).sort((a, b) => b.ep - a.ep);
         setResults(mappedResults);

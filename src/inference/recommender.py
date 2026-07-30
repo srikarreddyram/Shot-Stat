@@ -425,6 +425,18 @@ class ShotRecommender:
             else:
                 make_probs = raw_probs
 
+        # DEFENDER ADJUSTMENT (physics-based post-processing)
+        # The ML model underweights defender quality because ~10.7% of training
+        # data has NULL defender stats. We apply the defender's actual DFG
+        # differential as a direct shift to the probability.
+        # e.g. Wemby: def_pct_plusminus = -0.066 → shifts make_prob down by 6.6%
+        # e.g. Cam Thomas: def_pct_plusminus = +0.026 → shifts make_prob up by 2.6%
+        if defender:
+            def_plusminus = candidates_df.get("def_pct_plusminus")
+            if def_plusminus is not None:
+                def_shift = def_plusminus.fillna(0).values
+                make_probs = np.clip(make_probs + def_shift, 0.02, 0.98)
+
         # Build results
         shot_value = np.where(candidates_df["is_three"] == 1, 3.0, 2.0)
         expected_points = make_probs * shot_value

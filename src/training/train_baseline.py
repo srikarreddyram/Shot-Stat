@@ -169,10 +169,6 @@ def train_and_evaluate(version="v1"):
         "early_stopping_rounds": 20,
     }
 
-    # Only add monotonic constraint if the feature exists (e.g. v2/v3 models)
-    if "height_diff" in feature_cols:
-        xgb_params["monotone_constraints"] = {"height_diff": 1}
-
     # Load tuned params for v3
     if version == "v3":
         tuned_path = Path("models") / "best_params_v3.json"
@@ -197,8 +193,32 @@ def train_and_evaluate(version="v1"):
     X_test_per, y_test_per = X_test[~mask_test_int], y_test[~mask_test_int]
 
     # Train Interior Model
+    # Monotonic constraints for interior:
+    #   height_diff = -1: being shorter than defender HURTS at the rim
+    #   def_pct_plusminus = -1: better rim protector (negative plusminus) = harder to score
     print("\n  → Training INTERIOR Model...")
-    xgb_interior = xgb.XGBClassifier(**xgb_params)
+    xgb_params_int = dict(xgb_params)
+    if "height_diff" in feature_cols:
+        # height_diff = attacker - defender. Positive = attacker is taller.
+        # At the rim, being taller helps → monotone +1
+        # def_fg_pct_overall = opponent FG% the defender allows. Higher = worse defense → easier to score → +1
+        # def_pct_plusminus = how much worse opponents shoot vs league avg. Positive = bad defender → +1
+        # matchup_advantage = attacker zone FG% - defender overall FG%. Higher = better for attacker → +1
+        # zone_efficiency = attacker's shooting % in this zone. Higher = better shooter → +1
+        constraints_int = {
+            "height_diff": 1,
+            "zone_efficiency": 1,
+        }
+        if "def_fg_pct_overall" in feature_cols:
+            constraints_int["def_fg_pct_overall"] = 1
+        if "def_pct_plusminus" in feature_cols:
+            constraints_int["def_pct_plusminus"] = 1
+        if "matchup_advantage" in feature_cols:
+            constraints_int["matchup_advantage"] = 1
+        xgb_params_int["monotone_constraints"] = constraints_int
+        print(f"    Monotonic constraints: {constraints_int}")
+    
+    xgb_interior = xgb.XGBClassifier(**xgb_params_int)
     xgb_interior.fit(
         X_train_int, y_train_int,
         eval_set=[(X_test_int, y_test_int)],
@@ -310,8 +330,8 @@ def train_and_evaluate(version="v1"):
     print(f"\n{'='*60}\n")
 
     # ── Step 8: Feature importance (XGBoost) ─────────────────────────────────
-    print("  XGBoost — Top 20 Features by Importance:")
-    importance = xgb_model.feature_importances_
+    print("  XGBoost Interior — Top 20 Features by Importance:")
+    importance = xgb_interior.feature_importances_
     feat_imp = sorted(zip(feature_cols, importance), key=lambda x: x[1], reverse=True)
     for i, (feat, imp) in enumerate(feat_imp[:20], 1):
         bar = "█" * int(imp * 200)
@@ -331,7 +351,7 @@ def train_and_evaluate(version="v1"):
             color="#f97316",
         )
         ax.set_xlabel("Feature Importance (Gain)")
-        ax.set_title(f"XGBoost {version} — Top 20 Features (Test: {TEST_SEASON})")
+        ax.set_title(f"XGBoost Interior {version} — Top 20 Features (Test: {TEST_SEASON})")
         plt.tight_layout()
         fig.savefig(str(model_dir / f"feature_importance_{version}.png"), dpi=150)
         plt.close(fig)
