@@ -51,8 +51,12 @@ BASE_FEATURE_COLS = [
     "def_fg_pct_overall", "def_pct_plusminus",
     "def_freq_zone",  # how often this defender defends this zone (specialization)
 
+    # Zone-specific defender quality (the key fix for rim protection)
+    "def_fg_pct_zone",       # defender's FG% allowed in THIS zone
+    "def_pct_plusminus_zone", # defender's +/- in THIS zone
+
     # Composite
-    "matchup_advantage",  # attacker zone FG% minus defender overall FG% allowed
+    "matchup_advantage",  # attacker zone FG% minus defender zone FG% allowed
 ]
 
 TARGET_COL = "shot_made"
@@ -99,12 +103,14 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
         def_p.weight AS def_weight,
         def_p.wingspan AS def_wingspan,
 
-        -- Defender overall stats (only 'Overall' category has d_fg_pct)
+        -- Defender overall stats
         ds_overall.d_fg_pct AS def_fg_pct_overall,
         ds_overall.pct_plusminus AS def_pct_plusminus,
 
-        -- Defender zone frequency (how often they defend this zone type)
-        ds_zone.freq AS def_freq_zone
+        -- Defender zone-specific stats (now populated with correct column mapping)
+        ds_zone.freq AS def_freq_zone,
+        ds_zone.d_fg_pct AS def_fg_pct_zone,
+        ds_zone.pct_plusminus AS def_pct_plusminus_zone
         """
         
         query_join_def = """
@@ -266,8 +272,10 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
         df['wingspan_diff'] = df['wingspan'] - df['def_wingspan']
         df['size_mismatch'] = (df['height_diff'].abs() >= 4).astype(int)
 
-        # Composite feature: attacker's zone efficiency vs defender's overall allowed FG%
-        df['matchup_advantage'] = df['zone_efficiency'] - df['def_fg_pct_overall']
+        # Composite feature: attacker's zone efficiency vs defender's zone-level allowed FG%
+        # Falls back to overall if zone-level is unavailable
+        def_fg_zone = df['def_fg_pct_zone'].fillna(df['def_fg_pct_overall'])
+        df['matchup_advantage'] = df['zone_efficiency'] - def_fg_zone
 
     # ── Step 3: One-hot encode categoricals ──────────────────────────────────
     print("  → Encoding categoricals...")

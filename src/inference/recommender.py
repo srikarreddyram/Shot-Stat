@@ -209,14 +209,17 @@ class ShotRecommender:
 
             defender = dict(row._mapping)
 
-            # Defender stats by category
+            # Defender stats by category (now includes zone-level d_fg_pct)
             def_rows = conn.execute(text("""
-                SELECT defense_category, d_fg_pct, pct_plusminus
+                SELECT defense_category, d_fg_pct, pct_plusminus, freq
                 FROM defender_stats
                 WHERE player_id = :pid AND season = :season
             """), {"pid": defender_id, "season": season}).fetchall()
 
-            defender["def_stats"] = {r[0]: {"d_fg_pct": r[1], "pct_plusminus": r[2]} for r in def_rows}
+            defender["def_stats"] = {
+                r[0]: {"d_fg_pct": r[1], "pct_plusminus": r[2], "freq": r[3]}
+                for r in def_rows
+            }
 
         return defender
 
@@ -345,19 +348,23 @@ class ShotRecommender:
                 row["wingspan_diff"] = (ws - dws) if (ws and dws) else None
                 row["size_mismatch"] = int(abs(row["height_diff"]) >= 4) if row["height_diff"] is not None else 0
 
-                # Defender quality stats (overall only — zone-level d_fg_pct is always NULL)
+                # Defender quality stats — overall
                 overall = defender.get("def_stats", {}).get("Overall", {})
                 row["def_fg_pct_overall"] = overall.get("d_fg_pct")
                 row["def_pct_plusminus"] = overall.get("pct_plusminus")
 
-                # Defender zone frequency (how often they defend this zone type)
+                # Defender zone-specific stats (now populated with correct column mapping)
                 def_cat = zone_to_def_cat.get(zone)
                 zone_def = defender.get("def_stats", {}).get(def_cat, {})
                 row["def_freq_zone"] = zone_def.get("freq")
+                row["def_fg_pct_zone"] = zone_def.get("d_fg_pct")
+                row["def_pct_plusminus_zone"] = zone_def.get("pct_plusminus")
 
-                # Composite: attacker zone FG% minus defender overall FG% allowed
-                if zone_eff is not None and row["def_fg_pct_overall"] is not None:
-                    row["matchup_advantage"] = zone_eff - row["def_fg_pct_overall"]
+                # Composite: attacker zone FG% minus defender ZONE-level FG% allowed
+                # Falls back to overall if zone-level is unavailable
+                def_fg = row["def_fg_pct_zone"] or row["def_fg_pct_overall"]
+                if zone_eff is not None and def_fg is not None:
+                    row["matchup_advantage"] = zone_eff - def_fg
                 else:
                     row["matchup_advantage"] = None
 
@@ -424,18 +431,6 @@ class ShotRecommender:
                 make_probs = self.calibrator.predict(raw_probs)
             else:
                 make_probs = raw_probs
-
-        # DEFENDER ADJUSTMENT (physics-based post-processing)
-        # The ML model underweights defender quality because ~10.7% of training
-        # data has NULL defender stats. We apply the defender's actual DFG
-        # differential as a direct shift to the probability.
-        # e.g. Wemby: def_pct_plusminus = -0.066 → shifts make_prob down by 6.6%
-        # e.g. Cam Thomas: def_pct_plusminus = +0.026 → shifts make_prob up by 2.6%
-        if defender:
-            def_plusminus = candidates_df.get("def_pct_plusminus")
-            if def_plusminus is not None:
-                def_shift = def_plusminus.fillna(0).values
-                make_probs = np.clip(make_probs + def_shift, 0.02, 0.98)
 
         # Build results
         shot_value = np.where(candidates_df["is_three"] == 1, 3.0, 2.0)

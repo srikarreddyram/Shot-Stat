@@ -93,6 +93,18 @@ def ingest_defender_stats(seasons: list[str]):
                     continue
 
                 rows_to_upsert = []
+                
+                # Each category uses different column names in the API
+                COL_MAP = {
+                    "Overall":          {"fgm": "D_FGM",     "fga": "D_FGA",     "pct": "D_FG_PCT",   "normal": "NORMAL_FG_PCT", "pm": "PCT_PLUSMINUS"},
+                    "3 Pointers":       {"fgm": "FG3M",      "fga": "FG3A",      "pct": "FG3_PCT",    "normal": "NS_FG3_PCT",    "pm": "PLUSMINUS"},
+                    "2 Pointers":       {"fgm": "FG2M",      "fga": "FG2A",      "pct": "FG2_PCT",    "normal": "NS_FG2_PCT",    "pm": "PLUSMINUS"},
+                    "Less Than 6Ft":    {"fgm": "FGM_LT_06", "fga": "FGA_LT_06", "pct": "LT_06_PCT",  "normal": "NS_LT_06_PCT",  "pm": "PLUSMINUS"},
+                    "Less Than 10Ft":   {"fgm": "FGM_LT_10", "fga": "FGA_LT_10", "pct": "LT_10_PCT",  "normal": "NS_LT_10_PCT",  "pm": "PLUSMINUS"},
+                    "Greater Than 15Ft":{"fgm": "FGM_GT_15", "fga": "FGA_GT_15", "pct": "GT_15_PCT",  "normal": "NS_GT_15_PCT",  "pm": "PLUSMINUS"},
+                }
+                cm = COL_MAP.get(category, COL_MAP["Overall"])
+                
                 for _, row in df.iterrows():
                     rows_to_upsert.append({
                         "player_id": str(row["CLOSE_DEF_PERSON_ID"]),
@@ -100,11 +112,11 @@ def ingest_defender_stats(seasons: list[str]):
                         "defense_category": category,
                         "gp": _safe_int(row.get("GP")),
                         "freq": _safe_float(row.get("FREQ")),
-                        "d_fgm": _safe_int(row.get("D_FGM")),
-                        "d_fga": _safe_int(row.get("D_FGA")),
-                        "d_fg_pct": _safe_float(row.get("D_FG_PCT")),
-                        "normal_fg_pct": _safe_float(row.get("NORMAL_FG_PCT")),
-                        "pct_plusminus": _safe_float(row.get("PCT_PLUSMINUS")),
+                        "d_fgm": _safe_int(row.get(cm["fgm"])),
+                        "d_fga": _safe_int(row.get(cm["fga"])),
+                        "d_fg_pct": _safe_float(row.get(cm["pct"])),
+                        "normal_fg_pct": _safe_float(row.get(cm["normal"])),
+                        "pct_plusminus": _safe_float(row.get(cm["pm"])),
                     })
 
                 if rows_to_upsert:

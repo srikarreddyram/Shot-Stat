@@ -213,6 +213,10 @@ def train_and_evaluate(version="v1"):
             constraints_int["def_fg_pct_overall"] = 1
         if "def_pct_plusminus" in feature_cols:
             constraints_int["def_pct_plusminus"] = 1
+        if "def_fg_pct_zone" in feature_cols:
+            constraints_int["def_fg_pct_zone"] = 1
+        if "def_pct_plusminus_zone" in feature_cols:
+            constraints_int["def_pct_plusminus_zone"] = 1
         if "matchup_advantage" in feature_cols:
             constraints_int["matchup_advantage"] = 1
         xgb_params_int["monotone_constraints"] = constraints_int
