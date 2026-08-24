@@ -1,4 +1,21 @@
 """
+DEPRECATED — superseded by the src/features package.
+
+Kept so the old training script still runs. Do not extend it.
+
+Its `build_training_matrix` joins whole-season shooting aggregates onto every
+shot in that season, which puts each shot's own outcome inside its own
+features, and produces features that do not exist at prediction time. The
+replacement computes the same quantities from strictly prior games and shrinks
+them toward fitted league priors, and — critically — shares its derivation code
+with the serving path so the two cannot drift.
+
+Use:
+    from src.features.build import build_matrix
+"""
+
+# Original module docstring follows.
+"""
 Feature Engineering Pipeline — Builds the training matrix from SQLite.
 
 Joins shots + players + player_zone_stats into a single DataFrame with
@@ -12,7 +29,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config
@@ -38,6 +54,9 @@ BASE_FEATURE_COLS = [
     "height", "weight", "wingspan",
     "career_fg_pct", "career_3p_pct", "season_fg_pct",
     "zone_efficiency",
+
+    # Recent form (leakage-safe rolling windows — strictly prior games only)
+    "recent_10_fg", "recent_20_fg",
 
     # Zone-level shooting efficiency (per player-season)
     "fg_pct_restricted_area", "fg_pct_paint", "fg_pct_midrange",
@@ -73,6 +92,50 @@ _ZONE_TO_EFFICIENCY_COL = {
 }
 
 
+def _compute_rolling_form(engine) -> pd.DataFrame:
+    """
+    Leakage-safe rolling shooting form: for every (player_id, game_id), what
+    was that player's FG% over their last 10 / 20 games strictly BEFORE this
+    game's date — never including makes/attempts from the game itself.
+
+    Computed from the player's full shot history (not filtered to whatever
+    `seasons` list the caller is training on), so a player's rolling form at
+    the start of a season correctly reflects the tail end of their previous
+    season instead of going empty for their first ~10 games every year.
+
+    Uses a shot-weighted average (total makes / total attempts across the
+    window), not an average of per-game percentages, so a 1-for-1 game and
+    a 10-for-10 game don't count equally.
+    """
+    per_game = pd.read_sql("""
+        SELECT s.player_id, s.game_id, g.date,
+               SUM(s.shot_made) AS makes, COUNT(*) AS attempts
+        FROM shots s
+        JOIN games g ON s.game_id = g.game_id
+        GROUP BY s.player_id, s.game_id, g.date
+    """, engine)
+
+    per_game = per_game.sort_values(["player_id", "date", "game_id"]).reset_index(drop=True)
+
+    for window, label in ((10, "recent_10_fg"), (20, "recent_20_fg")):
+        # shift(1) moves each player's own values down one row, so the
+        # rolling window at row i sums rows i-1..i-window — the games
+        # strictly before the current one. min_periods=1 so a player with
+        # only e.g. 3 prior games still gets a (higher-variance) estimate
+        # rather than NaN; XGBoost handles the true early-career NaN case
+        # (zero prior games) as a missing value, same as every other
+        # feature in this pipeline.
+        makes_roll = per_game.groupby("player_id")["makes"].transform(
+            lambda s: s.shift(1).rolling(window, min_periods=1).sum()
+        )
+        attempts_roll = per_game.groupby("player_id")["attempts"].transform(
+            lambda s: s.shift(1).rolling(window, min_periods=1).sum()
+        )
+        per_game[label] = makes_roll / attempts_roll.replace(0, np.nan)
+
+    return per_game[["player_id", "game_id", "recent_10_fg", "recent_20_fg"]]
+
+
 def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.DataFrame:
     """
     Build the full training matrix by joining shots + players + zone stats.
@@ -84,10 +147,10 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
     season_list = ", ".join(f"'{s}'" for s in seasons)
 
     print(f"\n{'='*60}")
-    print(f"  FEATURE ENGINEERING")
+    print("  FEATURE ENGINEERING")
     print(f"  Seasons: {seasons[0]} → {seasons[-1]} ({len(seasons)} seasons)")
     if use_defender:
-        print(f"  Mode:    With Defender Features")
+        print("  Mode:    With Defender Features")
     print(f"{'='*60}")
 
     # ── Step 1: Load everything with one big SQL join ────────────────────────
@@ -136,6 +199,7 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
         s.shot_id,
         s.season,
         s.player_id,
+        s.game_id,
         s.shot_made,
 
         -- Spatial (from shots table)
@@ -236,6 +300,10 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
     df = pd.read_sql(query, engine)
     print(f"  ✓ Loaded {len(df):,} shots × {len(df.columns)} columns")
 
+    print("  → Computing leakage-safe rolling form (recent_10_fg, recent_20_fg)...")
+    rolling_form = _compute_rolling_form(engine)
+    df = df.merge(rolling_form, on=["player_id", "game_id"], how="left")
+
     # ── Step 2: Engineer derived features ────────────────────────────────────
     print("  → Engineering features...")
 
@@ -301,7 +369,7 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
     print(f"  ✓ Clutch shots: {df['clutch_flag'].sum():,} ({df['clutch_flag'].mean()*100:.1f}%)")
 
     if null_features:
-        print(f"\n  ⚠ Features with NULLs (XGBoost handles these, LR will median-fill):")
+        print("\n  ⚠ Features with NULLs (XGBoost handles these, LR will median-fill):")
         for col, n in sorted(null_features.items(), key=lambda x: -x[1]):
             print(f"    {col:<35} {n:>8,} ({n/len(df)*100:.1f}%)")
 

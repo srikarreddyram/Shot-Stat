@@ -26,7 +26,6 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-import config
 from src.db.database import get_engine, get_session_factory
 from src.db.models import Player, PlayerZoneStats
 

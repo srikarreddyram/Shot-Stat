@@ -7,7 +7,6 @@ Usage:
     python -m src.ingestion.bootstrap --validate    # Run validation queries only
 """
 import sys
-import time
 from pathlib import Path
 from datetime import datetime
 
@@ -42,13 +41,13 @@ def validate_database():
         player_count = session.execute(select(func.count()).select_from(Player)).scalar()
         shot_count = session.execute(select(func.count()).select_from(Shot)).scalar()
 
-        print(f"\n  📊 Row Counts:")
+        print("\n  📊 Row Counts:")
         print(f"     Games:   {game_count:>8,}")
         print(f"     Players: {player_count:>8,}")
         print(f"     Shots:   {shot_count:>8,}")
 
         # ── Shots per season ──
-        print(f"\n  📊 Shots per Season:")
+        print("\n  📊 Shots per Season:")
         result = session.execute(
             select(Shot.season, func.count()).group_by(Shot.season).order_by(Shot.season)
         )
@@ -56,7 +55,7 @@ def validate_database():
             print(f"     {season}: {count:>8,}")
 
         # ── Null checks ──
-        print(f"\n  🔍 Null Checks:")
+        print("\n  🔍 Null Checks:")
         null_player = session.execute(
             select(func.count()).select_from(Shot).where(Shot.player_id.is_(None))
         ).scalar()
@@ -73,7 +72,7 @@ def validate_database():
         print(f"     Shots with null coords:    {null_coords}")
 
         # ── Player physical data coverage ──
-        print(f"\n  🏀 Player Physical Data:")
+        print("\n  🏀 Player Physical Data:")
         total_players = session.execute(select(func.count(Player.player_id.distinct()))).scalar()
         has_height = session.execute(
             select(func.count(Player.player_id.distinct())).where(Player.height.isnot(None))
@@ -104,7 +103,7 @@ def validate_database():
         print(f"     Wingspan source 2K:       {twok_wingspan} ({twok_wingspan/max(total_players,1)*100:.1f}%)")
 
         # ── Zone stats coverage ──
-        print(f"\n  📊 Zone Stats Coverage:")
+        print("\n  📊 Zone Stats Coverage:")
         zone_player_seasons = session.execute(
             select(func.count(PlayerZoneStats.player_id.distinct()))
         ).scalar()
@@ -115,7 +114,7 @@ def validate_database():
         print(f"     Total zone-stat rows:          {zone_rows_total:,}")
 
         # ── Spot check: a well-known player ──
-        print(f"\n  🔎 Spot Check (LeBron James, player_id=2544):")
+        print("\n  🔎 Spot Check (LeBron James, player_id=2544):")
         lebron = session.execute(
             select(Player).where(Player.player_id == "2544").order_by(Player.season.desc())
         ).scalars().first()
@@ -137,7 +136,7 @@ def validate_database():
             print("     ✗ Not found in DB")
 
         # ── Zone distribution ──
-        print(f"\n  📊 Shot Zone Distribution:")
+        print("\n  📊 Shot Zone Distribution:")
         result = session.execute(
             select(Shot.zone, func.count(), func.avg(Shot.shot_made))
             .group_by(Shot.zone)
@@ -235,9 +234,9 @@ def _check_players(seasons, Session):
 
     if issues:
         print(f"\n     🚨 {len(issues)} season(s) have incomplete physical data!")
-        print(f"     Re-run bootstrap to backfill missing height/weight.")
+        print("     Re-run bootstrap to backfill missing height/weight.")
     else:
-        print(f"\n     ✅ All seasons have 80%+ height/weight coverage.")
+        print("\n     ✅ All seasons have 80%+ height/weight coverage.")
     return issues
 
 
@@ -277,7 +276,7 @@ def run_bootstrap(seasons: list[str]):
     """Run the full bootstrap pipeline."""
     start_time = datetime.now()
     print(f"\n{'='*60}")
-    print(f"  NBA SHOT QUALITY ENGINE — BOOTSTRAP")
+    print("  NBA SHOT QUALITY ENGINE — BOOTSTRAP")
     print(f"  Seasons: {seasons[0]} → {seasons[-1]} ({len(seasons)} seasons)")
     print(f"  Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
@@ -296,7 +295,7 @@ def run_bootstrap(seasons: list[str]):
     print("\n" + "━" * 40)
     print("  Step 2/5: Game Metadata")
     print("━" * 40)
-    game_count = ingest_games(seasons)
+    ingest_games(seasons)
     all_issues += _check_games(seasons, Session)
 
     # Step 3: Phase 1 (Roster) & Phase 2 (Physicals: NBA API → BRef → 2K)
@@ -320,13 +319,13 @@ def run_bootstrap(seasons: list[str]):
     print("\n" + "━" * 40)
     print("  Step 4/6: Shot Chart Data (this takes a while...)")
     print("━" * 40)
-    shot_count = ingest_shots(seasons)
+    ingest_shots(seasons)
     all_issues += _check_shots(seasons, Session)
 
     # Summary
     elapsed = datetime.now() - start_time
     print(f"\n{'='*60}")
-    print(f"  BOOTSTRAP COMPLETE")
+    print("  BOOTSTRAP COMPLETE")
     print(f"  Elapsed: {elapsed}")
     print(f"{'='*60}\n")
 
@@ -340,10 +339,10 @@ def run_bootstrap(seasons: list[str]):
         print(f"{'='*60}")
         for issue in all_issues:
             print(f"     • {issue}")
-        print(f"\n  Re-run bootstrap to attempt backfill.")
+        print("\n  Re-run bootstrap to attempt backfill.")
         print(f"{'='*60}\n")
     else:
-        print(f"\n  ✅ All per-season sanity checks passed!\n")
+        print("\n  ✅ All per-season sanity checks passed!\n")
 
     # Run full validation
     validate_database()

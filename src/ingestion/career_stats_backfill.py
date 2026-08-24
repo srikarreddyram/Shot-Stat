@@ -29,7 +29,7 @@ def backfill_career_stats():
     engine = get_engine()
 
     print(f"\n{'='*60}")
-    print(f"  CAREER STATS BACKFILL")
+    print("  CAREER STATS BACKFILL")
     print(f"{'='*60}")
 
     # Step 1: Aggregate FGM/FGA and 3PM/3PA per player per season
@@ -122,7 +122,7 @@ def backfill_career_stats():
         still_null = total - filled
 
     print(f"\n{'='*60}")
-    print(f"  CAREER STATS BACKFILL COMPLETE")
+    print("  CAREER STATS BACKFILL COMPLETE")
     print(f"  Updated:     {total_updated:,} player-season rows")
     print(f"  Coverage:    {filled:,} / {total:,} ({filled/max(total,1)*100:.1f}%)")
     print(f"  Still NULL:  {still_null:,} (players with no shots in DB)")

@@ -10,7 +10,6 @@ Usage:
 import sys
 from pathlib import Path
 import pandas as pd
-from sqlalchemy import text
 from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))

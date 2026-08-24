@@ -53,12 +53,11 @@ def backfill_positions(seasons: list[str]):
 
     all_teams = nba_teams_static.get_teams()
     print(f"\n{'='*60}")
-    print(f"  POSITION BACKFILL")
+    print("  POSITION BACKFILL")
     print(f"  {len(seasons)} seasons × {len(all_teams)} teams = {len(seasons) * len(all_teams)} API calls")
     print(f"{'='*60}")
 
     total_updated = 0
-    total_not_found = 0
     failed_calls = []
 
     for season in seasons:
@@ -115,7 +114,7 @@ def backfill_positions(seasons: list[str]):
         print(f"  ✓ {season}: {season_updated} positions updated, {season_skipped} already had position or not in DB")
 
     print(f"\n{'='*60}")
-    print(f"  POSITION BACKFILL COMPLETE")
+    print("  POSITION BACKFILL COMPLETE")
     print(f"  Total updated:  {total_updated:,}")
     if failed_calls:
         print(f"  Failed calls:   {len(failed_calls)}")

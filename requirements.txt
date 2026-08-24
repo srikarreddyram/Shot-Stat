@@ -1,7 +1,22 @@
 nba_api>=1.4.1
 sqlalchemy>=2.0
 pandas>=2.0
+numpy>=1.24
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=4.9
 tqdm>=4.65
+
+# Analytics engine for the training-matrix build. Reads the existing SQLite
+# file in place — the storage layout does not change — but scans 2M+ rows with
+# ten joins far faster than SQLite can.
+duckdb>=1.0
+
+# Training / inference (src/training, src/inference)
+xgboost>=2.0
+scikit-learn>=1.3
+scipy>=1.11        # Beta posteriors for shrinkage intervals
+joblib>=1.3
+fastapi>=0.100
+uvicorn>=0.23
+pydantic>=2.0

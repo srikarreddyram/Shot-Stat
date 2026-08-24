@@ -15,7 +15,6 @@ from sqlalchemy import select, update
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-import config
 from src.db.database import get_engine, get_session_factory
 from src.db.models import Player
 

@@ -1,249 +1,229 @@
 """
-Probability Calibration — Makes model predictions match real-world FG percentages.
+Probability calibration — fit on out-of-fold predictions.
 
-XGBoost's raw probabilities are often poorly calibrated (e.g., predicts 88% when the
-real FG% is 73%). Isotonic Regression learns a monotonic mapping from raw predictions
-to calibrated probabilities using a held-out calibration set.
+The bug this replaces
+---------------------
+The previous implementation fit the isotonic calibrator on predictions the
+model made about its OWN TRAINING ROWS:
 
-Usage:
-    # During training (called by train_baseline.py):
-    from src.training.calibration import fit_calibrator, apply_calibration
+    xgb_train_preds_int = xgb_interior.predict_proba(X_train_int)[:, 1]
+    calibrator_int, _, _ = fit_calibrator(xgb_train_preds_int, y_train_int)
 
-    calibrator = fit_calibrator(raw_preds, y_true)
-    calibrated = apply_calibration(calibrator, raw_preds)
+Holding out 15% of those rows inside `fit_calibrator` did not help: the model
+had already seen all of them during fitting. A boosted tree ensemble is
+sharply overconfident on rows it has memorized — its training-set predictions
+are much closer to the truth than its test-set predictions at the same nominal
+probability. So the calibrator learned "when the model says 0.72, reality is
+0.72", which is true in-sample and false out-of-sample, and it then applied
+that near-identity mapping to genuinely new shots that needed real correction.
 
-    # Verification:
-    python -m src.training.calibration --verify
+The fix
+-------
+Calibrate on predictions made about data the model did not train on. Two
+supported modes:
+
+  out-of-fold (default) — the fit window is split into K chronological folds;
+      a model is trained on the folds before each one and predicts it. Every
+      fit row ends up with a prediction from a model that never saw it, so the
+      calibrator sees the full data range with honest probabilities. Costs K
+      extra fits.
+
+  holdout — a dedicated season, excluded from fitting, is predicted once and
+      used to fit the calibrator. Cheaper, but the calibrator only sees one
+      season's worth of the probability range.
+
+Isotonic regression is kept over Platt scaling. The miscalibration here is not
+a monotone sigmoid distortion — it is zone-dependent and lumpy, especially at
+the rim where the true rate saturates near 0.65 — and isotonic can follow that
+where a two-parameter sigmoid cannot.
 """
-import sys
-from pathlib import Path
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
-import joblib
+import pandas as pd
 from sklearn.isotonic import IsotonicRegression
-from sklearn.model_selection import train_test_split
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+# Predictions are clipped away from 0 and 1 so downstream log-loss stays finite
+# even if a calibration bin happens to be pure.
+_EPS = 1e-4
 
 
-def fit_calibrator(
-    raw_preds: np.ndarray,
-    y_true: np.ndarray,
-    calibration_fraction: float = 0.15,
-    random_state: int = 42,
-) -> tuple:
+@dataclass
+class Calibrator:
     """
-    Fit an isotonic regression calibrator on a held-out fraction of the data.
+    A fitted isotonic mapping plus a record of how it was fit.
 
-    Args:
-        raw_preds: Raw model probabilities (from XGBoost predict_proba)
-        y_true: Actual outcomes (0/1)
-        calibration_fraction: Fraction of data to hold out for calibration
-        random_state: Random seed for reproducibility
-
-    Returns:
-        (calibrator, cal_indices, eval_indices):
-            - calibrator: fitted IsotonicRegression object
-            - cal_indices: indices used for calibration fitting
-            - eval_indices: remaining indices for evaluation
+    `method` and `n_calibration_rows` are stored because a calibrator fit
+    in-sample and one fit out-of-fold are not interchangeable objects, and the
+    difference is invisible once the mapping is serialized. Persisting the
+    provenance means a loaded model can say how its probabilities were made.
     """
-    n = len(raw_preds)
-    indices = np.arange(n)
+    iso: IsotonicRegression
+    method: str
+    n_calibration_rows: int
 
-    # Split into calibration set and evaluation set
-    eval_idx, cal_idx = train_test_split(
-        indices, test_size=calibration_fraction, random_state=random_state
-    )
+    def predict(self, raw_preds) -> np.ndarray:
+        raw = np.asarray(raw_preds, dtype=float)
+        return np.clip(self.iso.predict(raw), _EPS, 1 - _EPS)
 
-    cal_preds = raw_preds[cal_idx]
-    cal_true = y_true[cal_idx]
+    def to_dict(self) -> dict:
+        """
+        Serialize as plain knots rather than pickling the sklearn object.
 
-    # Fit isotonic regression: learns the monotonic mapping raw → calibrated
-    calibrator = IsotonicRegression(
-        y_min=0.01,  # avoid exact 0
-        y_max=0.99,  # avoid exact 1
-        out_of_bounds="clip",
-    )
-    calibrator.fit(cal_preds, cal_true)
+        A joblib of an IsotonicRegression pins the sklearn version that wrote
+        it; a pair of float arrays does not. Model artifacts outlive the
+        environment that produced them, and a calibrator that fails to load
+        after a routine dependency bump silently degrades every probability
+        the API serves.
+        """
+        return {
+            "x": np.asarray(self.iso.X_thresholds_, dtype=float).tolist(),
+            "y": np.asarray(self.iso.y_thresholds_, dtype=float).tolist(),
+            "method": self.method,
+            "n_calibration_rows": self.n_calibration_rows,
+        }
 
-    return calibrator, cal_idx, eval_idx
-
-
-def apply_calibration(calibrator: IsotonicRegression, raw_preds: np.ndarray) -> np.ndarray:
-    """Apply the fitted calibrator to raw model predictions."""
-    return calibrator.predict(raw_preds)
-
-
-def save_calibrator(calibrator: IsotonicRegression, model_dir: str, version: str):
-    """Save the calibrator alongside the model."""
-    path = Path(model_dir) / f"calibrator_{version}.joblib"
-    joblib.dump(calibrator, path)
-    print(f"  ✓ Saved calibrator to {path}")
-
-
-def load_calibrator(model_dir: str, version: str) -> IsotonicRegression:
-    """Load a previously saved calibrator."""
-    path = Path(model_dir) / f"calibrator_{version}.joblib"
-    if not path.exists():
-        return None
-    return joblib.load(path)
+    @classmethod
+    def from_dict(cls, payload: dict) -> "Calibrator":
+        iso = IsotonicRegression(y_min=_EPS, y_max=1 - _EPS, out_of_bounds="clip")
+        x = np.asarray(payload["x"], dtype=float)
+        y = np.asarray(payload["y"], dtype=float)
+        iso.fit(x, y)
+        return cls(iso=iso, method=payload.get("method", "unknown"),
+                   n_calibration_rows=int(payload.get("n_calibration_rows", 0)))
 
 
-def print_calibration_report(
-    raw_preds: np.ndarray,
-    calibrated_preds: np.ndarray,
-    y_true: np.ndarray,
-    zones: np.ndarray = None,
-):
+def _fit_isotonic(raw_preds, y_true, method: str) -> Calibrator:
+    iso = IsotonicRegression(y_min=_EPS, y_max=1 - _EPS, out_of_bounds="clip")
+    iso.fit(np.asarray(raw_preds, dtype=float), np.asarray(y_true, dtype=float))
+    return Calibrator(iso=iso, method=method, n_calibration_rows=int(len(y_true)))
+
+
+def out_of_fold_predictions(
+    model_factory,
+    X: pd.DataFrame,
+    y: pd.Series,
+    order: pd.Series | None = None,
+    n_folds: int = 3,
+    verbose: bool = True,
+) -> np.ndarray:
     """
-    Print a calibration report comparing raw vs calibrated predictions.
+    Chronological out-of-fold predictions over the fit window.
 
-    Shows how well the predicted probabilities match actual make rates
-    across decile bins and (optionally) per zone.
+    Folds are expanding-window, not shuffled K-fold: fold i trains on
+    everything before it and predicts only forward. Shuffled folds would let a
+    model calibrate using March to predict November of the same season, which
+    is the same time-travel the point-in-time feature work removed.
+
+    The first fold has no earlier data to train on and is left unpredicted;
+    those rows are dropped from calibration by the NaN mask.
+
+    `model_factory` must return a fresh, unfitted estimator each call.
     """
-    from sklearn.metrics import log_loss, brier_score_loss
+    n = len(X)
+    if order is not None:
+        sort_idx = np.argsort(np.asarray(order), kind="stable")
+    else:
+        sort_idx = np.arange(n)
 
-    print(f"\n{'='*60}")
-    print(f"  CALIBRATION REPORT")
-    print(f"{'='*60}")
+    X_sorted = X.iloc[sort_idx]
+    y_sorted = np.asarray(y)[sort_idx]
 
-    # Overall metrics
-    raw_ll = log_loss(y_true, raw_preds)
-    cal_ll = log_loss(y_true, calibrated_preds)
-    raw_brier = brier_score_loss(y_true, raw_preds)
-    cal_brier = brier_score_loss(y_true, calibrated_preds)
+    preds_sorted = np.full(n, np.nan)
+    bounds = np.linspace(0, n, n_folds + 1).astype(int)
 
-    print(f"\n  {'Metric':<25} {'Raw':>10} {'Calibrated':>12} {'Change':>10}")
-    print(f"  {'-'*25} {'-'*10} {'-'*12} {'-'*10}")
-    print(f"  {'Log-Loss':<25} {raw_ll:>10.4f} {cal_ll:>12.4f} {(cal_ll-raw_ll):>+10.4f}")
-    print(f"  {'Brier Score':<25} {raw_brier:>10.4f} {cal_brier:>12.4f} {(cal_brier-raw_brier):>+10.4f}")
-
-    # Decile calibration: bin predictions into 10 groups and compare predicted vs actual
-    print(f"\n  Decile Calibration (predicted → actual):")
-    print(f"  {'Bin':>6} {'Pred Avg':>10} {'Actual FG%':>12} {'Gap':>8} {'Count':>8}")
-    print(f"  {'-'*6} {'-'*10} {'-'*12} {'-'*8} {'-'*8}")
-
-    # Use calibrated predictions for binning
-    bin_edges = np.linspace(0, 1, 11)
-    for i in range(10):
-        mask = (calibrated_preds >= bin_edges[i]) & (calibrated_preds < bin_edges[i + 1])
-        if mask.sum() == 0:
+    for i in range(1, n_folds):
+        train_end = bounds[i]
+        pred_start, pred_end = bounds[i], bounds[i + 1]
+        if pred_end - pred_start < 1 or train_end < 1000:
             continue
-        pred_avg = calibrated_preds[mask].mean()
-        actual_avg = y_true[mask].mean()
-        gap = pred_avg - actual_avg
-        count = mask.sum()
-        icon = "✅" if abs(gap) < 0.03 else "⚠️" if abs(gap) < 0.05 else "❌"
-        bin_label = f"{bin_edges[i]:.1f}-{bin_edges[i+1]:.1f}"
-        print(f"  {icon} {bin_label:>5} {pred_avg:>10.3f} {actual_avg:>12.3f} {gap:>+8.3f} {count:>8,}")
 
-    # Per-zone calibration (if zones provided)
-    if zones is not None:
-        print(f"\n  Per-Zone Calibration:")
-        print(f"  {'Zone':<30} {'Pred Avg':>10} {'Actual FG%':>12} {'Gap':>8}")
-        print(f"  {'-'*30} {'-'*10} {'-'*12} {'-'*8}")
+        if verbose:
+            print(f"      fold {i}/{n_folds - 1}: fit {train_end:,} → "
+                  f"predict {pred_end - pred_start:,}")
 
-        for zone in sorted(np.unique(zones)):
-            mask = zones == zone
-            if mask.sum() < 100:
-                continue
-            pred_avg = calibrated_preds[mask].mean()
-            actual_avg = y_true[mask].mean()
-            gap = pred_avg - actual_avg
-            icon = "✅" if abs(gap) < 0.02 else "⚠️"
-            print(f"  {icon} {zone:<28} {pred_avg:>10.3f} {actual_avg:>12.3f} {gap:>+8.3f}")
+        model = model_factory()
+        model.fit(X_sorted.iloc[:train_end], y_sorted[:train_end], verbose=False)
+        preds_sorted[pred_start:pred_end] = model.predict_proba(
+            X_sorted.iloc[pred_start:pred_end]
+        )[:, 1]
 
-    print()
+    # Undo the sort so the caller gets predictions aligned to its own rows.
+    preds = np.full(n, np.nan)
+    preds[sort_idx] = preds_sorted
+    return preds
 
 
-def save_calibration_plot(
-    raw_preds: np.ndarray,
-    calibrated_preds: np.ndarray,
-    y_true: np.ndarray,
-    model_dir: str,
-    version: str,
-):
-    """Save a reliability diagram (calibration curve) as a PNG."""
+def fit_calibrator_oof(
+    model_factory,
+    X: pd.DataFrame,
+    y: pd.Series,
+    order: pd.Series | None = None,
+    n_folds: int = 3,
+    verbose: bool = True,
+) -> Calibrator:
+    """Fit a calibrator on chronological out-of-fold predictions."""
+    if verbose:
+        print(f"    → out-of-fold calibration ({n_folds} chronological folds)")
+    oof = out_of_fold_predictions(model_factory, X, y, order=order,
+                                  n_folds=n_folds, verbose=verbose)
+    mask = ~np.isnan(oof)
+    if mask.sum() < 1000:
+        raise ValueError(
+            f"only {mask.sum()} out-of-fold predictions available; "
+            "too few to calibrate on"
+        )
+    return _fit_isotonic(oof[mask], np.asarray(y)[mask], method=f"oof-{n_folds}fold")
+
+
+def fit_calibrator_holdout(raw_preds, y_true) -> Calibrator:
+    """
+    Fit on predictions over a holdout the model never trained on.
+
+    The caller is responsible for that guarantee — this function cannot verify
+    it, and getting it wrong silently reproduces the original bug.
+    """
+    return _fit_isotonic(raw_preds, y_true, method="holdout")
+
+
+def calibration_report(y_true, raw_preds, calibrated_preds, n_bins: int = 10) -> pd.DataFrame:
+    """Side-by-side reliability table for raw vs calibrated predictions."""
+    from src.training.evaluate import reliability_table
+
+    raw_table = reliability_table(y_true, raw_preds, n_bins=n_bins)
+    cal_table = reliability_table(y_true, calibrated_preds, n_bins=n_bins)
+    return raw_table.merge(cal_table, on="bin", suffixes=("_raw", "_cal"))
+
+
+def save_calibration_plot(y_true, raw_preds, calibrated_preds, path,
+                          title: str = "Calibration") -> bool:
+    """Reliability diagram. Returns False if matplotlib is unavailable."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from sklearn.calibration import calibration_curve
+    except Exception:
+        return False
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    from src.training.evaluate import reliability_table
 
-        # Left: calibration curves
-        ax = axes[0]
-        for preds, label, color in [
-            (raw_preds, "Raw XGBoost", "#f97316"),
-            (calibrated_preds, "Calibrated", "#22c55e"),
-        ]:
-            prob_true, prob_pred = calibration_curve(y_true, preds, n_bins=20, strategy="uniform")
-            ax.plot(prob_pred, prob_true, "s-", label=label, color=color, linewidth=2)
+    raw_table = reliability_table(y_true, raw_preds, n_bins=12)
+    cal_table = reliability_table(y_true, calibrated_preds, n_bins=12)
 
-        ax.plot([0, 1], [0, 1], "k--", alpha=0.5, label="Perfect calibration")
-        ax.set_xlabel("Predicted Probability")
-        ax.set_ylabel("Actual FG%")
-        ax.set_title(f"Calibration Curve ({version})")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        # Right: prediction distributions
-        ax = axes[1]
-        ax.hist(raw_preds, bins=50, alpha=0.5, label="Raw", color="#f97316", density=True)
-        ax.hist(calibrated_preds, bins=50, alpha=0.5, label="Calibrated", color="#22c55e", density=True)
-        ax.set_xlabel("Predicted Probability")
-        ax.set_ylabel("Density")
-        ax.set_title("Prediction Distribution")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        path = Path(model_dir) / f"calibration_curve_{version}.png"
-        fig.savefig(str(path), dpi=150)
-        plt.close(fig)
-        print(f"  ✓ Saved calibration plot to {path}")
-    except Exception as e:
-        print(f"  ⚠ Could not save calibration plot: {e}")
-
-
-# ── CLI entry point ─────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--verify", action="store_true", help="Verify calibration quality")
-    parser.add_argument("--version", type=str, default="v2", help="Model version to verify")
-    args = parser.parse_args()
-
-    if args.verify:
-        import xgboost as xgb
-        import pandas as pd
-
-        from src.training.feature_engineering import build_training_matrix, get_feature_columns, TARGET_COL
-        import config
-
-        print("Loading model and data for calibration verification...")
-        seasons = [s for s in config.ALL_SEASONS if s >= "2016-17"]
-        df = build_training_matrix(seasons, use_defender=True)
-        feature_cols = get_feature_columns(df)
-
-        test_df = df[df["season"] == seasons[-1]].copy()
-        X_test = test_df[feature_cols]
-        y_test = test_df[TARGET_COL].values
-
-        model = xgb.XGBClassifier()
-        model.load_model(f"models/xgb_{args.version}.json")
-        raw_preds = model.predict_proba(X_test)[:, 1]
-
-        calibrator = load_calibrator("models", args.version)
-        if calibrator is None:
-            print("No calibrator found — fitting one now...")
-            calibrator, _, _ = fit_calibrator(raw_preds, y_test)
-
-        calibrated = apply_calibration(calibrator, raw_preds)
-        print_calibration_report(raw_preds, calibrated, y_test, zones=test_df["zone"].values)
-        save_calibration_plot(raw_preds, calibrated, y_test, "models", args.version)
-    else:
-        print("Use --verify to check calibration quality")
-        print("Calibration is automatically applied during training (train_baseline.py)")
+    fig, ax = plt.subplots(figsize=(6.5, 6.5))
+    ax.plot([0, 1], [0, 1], "--", color="#94a3b8", lw=1, label="perfect")
+    ax.plot(raw_table["predicted"], raw_table["actual"], "o-",
+            color="#ef4444", label="raw")
+    ax.plot(cal_table["predicted"], cal_table["actual"], "o-",
+            color="#22c55e", label="calibrated")
+    ax.set_xlabel("Predicted probability")
+    ax.set_ylabel("Observed frequency")
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(str(path), dpi=150)
+    plt.close(fig)
+    return True

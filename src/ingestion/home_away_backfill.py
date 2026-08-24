@@ -54,7 +54,7 @@ def backfill_home_away():
     engine = get_engine()
 
     print(f"\n{'='*60}")
-    print(f"  HOME/AWAY BACKFILL")
+    print("  HOME/AWAY BACKFILL")
     print(f"{'='*60}")
 
     # Step 1: Build player_id -> team_abbreviation mapping per season
@@ -175,7 +175,7 @@ def backfill_home_away():
             total_updated += len(batch)
 
     print(f"\n{'='*60}")
-    print(f"  HOME/AWAY BACKFILL COMPLETE")
+    print("  HOME/AWAY BACKFILL COMPLETE")
     print(f"  Updated:    {total_updated:,}")
     print(f"  Unresolved: {total_unresolved:,} (traded mid-season or missing game)")
     print(f"{'='*60}\n")

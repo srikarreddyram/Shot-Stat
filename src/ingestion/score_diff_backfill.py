@@ -19,7 +19,6 @@ import sys
 import time
 import re
 from pathlib import Path
-from collections import defaultdict
 
 from nba_api.stats.endpoints import playbyplayv3
 from nba_api.stats.static import teams as nba_teams_static
@@ -220,11 +219,11 @@ def backfill_score_diff(season=None):
     engine = get_engine()
 
     print(f"\n{'='*60}")
-    print(f"  SCORE DIFFERENTIAL BACKFILL")
+    print("  SCORE DIFFERENTIAL BACKFILL")
     if season:
         print(f"  Season: {season}")
     else:
-        print(f"  All seasons")
+        print("  All seasons")
     print(f"{'='*60}")
 
     # Get games needing processing
@@ -260,7 +259,7 @@ def backfill_score_diff(season=None):
         time.sleep(config.REQUEST_DELAY)
 
     print(f"\n{'='*60}")
-    print(f"  SCORE DIFF BACKFILL COMPLETE")
+    print("  SCORE DIFF BACKFILL COMPLETE")
     print(f"  Shots updated:  {total_updated:,}")
     print(f"  Games failed:   {total_errors:,}")
     print(f"{'='*60}\n")

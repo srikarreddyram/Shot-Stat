@@ -24,7 +24,7 @@ def link_defenders():
     engine = get_engine()
 
     print(f"\n{'='*60}")
-    print(f"  DEFENDER LINKER")
+    print("  DEFENDER LINKER")
     print(f"{'='*60}")
 
     # Check current state
@@ -52,7 +52,7 @@ def link_defenders():
         return 0
 
     # Process in chunks by game_id to avoid massive single UPDATE
-    print(f"\n  → Linking defenders to shots...")
+    print("\n  → Linking defenders to shots...")
 
     with engine.connect() as conn:
         game_ids = conn.execute(text(
@@ -94,7 +94,7 @@ def link_defenders():
         still_null = total_shots - final_linked
 
     print(f"\n{'='*60}")
-    print(f"  DEFENDER LINKER COMPLETE")
+    print("  DEFENDER LINKER COMPLETE")
     print(f"  Newly linked:  {total_linked:,}")
     print(f"  Total linked:  {final_linked:,} / {total_shots:,} ({final_linked/total_shots*100:.1f}%)")
     print(f"  Still NULL:    {still_null:,} (pre-2016 seasons or missing matchup data)")

@@ -58,7 +58,7 @@ def ingest_defender_stats(seasons: list[str]):
 
     total_calls = len(seasons) * len(SEASON_TYPES) * len(DEFENSE_CATEGORIES)
     print(f"\n{'='*60}")
-    print(f"  DEFENDER STATS INGESTOR")
+    print("  DEFENDER STATS INGESTOR")
     print(f"  {len(seasons)} seasons × {len(SEASON_TYPES)} types × {len(DEFENSE_CATEGORIES)} categories = {total_calls} API calls")
     print(f"{'='*60}")
 
@@ -145,7 +145,7 @@ def ingest_defender_stats(seasons: list[str]):
         print(f"  ✓ {season}: {season_count:,} defender stat rows")
 
     print(f"\n{'='*60}")
-    print(f"  DEFENDER STATS INGESTOR COMPLETE")
+    print("  DEFENDER STATS INGESTOR COMPLETE")
     print(f"  Total upserted: {total_upserted:,}")
     if total_errors:
         print(f"  Errors: {total_errors}")

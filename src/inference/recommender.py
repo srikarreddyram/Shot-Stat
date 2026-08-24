@@ -1,600 +1,855 @@
 """
-Recommendation Engine — Scores all viable court locations for a player+defender matchup.
+Recommendation engine — ranks court locations for a player/defender matchup.
 
-Given an attacker, defender, and game state, this module:
-1. Generates a grid of candidate shot locations across all 6 court zones
-2. Constructs the full feature vector for each candidate
-3. Runs the XGBoost model over all candidates in a single batch
-4. Returns the top-N shot recommendations ranked by Expected Points (EP)
+Rewritten around three changes.
+
+1. It shares the training code path
+------------------------------------
+Every feature is now produced by `src.features.spec.derive_features`, the same
+function that builds the training matrix. The previous version rebuilt forty
+features by hand in a Python dict that had to be kept in lockstep with a large
+SQL query by eye; any drift between them was a silent accuracy bug that no
+test could catch. `tests/test_train_serve_parity.py` now asserts the two paths
+agree on real historical shots.
+
+2. It answers the question the product is actually asking
+----------------------------------------------------------
+The model estimates P(make | a shot was taken here). Ranking by that alone
+recommends the restricted area to every player on earth, because the rim is
+the most efficient spot on the floor for everyone and the entire difficulty is
+getting there. So expected points are now paired with an attainability
+estimate — how readily this specific player can generate this specific look,
+which is largely a question of handle (see `src/training/attainability.py`).
+The two are reported separately and combined into the ranking score, so the
+interface can distinguish "this would be a great shot for you" from "this is a
+shot you can get".
+
+3. It admits what it does not know
+-----------------------------------
+Every projection carries a credible interval derived from how many attempts
+actually back it. A corner-three number built on nine attempts and one built
+on nine hundred used to render identically. They no longer do.
 
 Usage:
     from src.inference.recommender import ShotRecommender
-    rec = ShotRecommender(model_version="v1")
-    recs = rec.recommend(player_id="2544", season="2023-24", ...)
+    rec = ShotRecommender()
+    out = rec.recommend(player_id="1629029", defender_id="203999")
 """
+from __future__ import annotations
+
+import json
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import joblib
 import xgboost as xgb
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+import config
+from src.features.creation import CREATION_FEATURE_COLS
+from src.features.mechanics import (
+    expand_grid_over_mechanics,
+    league_zone_mix,
+    marginalize,
+    player_zone_mix,
+)
+from src.features.point_in_time import (
+    ZONE_SUFFIX,
+    apply_hierarchy,
+    league_average_defender,
+    lookup_prior_counts,
+    lookup_recent_form,
+)
+from src.features.shrinkage import BetaPrior, posterior_interval
+from src.features.spec import (
+    ZONE_TO_DEF_CATEGORY,
+    as_model_matrix,
+    derive_features,
+)
 from src.db.database import get_engine
+from src.training.calibration import Calibrator
+
+MODEL_DIR = Path(config.PROJECT_ROOT) / "models"
+
+# How much of a shooter's possessions a specifically-named primary defender is
+# taken to account for. Chosen against the training distribution of
+# `def_matchup_share` (mean 0.38, p99 0.71): naming a defender means a
+# concentrated assignment, but not an exclusive one, because exclusive
+# assignments essentially do not occur.
+PRIMARY_DEFENDER_SHARE = 0.60
+PRIMARY_DEFENDER_DISPERSION = 0.55
+
+ZONE_POINTS = {
+    "Restricted Area": 2, "In The Paint (Non-RA)": 2, "Mid-Range": 2,
+    "Left Corner 3": 3, "Right Corner 3": 3, "Above the Break 3": 3,
+}
 
 
-# ── Court grid: generate dense shot locations per zone ────────────────────────
-# Coordinates use NBA StaticShotChart system: (0,0) = basket, y = towards halfcourt
-# Each zone gets ~25-35 points for smooth heatmap rendering.
+# Observed shot-distance range (feet) per zone, from every shot 2016-17
+# onward. The analytic grid below can otherwise place candidates outside the
+# region where shots of that type are actually attempted — restricted-area
+# points nearly five feet out, for instance — and the model has no training
+# signal there, so it extrapolates. Filtering to the observed envelope keeps
+# every scored location one the model has genuinely seen.
+ZONE_DISTANCE_RANGE = {
+    "Restricted Area": (0.0, 3.0),
+    "In The Paint (Non-RA)": (4.0, 15.0),
+    "Mid-Range": (8.0, 23.0),
+    "Left Corner 3": (22.0, 26.0),
+    "Right Corner 3": (22.0, 26.0),
+    "Above the Break 3": (23.0, 32.0),
+}
 
-def _generate_court_grid():
-    """Generate ~180 candidate shot locations evenly distributed across all 6 zones."""
-    grid = []
 
-    def _add(loc_x, loc_y, zone, shot_type):
-        dist = np.sqrt(loc_x**2 + loc_y**2) / 10.0  # convert to feet
+def _generate_court_grid() -> list[dict]:
+    """
+    Candidate shot locations across all six zones.
+
+    Coordinates are NBA shot-chart units: the basket is (0, 0), ten units to
+    the foot, y increasing toward half court. Zone membership is assigned by
+    construction here rather than recomputed from coordinates, so a grid point
+    can never disagree with the zone whose statistics it is scored against.
+    """
+    grid: list[dict] = []
+
+    def add(loc_x, loc_y, zone, shot_type):
+        distance = round(float(np.hypot(loc_x, loc_y)) / 10.0, 1)
+        low, high = ZONE_DISTANCE_RANGE[zone]
+        if not (low <= distance <= high):
+            return
         grid.append({
-            "loc_x": float(loc_x), "loc_y": float(loc_y),
-            "shot_distance": round(dist, 1), "zone": zone, "shot_type": shot_type,
+            "loc_x": float(loc_x),
+            "loc_y": float(loc_y),
+            "shot_distance": distance,
+            "zone": zone,
+            "shot_type": shot_type,
         })
 
-    # ── Restricted Area (radius ~40 units from basket, ~25 points) ──
     for x in np.linspace(-35, 35, 8):
         for y in np.linspace(2, 35, 4):
-            if np.sqrt(x**2 + y**2) <= 42:
-                _add(x, y, "Restricted Area", "2PT Field Goal")
+            if np.hypot(x, y) <= 42:
+                add(x, y, "Restricted Area", "2PT Field Goal")
 
-    # ── In The Paint (Non-RA): inside paint but outside RA (~30 points) ──
     for x in np.linspace(-75, 75, 7):
         for y in np.linspace(40, 90, 5):
-            d = np.sqrt(x**2 + y**2)
-            if 42 < d <= 100 and abs(x) <= 80:
-                _add(x, y, "In The Paint (Non-RA)", "2PT Field Goal")
+            if 42 < np.hypot(x, y) <= 100 and abs(x) <= 80:
+                add(x, y, "In The Paint (Non-RA)", "2PT Field Goal")
 
-    # ── Mid-Range: inside 3pt line but outside paint (~35 points) ──
     for angle in np.linspace(10, 170, 12):
-        for r in [100, 130, 160, 190]:
-            x = r * np.cos(np.radians(angle))
-            y = r * np.sin(np.radians(angle))
-            d = np.sqrt(x**2 + y**2) / 10.0
-            # Inside 3pt line (varies: ~22ft at corners, ~23.75ft at top)
-            # but outside paint
-            if d < 22.0 and d > 9.0 and y > 0:
-                _add(x, y, "Mid-Range", "2PT Field Goal")
+        for r in (100, 130, 160, 190):
+            x, y = r * np.cos(np.radians(angle)), r * np.sin(np.radians(angle))
+            d = np.hypot(x, y) / 10.0
+            if 9.0 < d < 22.0 and y > 0:
+                add(x, y, "Mid-Range", "2PT Field Goal")
 
-    # ── Left Corner 3 (y < 93, x < -220, ~10 points) ──
     for x in np.linspace(-235, -220, 4):
         for y in np.linspace(5, 85, 5):
-            d = np.sqrt(x**2 + y**2) / 10.0
-            if d >= 22.0 and y <= 93:
-                _add(x, y, "Left Corner 3", "3PT Field Goal")
+            if np.hypot(x, y) / 10.0 >= 22.0 and y <= 93:
+                add(x, y, "Left Corner 3", "3PT Field Goal")
 
-    # ── Right Corner 3 (y < 93, x > 220, ~10 points) ──
     for x in np.linspace(220, 235, 4):
         for y in np.linspace(5, 85, 5):
-            d = np.sqrt(x**2 + y**2) / 10.0
-            if d >= 22.0 and y <= 93:
-                _add(x, y, "Right Corner 3", "3PT Field Goal")
+            if np.hypot(x, y) / 10.0 >= 22.0 and y <= 93:
+                add(x, y, "Right Corner 3", "3PT Field Goal")
 
-    # ── Above the Break 3 (~35 points) ──
     for angle in np.linspace(15, 165, 14):
-        for r in [237, 250, 270]:
-            x = r * np.cos(np.radians(angle))
-            y = r * np.sin(np.radians(angle))
-            d = np.sqrt(x**2 + y**2) / 10.0
-            if d >= 23.0 and y > 93:
-                _add(x, y, "Above the Break 3", "3PT Field Goal")
+        for r in (237, 250, 270):
+            x, y = r * np.cos(np.radians(angle)), r * np.sin(np.radians(angle))
+            if np.hypot(x, y) / 10.0 >= 23.0 and y > 93:
+                add(x, y, "Above the Break 3", "3PT Field Goal")
 
     return grid
 
 
 SHOT_GRID = _generate_court_grid()
-# Also keep the sparse grid for quick recommendations
-SHOT_GRID_SPARSE = [
-    {"loc_x":   0.0, "loc_y":   5.0, "shot_distance": 1.0,  "zone": "Restricted Area",        "shot_type": "2PT Field Goal"},
-    {"loc_x":  30.0, "loc_y":   8.0, "shot_distance": 3.0,  "zone": "Restricted Area",        "shot_type": "2PT Field Goal"},
-    {"loc_x": -30.0, "loc_y":   8.0, "shot_distance": 3.0,  "zone": "Restricted Area",        "shot_type": "2PT Field Goal"},
-    {"loc_x":   0.0, "loc_y":  60.0, "shot_distance": 6.0,  "zone": "In The Paint (Non-RA)",  "shot_type": "2PT Field Goal"},
-    {"loc_x":  50.0, "loc_y":  50.0, "shot_distance": 7.0,  "zone": "In The Paint (Non-RA)",  "shot_type": "2PT Field Goal"},
-    {"loc_x": -50.0, "loc_y":  50.0, "shot_distance": 7.0,  "zone": "In The Paint (Non-RA)",  "shot_type": "2PT Field Goal"},
-    {"loc_x":   0.0, "loc_y": 140.0, "shot_distance": 14.0, "zone": "Mid-Range",              "shot_type": "2PT Field Goal"},
-    {"loc_x": 100.0, "loc_y": 100.0, "shot_distance": 14.0, "zone": "Mid-Range",              "shot_type": "2PT Field Goal"},
-    {"loc_x":-100.0, "loc_y": 100.0, "shot_distance": 14.0, "zone": "Mid-Range",              "shot_type": "2PT Field Goal"},
-    {"loc_x":-220.0, "loc_y":  10.0, "shot_distance": 22.0, "zone": "Left Corner 3",          "shot_type": "3PT Field Goal"},
-    {"loc_x":-230.0, "loc_y":  20.0, "shot_distance": 23.0, "zone": "Left Corner 3",          "shot_type": "3PT Field Goal"},
-    {"loc_x": 220.0, "loc_y":  10.0, "shot_distance": 22.0, "zone": "Right Corner 3",         "shot_type": "3PT Field Goal"},
-    {"loc_x": 230.0, "loc_y":  20.0, "shot_distance": 23.0, "zone": "Right Corner 3",         "shot_type": "3PT Field Goal"},
-    {"loc_x":   0.0, "loc_y": 240.0, "shot_distance": 24.0, "zone": "Above the Break 3",      "shot_type": "3PT Field Goal"},
-    {"loc_x":  80.0, "loc_y": 230.0, "shot_distance": 24.5, "zone": "Above the Break 3",      "shot_type": "3PT Field Goal"},
-    {"loc_x": -80.0, "loc_y": 230.0, "shot_distance": 24.5, "zone": "Above the Break 3",      "shot_type": "3PT Field Goal"},
-    {"loc_x": 160.0, "loc_y": 190.0, "shot_distance": 25.0, "zone": "Above the Break 3",      "shot_type": "3PT Field Goal"},
-    {"loc_x":-160.0, "loc_y": 190.0, "shot_distance": 25.0, "zone": "Above the Break 3",      "shot_type": "3PT Field Goal"},
-]
 
 
 class ShotRecommender:
-    """
-    Scores all viable court locations and returns ranked shot recommendations.
+    """Loads the trained models and scores court locations for a matchup."""
 
-    Loads a trained XGBoost model and metadata (feature list, train medians).
-    Constructs feature vectors for every grid point, runs batch inference,
-    and returns recommendations sorted by Expected Points.
-    """
+    def __init__(self, model_name: str = "shot-quality-v9",
+                 attainability_name: str = "attainability",
+                 model_dir: str | Path = MODEL_DIR):
+        model_dir = Path(model_dir)
 
-    def __init__(self, model_version: str = "v1", model_dir: str = "models"):
-        model_path = Path(model_dir)
+        metadata_path = model_dir / f"metadata_{model_name}.json"
+        if not metadata_path.exists():
+            raise FileNotFoundError(
+                f"No metadata at {metadata_path}. Train first: "
+                f"python -m src.training.train --name {model_name}"
+            )
+        self.metadata = json.loads(metadata_path.read_text())
+        self.feature_cols: list[str] = self.metadata["feature_cols"]
+        self.league_zone_rates: dict = self.metadata["league_zone_rates"]
 
-        # Load metadata (feature columns, train medians, zone averages)
-        self.metadata = joblib.load(model_path / f"metadata_{model_version}.joblib")
-        self.feature_cols = self.metadata["feature_cols"]
-        self.train_medians = self.metadata["train_medians"]
-        self.zone_avg = self.metadata["zone_avg"]
-        self.is_hierarchical = self.metadata.get("hierarchical", False)
+        # Priors travel with the model rather than being refit here. Refitting
+        # at serving time from whatever the database currently holds would
+        # apply a different shrinkage than the model was trained under, and the
+        # drift would be invisible.
+        self.zone_priors = {
+            zone: BetaPrior(mean=p["mean"], strength=p["strength"],
+                            n_players=p.get("n_players", 0),
+                            n_attempts=p.get("n_attempts", 0))
+            for zone, p in self.metadata["zone_priors"].items()
+        }
 
-        if self.is_hierarchical:
-            # Load Interior Model
-            self.model_interior = xgb.XGBClassifier()
-            self.model_interior.load_model(str(model_path / f"xgb_interior_{model_version}.json"))
-            
-            # Load Perimeter Model
-            self.model_perimeter = xgb.XGBClassifier()
-            self.model_perimeter.load_model(str(model_path / f"xgb_perimeter_{model_version}.json"))
-            
-            # Load Calibrators
-            cal_int_path = model_path / f"calibrator_interior_{model_version}.joblib"
-            cal_per_path = model_path / f"calibrator_perimeter_{model_version}.joblib"
-            self.calibrator_int = joblib.load(cal_int_path) if cal_int_path.exists() else None
-            self.calibrator_per = joblib.load(cal_per_path) if cal_per_path.exists() else None
-            print(f"  ✓ Hierarchical Models loaded")
+        # Per-feature training range, used to stop the serving path from
+        # extrapolating. See `_clip_to_training_range`.
+        self.feature_bounds = self.metadata.get("feature_bounds", {})
+
+        # Whether this model consumes per-shot mechanics. If it does, the
+        # serving path has to supply one per row — a hypothetical shot has no
+        # mechanic of its own, so the prediction is marginalised over the
+        # player's mix. See src/features/mechanics.py.
+        self.uses_mechanics = any(
+            c.startswith("mech_") for c in self.feature_cols
+        )
+
+        self.hierarchical = self.metadata.get("hierarchical_split", False)
+        if self.hierarchical:
+            self.models = {}
+            for label in ("interior", "perimeter"):
+                m = xgb.XGBClassifier()
+                m.load_model(str(model_dir / f"xgb_{label}_{model_name}.json"))
+                self.models[label] = m
         else:
-            # Load Monolithic Model
             self.model = xgb.XGBClassifier()
-            self.model.load_model(str(model_path / f"xgb_{model_version}.json"))
-            
-            # Load Calibrator
-            self.calibrator = None
-            cal_path = model_path / f"calibrator_{model_version}.joblib"
-            if cal_path.exists():
-                self.calibrator = joblib.load(cal_path)
-                print(f"  ✓ Monolithic Calibrator loaded")
+            self.model.load_model(str(model_dir / f"xgb_{model_name}.json"))
 
-        # DB engine for player lookups
+        self.calibration_adopted = self.metadata.get("calibration_adopted", False)
+        self.calibrators = {
+            k: Calibrator.from_dict(v)
+            for k, v in self.metadata.get("calibrators", {}).items()
+        } if self.calibration_adopted else {}
+
+        # Attainability is optional: the engine still works without it, it just
+        # cannot separate "good shot" from "gettable shot" and says so.
+        self.attainability = None
+        att_meta_path = model_dir / f"metadata_{attainability_name}.json"
+        if att_meta_path.exists():
+            self.att_metadata = json.loads(att_meta_path.read_text())
+            self.attainability = xgb.XGBRegressor()
+            self.attainability.load_model(
+                str(model_dir / f"xgb_{attainability_name}.json")
+            )
+
         self.engine = get_engine()
+        self.model_name = model_name
 
-        self.version = model_version
-        is_cal = (self.calibrator_int is not None) if self.is_hierarchical else (self.calibrator is not None)
-        print(f"✓ ShotRecommender loaded (model {model_version}, {len(self.feature_cols)} features, hierarchical={self.is_hierarchical}, calibrated={is_cal})")
+        self._league_mix = None
 
-    def _get_player_data(self, player_id: str, season: str) -> dict:
-        """Fetch a player's attributes and zone stats from the DB."""
+        print(f"✓ ShotRecommender ready — model={model_name}, "
+              f"features={len(self.feature_cols)}, "
+              f"calibrated={self.calibration_adopted}, "
+              f"attainability={'yes' if self.attainability is not None else 'no'}, "
+              f"mechanics={'marginalised' if self.uses_mechanics else 'n/a'}")
+
+    # ── Player state lookup ──────────────────────────────────────────────
+
+    def _player_row(self, player_id: str, season: str, as_of_date=None) -> dict:
+        """
+        Everything known about the shooter as of `as_of_date`, in exactly the
+        raw-column form the training builder produces.
+
+        The point-in-time counts come from `lookup_prior_counts`, whose output
+        keys match the training path's, so `apply_hierarchy` — shared with
+        training — turns them into rates identically.
+        """
         with self.engine.connect() as conn:
-            # Player attributes
-            row = conn.execute(text("""
-                SELECT name, height, weight, wingspan, position,
-                       career_fg_pct, career_3p_pct, season_fg_pct
-                FROM players
-                WHERE player_id = :pid AND season = :season
-            """), {"pid": player_id, "season": season}).fetchone()
-
-            if row is None:
-                raise ValueError(f"Player {player_id} not found in season {season}")
-
-            player = dict(row._mapping)
-
-            # Zone stats
-            zone_rows = conn.execute(text("""
-                SELECT zone, fg_pct
-                FROM player_zone_stats
-                WHERE player_id = :pid AND season = :season
-            """), {"pid": player_id, "season": season}).fetchall()
-
-            zone_stats = {r[0]: r[1] for r in zone_rows}
-
-        return {**player, "zone_stats": zone_stats}
-
-    def _get_defender_data(self, defender_id: str, season: str) -> dict:
-        """Fetch a defender's attributes and defensive stats from the DB."""
-        with self.engine.connect() as conn:
-            # Defender physical attributes
-            row = conn.execute(text("""
+            attrs = conn.execute(text("""
                 SELECT name, height, weight, wingspan, position
-                FROM players
-                WHERE player_id = :pid AND season = :season
-            """), {"pid": defender_id, "season": season}).fetchone()
+                FROM players WHERE player_id = :pid AND season <= :season
+                ORDER BY season DESC LIMIT 1
+            """), {"pid": str(player_id), "season": season}).fetchone()
 
-            if row is None:
-                return None
+            if attrs is None:
+                raise ValueError(f"Player {player_id} not found at or before {season}")
 
-            defender = dict(row._mapping)
+            counts = lookup_prior_counts(conn, player_id, as_of_date=as_of_date)
+            recent = lookup_recent_form(conn, player_id, as_of_date=as_of_date)
 
-            # Defender stats by category (now includes zone-level d_fg_pct)
-            def_rows = conn.execute(text("""
+        row = {
+            "player_id": str(player_id),
+            "name": attrs[0],
+            "height": attrs[1],
+            "weight": attrs[2],
+            "wingspan": attrs[3],
+            "position": attrs[4],
+            "season": season,
+        }
+        row.update({k: v for k, v in counts.items() if not k.startswith("_")})
+        row.update(recent)
+        row["_latest_season"] = counts.get("_latest_season")
+        return row
+
+    def _creation_row(self, player_id: str, season: str) -> dict:
+        """
+        The player's most recent creation profile strictly before `season`.
+
+        Lagged for the same reason training lags it: the current season's
+        tracking totals do not exist mid-season, and using them would make the
+        serving feature a different object than the training feature.
+        """
+        from src.features.creation import load_creation_profiles
+
+        if not hasattr(self, "_creation_cache"):
+            self._creation_cache = load_creation_profiles(self.engine)
+
+        profiles = self._creation_cache
+        rows = profiles[
+            (profiles["player_id"] == str(player_id)) & (profiles["season"] < season)
+        ]
+        if rows.empty:
+            return {}
+        latest = rows.sort_values("season").iloc[-1]
+        return {c: latest[c] for c in CREATION_FEATURE_COLS if c in latest.index}
+
+    def _defender_row(self, defender_id: str, season: str) -> dict:
+        """Defender physicals and per-category defensive quality."""
+        with self.engine.connect() as conn:
+            attrs = conn.execute(text("""
+                SELECT height, weight, wingspan, name, position FROM players
+                WHERE player_id = :pid AND season <= :season
+                ORDER BY season DESC LIMIT 1
+            """), {"pid": str(defender_id), "season": season}).fetchone()
+
+            stats = conn.execute(text("""
                 SELECT defense_category, d_fg_pct, pct_plusminus, freq
                 FROM defender_stats
-                WHERE player_id = :pid AND season = :season
-            """), {"pid": defender_id, "season": season}).fetchall()
+                WHERE player_id = :pid AND season <= :season
+                  AND season = (SELECT MAX(season) FROM defender_stats
+                                WHERE player_id = :pid AND season <= :season)
+            """), {"pid": str(defender_id), "season": season}).fetchall()
 
-            defender["def_stats"] = {
-                r[0]: {"d_fg_pct": r[1], "pct_plusminus": r[2], "freq": r[3]}
-                for r in def_rows
-            }
+        if attrs is None:
+            return {}
 
-        return defender
+        by_category = {
+            r[0]: {"d_fg_pct": r[1], "pct_plusminus": r[2], "freq": r[3]}
+            for r in stats
+        }
+        # Physicals are exposed under BOTH naming conventions: `def_*` is what
+        # the feature assembly reads, while the bare names are what
+        # `_combine_defenders` operates on. Keeping one dict with both avoids a
+        # translation step that could silently drop an attribute.
+        return {
+            "def_height": attrs[0],
+            "def_weight": attrs[1],
+            "def_wingspan": attrs[2],
+            "height": attrs[0],
+            "weight": attrs[1],
+            "wingspan": attrs[2],
+            "name": attrs[3],
+            "position": attrs[4],
+            "_by_category": by_category,
+            "def_stats": by_category,
+        }
+
+    @staticmethod
+    def _combine_defenders(primary: dict, secondary: dict) -> dict:
+        """
+        Merge two defenders into one effective defender for a double team.
+
+        There is no genuinely double-teamed shot data to learn a real effect
+        from — no row in this database records two defenders on one shot — so
+        this stays a deliberate, clearly-labelled heuristic floor rather than a
+        learned interaction:
+
+          - Physicals take the larger of the two, since a shooter facing a
+            double team has to account for whichever defender presents the
+            longer contest.
+          - Defensive quality takes, per category, whichever defender allows
+            the LOWER FG%: the shooter faces at least his toughest individual
+            defender's resistance. A conservative floor, since nothing here
+            models genuine double-team suppression beyond that.
+
+        A missing physical is never filled from the other defender. Doing so
+        would substitute a different, likely smaller player's real measurement
+        for this one's unmeasured reach — which once made a double team look
+        EASIER to score against than facing the tougher defender alone. Same
+        "exact data or nothing" rule the rest of the pipeline follows.
+        """
+        combined = dict(primary)
+        for attr in ("height", "weight", "wingspan"):
+            p_val, s_val = primary.get(attr), secondary.get(attr)
+            if p_val is not None and s_val is not None:
+                combined[attr] = max(p_val, s_val)
+
+        # Accepts either shape: the internal `_by_category` used by
+        # `_defender_row`, or the `def_stats` key the public callers pass.
+        key = "_by_category" if "_by_category" in primary else "def_stats"
+        merged = dict(primary.get(key, {}))
+        for category, s_stats in secondary.get(key, {}).items():
+            p_stats = merged.get(category)
+            if p_stats is None or p_stats.get("d_fg_pct") is None:
+                merged[category] = s_stats
+            elif (s_stats.get("d_fg_pct") is not None
+                  and s_stats["d_fg_pct"] < p_stats["d_fg_pct"]):
+                merged[category] = s_stats
+        combined[key] = merged
+
+        return combined
+
+    # ── Scoring ──────────────────────────────────────────────────────────
+
+    def _clip_to_training_range(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clamp every feature to the 1st-99th percentile range it occupied during
+        training.
+
+        The recommender is a hypothetical generator: it invents feature vectors
+        that never occurred, by design — this player, from this spot, against
+        that defender. Nothing stops it inventing one outside the region the
+        model was fitted on, and a gradient-boosted tree does not degrade
+        gracefully there. It holds whatever value the outermost leaf learned and
+        applies it with full confidence, so an out-of-range input does not
+        produce a slightly-worse estimate, it produces an arbitrary one.
+
+        That is what turned "Curry guarded by Wembanyama" into a 21-point
+        mid-range collapse. Clipping makes the worst case "the most extreme
+        matchup the data actually contains", which is a defensible answer, and
+        it costs nothing on real historical rows because 98% of them are inside
+        the bounds by construction.
+        """
+        if not self.feature_bounds:
+            return X
+        clipped = X.copy()
+        for col, (lo, hi) in self.feature_bounds.items():
+            if col in clipped.columns:
+                clipped[col] = clipped[col].clip(lo, hi)
+        return clipped
+
+    def _predict(self, X: pd.DataFrame) -> np.ndarray:
+        X = self._clip_to_training_range(X)
+        if self.hierarchical:
+            out = np.zeros(len(X))
+            interior_cols = [c for c in ("zone_is_restricted_area", "zone_is_paint")
+                             if c in X.columns]
+            m = (X[interior_cols].sum(axis=1).values > 0
+                 if interior_cols else np.zeros(len(X), dtype=bool))
+            if m.any():
+                out[m] = self.models["interior"].predict_proba(X[m])[:, 1]
+            if (~m).any():
+                out[~m] = self.models["perimeter"].predict_proba(X[~m])[:, 1]
+            if self.calibration_adopted:
+                out[m] = self.calibrators["interior"].predict(out[m])
+                out[~m] = self.calibrators["perimeter"].predict(out[~m])
+            return out
+
+        raw = self.model.predict_proba(X)[:, 1]
+        if self.calibration_adopted and "all" in self.calibrators:
+            return self.calibrators["all"].predict(raw)
+        return raw
+
+    def _attainability(self, player_row: dict, creation: dict,
+                       zones: pd.Series) -> np.ndarray:
+        """Predicted share of the player's shot diet coming from each zone."""
+        if self.attainability is None:
+            return np.full(len(zones), np.nan)
+
+        cols = self.att_metadata["feature_cols"]
+        zone_index = self.att_metadata["zone_index"]
+
+        frame = pd.DataFrame({"zone": zones.values})
+        frame["zone_index"] = frame["zone"].map(zone_index)
+        frame["is_three"] = frame["zone"].isin(
+            ["Left Corner 3", "Right Corner 3", "Above the Break 3"]
+        ).astype(int)
+        for key in ("height", "weight", "wingspan"):
+            frame[key] = player_row.get(key)
+        for key in CREATION_FEATURE_COLS:
+            frame[key] = creation.get(key, np.nan)
+
+        for col in cols:
+            if col not in frame.columns:
+                frame[col] = np.nan
+
+        return np.clip(
+            self.attainability.predict(as_model_matrix(frame, cols)), 0.0, 1.0
+        )
 
     def recommend(
         self,
         player_id: str,
-        season: str,
+        season: str | None = None,
+        defender_id: str | None = None,
+        secondary_defender_id: str | None = None,
         quarter: int = 1,
         time_remaining: float = 600.0,
         score_diff: int = 0,
         home_away: int = 1,
         playoff_flag: int = 0,
-        defender_id: str = None,
-        top_n: int = 10,
         rest_days: int = 1,
         is_back_to_back: int = 0,
         opp_def_rating: float = 112.0,
+        as_of_date=None,
+        top_n: int = 10,
+        interval_level: float = 0.90,
     ) -> pd.DataFrame:
         """
-        Score all court locations and return top-N recommendations.
+        Score every grid location and return the top-N by attainability-weighted
+        expected points.
 
-        Returns DataFrame with columns:
+        Columns returned:
             zone, loc_x, loc_y, make_probability, expected_points,
-            shot_quality_score, difficulty_score
+            ep_low / ep_high      credible interval from the attempts behind it
+            attempts_behind       prior attempts supporting this player's rate
+            attainability         predicted share of shot diet from this zone
+            score                 the ranking quantity
+            ep_vs_own_average     expected points relative to this player's
+                                  own overall average — the number worth
+                                  showing a user, since raw EP mostly restates
+                                  that threes are worth more than twos
         """
-        # Fetch player data
-        player = self._get_player_data(player_id, season)
+        if season is None:
+            with self.engine.connect() as conn:
+                season = conn.execute(
+                    text("SELECT MAX(season) FROM players")
+                ).fetchone()[0]
 
-        # Fetch defender data (optional)
-        defender = None
-        if defender_id:
-            defender = self._get_defender_data(defender_id, season)
+        player = self._player_row(player_id, season, as_of_date=as_of_date)
+        creation = self._creation_row(player_id, season)
+        defender = self._defender_row(defender_id, season) if defender_id else {}
+        if defender and secondary_defender_id:
+            secondary = self._defender_row(secondary_defender_id, season)
+            if secondary:
+                defender = self._combine_defenders(defender, secondary)
+                for attr in ("height", "weight", "wingspan"):
+                    defender[f"def_{attr}"] = defender.get(attr)
 
-        # Zone-to-defense-category mapping
-        zone_to_def_cat = {
-            "Restricted Area": "Less Than 6Ft",
-            "In The Paint (Non-RA)": "Less Than 10Ft",
-            "Mid-Range": "Greater Than 15Ft",
-            "Left Corner 3": "3 Pointers",
-            "Right Corner 3": "3 Pointers",
-            "Above the Break 3": "3 Pointers",
+        # League-average FG% allowed per defence category, the "everyone else"
+        # half of the mixture blend below.
+        with self.engine.connect() as conn:
+            league_defence = league_average_defender(conn, season)
+        league_zone_fg = {
+            cat: stats.get("d_fg_pct")
+            for cat, stats in league_defence["by_category"].items()
         }
 
-        # Zone-to-fg_pct column mapping (matches feature_engineering.py)
-        zone_to_col = {
-            "Restricted Area": "fg_pct_restricted_area",
-            "In The Paint (Non-RA)": "fg_pct_paint",
-            "Mid-Range": "fg_pct_midrange",
-            "Left Corner 3": "fg_pct_left_corner_3",
-            "Right Corner 3": "fg_pct_right_corner_3",
-            "Above the Break 3": "fg_pct_above_break_3",
+        grid = pd.DataFrame(SHOT_GRID)
+
+        # One row per (location, mechanic), weighted by how often this player
+        # actually takes that kind of shot from that zone. Without this the
+        # mechanic indicators would all be zero — a combination that appears in
+        # no training row, since every real shot has exactly one mechanic.
+        if self.uses_mechanics:
+            if self._league_mix is None:
+                self._league_mix = league_zone_mix(self.engine)
+            mix = player_zone_mix(self.engine, str(player_id), season,
+                                  league=self._league_mix)
+            grid = expand_grid_over_mechanics(grid, mix)
+
+        # ── Assemble raw columns, exactly as the training builder does ────
+        raw = grid.copy()
+        if self.uses_mechanics:
+            # derive_features classifies `shot_subtype` into mech_* indicators.
+            # The mechanic names ARE the classifier's own output vocabulary, so
+            # round-tripping them through it reproduces the training encoding
+            # exactly rather than setting the indicators by hand here.
+            raw["shot_subtype"] = grid["_mechanic"]
+        raw["player_id"] = player["player_id"]
+        raw["season"] = season
+        for key in ("height", "weight", "wingspan", "position"):
+            raw[key] = player.get(key)
+
+        game_state = {
+            "quarter": quarter,
+            "time_remaining": time_remaining,
+            "score_diff": score_diff,
+            "home_away": home_away,
+            "playoff_flag": playoff_flag,
+            "rest_days": rest_days,
+            "is_back_to_back": is_back_to_back,
+            "opp_def_rating": opp_def_rating,
         }
+        for key, value in game_state.items():
+            raw[key] = value
 
-        # Clutch flag
-        clutch_flag = int(quarter >= 4 and time_remaining <= 120 and abs(score_diff) <= 5)
+        # Point-in-time counts are identical for every grid point — the player's
+        # history does not depend on where the hypothetical shot is taken.
+        for key, value in player.items():
+            if key.startswith("pit_"):
+                raw[key] = value
+        for key in ("recent_10_fg", "recent_20_fg"):
+            raw[key] = player.get(key)
 
-        # Build feature rows for every grid point
-        rows = []
-        for pt in SHOT_GRID:
-            loc_x = pt["loc_x"]
-            loc_y = pt["loc_y"]
-            zone = pt["zone"]
+        for key in CREATION_FEATURE_COLS:
+            raw[key] = creation.get(key, np.nan)
+        raw["creation_is_prior"] = int(not creation)
 
-            # Shot-level zone efficiency for this player
-            zone_eff = player["zone_stats"].get(zone)
-
-            row = {
-                # Spatial
-                "loc_x": loc_x,
-                "loc_y": loc_y,
-                "shot_distance": pt["shot_distance"],
-                "shot_angle": np.degrees(np.arctan2(loc_y, loc_x)) if loc_x != 0 else 90.0,
-                "distance_from_center": np.sqrt(loc_x**2 + loc_y**2),
-                "abs_loc_x": abs(loc_x),
-                "is_three": 1 if pt["shot_type"] == "3PT Field Goal" else 0,
-
-                # Game context
-                "quarter": quarter,
-                "time_remaining": time_remaining,
-                "score_diff": score_diff,
-                "home_away": home_away,
-                "playoff_flag": playoff_flag,
-                "clutch_flag": clutch_flag,
-
-                # Team / schedule context (Phase D)
-                "rest_days": rest_days,
-                "is_back_to_back": is_back_to_back,
-                "opp_def_rating": opp_def_rating,
-
-                # Player ability
-                "height": player.get("height"),
-                "weight": player.get("weight"),
-                "wingspan": player.get("wingspan"),
-                "career_fg_pct": player.get("career_fg_pct"),
-                "career_3p_pct": player.get("career_3p_pct"),
-                "season_fg_pct": player.get("season_fg_pct"),
-                "zone_efficiency": zone_eff,
-
-                # Zone-level shooting (all 6 zones for this player)
-                "fg_pct_restricted_area": player["zone_stats"].get("Restricted Area"),
-                "fg_pct_paint": player["zone_stats"].get("In The Paint (Non-RA)"),
-                "fg_pct_midrange": player["zone_stats"].get("Mid-Range"),
-                "fg_pct_left_corner_3": player["zone_stats"].get("Left Corner 3"),
-                "fg_pct_right_corner_3": player["zone_stats"].get("Right Corner 3"),
-                "fg_pct_above_break_3": player["zone_stats"].get("Above the Break 3"),
-
-                # Metadata (not features, but needed for output)
-                "_zone": zone,
-                "_shot_type": pt["shot_type"],
+        if not defender:
+            # No defender named means "against a typical defender", which is
+            # not the same statement as the NaNs the training matrix carries
+            # for shots with no matchup data at all. Fill with league means so
+            # the served prediction answers the question that was asked.
+            with self.engine.connect() as conn:
+                avg = league_average_defender(conn, season)
+            defender = {
+                "def_height": avg["height"],
+                "def_weight": avg["weight"],
+                "def_wingspan": avg["wingspan"],
+                "_by_category": avg["by_category"],
+                "_is_league_average": True,
             }
 
-            # Defender features (if defender provided and data exists)
-            if defender:
-                row["def_height"] = defender.get("height")
-                row["def_weight"] = defender.get("weight")
-                row["def_wingspan"] = defender.get("wingspan")
+        def _mix_overall(value, league=0.0):
+            """Blend one defender's figure toward the rest of the assignment."""
+            if value is None:
+                return None
+            if league is None:
+                league = 0.0
+            blend = 0.37 if defender.get("_is_league_average") else PRIMARY_DEFENDER_SHARE
+            return blend * value + (1.0 - blend) * league
 
-                h = player.get("height")
-                dh = defender.get("height")
-                row["height_diff"] = (h - dh) if (h and dh) else None
-                w = player.get("weight")
-                dw = defender.get("weight")
-                row["weight_diff"] = (w - dw) if (w and dw) else None
-                ws = player.get("wingspan")
-                dws = defender.get("wingspan")
-                row["wingspan_diff"] = (ws - dws) if (ws and dws) else None
-                row["size_mismatch"] = int(abs(row["height_diff"]) >= 4) if row["height_diff"] is not None else 0
+        if defender:
+            # Assignment concentration. These must describe the matchup the way
+            # the TRAINING features do, which is the subtlety that made naming
+            # an elite defender produce nonsense.
+            #
+            # Training builds defender features as a possession-weighted mixture
+            # over everyone who guarded the shooter that game. Nobody guards one
+            # player for a whole game: `def_matchup_share` averages 0.38 and
+            # reaches only 0.71 at the 99th percentile. Setting it to 1.0 with
+            # dispersion 0.0 — as this did — described a matchup that occurs in
+            # 0.004% of training rows, and the model extrapolated wildly:
+            # Curry's above-the-break probability against Wembanyama came out at
+            # 0.141, less than half his unguarded 0.309, which no defender in
+            # basketball has ever done to anyone.
+            share = 0.37 if defender.get("_is_league_average") else PRIMARY_DEFENDER_SHARE
+            raw["def_matchup_share"] = share
+            raw["def_matchup_dispersion"] = (
+                0.75 if defender.get("_is_league_average") else PRIMARY_DEFENDER_DISPERSION
+            )
+            # Physicals get the same mixture blend as the quality stats, and
+            # for the same reason — this was the single largest error in the
+            # served vector.
+            #
+            # `def_height` in training is the possession-weighted average height
+            # of everyone who guarded the shooter, so it clusters near the
+            # league mean and `height_diff` is almost always within +/-6 inches.
+            # Feeding one defender's raw height produced Curry-vs-Wembanyama at
+            # height_diff = -14, a value with 25 supporting rows in two million.
+            # The model had fitted a ~20 point drop there off pure noise (the
+            # measured effect across every populated band is ~1 point, and
+            # flat), and the recommender drove straight into it every time a
+            # tall defender was named against a guard.
+            for attr in ("height", "weight", "wingspan"):
+                raw[f"def_{attr}"] = _mix_overall(
+                    defender.get(f"def_{attr}"), league_defence.get(attr)
+                )
 
-                # Defender quality stats — overall
-                overall = defender.get("def_stats", {}).get("Overall", {})
-                row["def_fg_pct_overall"] = overall.get("d_fg_pct")
-                row["def_pct_plusminus"] = overall.get("pct_plusminus")
+            by_category = defender.get("_by_category", {})
+            overall = by_category.get("Overall", {})
+            # Blended on the same terms as the zone-level figures below — these
+            # were left raw in the first pass at this fix, which is why naming
+            # an elite defender still moved mid-range by 21 points.
+            raw["def_fg_pct_overall"] = _mix_overall(
+                overall.get("d_fg_pct"), league_defence["by_category"]
+                .get("Overall", {}).get("d_fg_pct")
+            )
+            raw["def_pct_plusminus"] = _mix_overall(overall.get("pct_plusminus"))
 
-                # Defender zone-specific stats (now populated with correct column mapping)
-                def_cat = zone_to_def_cat.get(zone)
-                zone_def = defender.get("def_stats", {}).get(def_cat, {})
-                row["def_freq_zone"] = zone_def.get("freq")
-                row["def_fg_pct_zone"] = zone_def.get("d_fg_pct")
-                row["def_pct_plusminus_zone"] = zone_def.get("pct_plusminus")
+            categories = raw["zone"].map(ZONE_TO_DEF_CATEGORY)
 
-                # Composite: attacker zone FG% minus defender ZONE-level FG% allowed
-                # Falls back to overall if zone-level is unavailable
-                def_fg = row["def_fg_pct_zone"] or row["def_fg_pct_overall"]
-                if zone_eff is not None and def_fg is not None:
-                    row["matchup_advantage"] = zone_eff - def_fg
-                else:
-                    row["matchup_advantage"] = None
+            # The same mixture logic applied to the defender's quality. A
+            # training row's `def_pct_plusminus` is `share * this defender +
+            # (1 - share) * everyone else who guarded him`, and "everyone else"
+            # averages out to roughly league-normal. Feeding one defender's raw
+            # figure instead compares an individual against a distribution of
+            # averages: Wembanyama's -0.099 sits past the 1st percentile of the
+            # training feature, not because he is that much of an outlier as a
+            # defender, but because averages are narrower than individuals.
+            def _mix(value, league=0.0):
+                if value is None:
+                    return None
+                if league is None:
+                    league = 0.0
+                return share * value + (1.0 - share) * league
 
-            rows.append(row)
+            raw["def_fg_pct_zone"] = [
+                _mix(by_category.get(c, {}).get("d_fg_pct"), league_zone_fg.get(c))
+                for c in categories
+            ]
+            raw["def_pct_plusminus_zone"] = [
+                _mix(by_category.get(c, {}).get("pct_plusminus")) for c in categories
+            ]
+            raw["def_freq_zone"] = [
+                by_category.get(c, {}).get("freq") for c in categories
+            ]
 
-        # Convert to DataFrame
-        candidates_df = pd.DataFrame(rows)
+        # ── Shared transforms: identical to the training path ─────────────
+        raw = apply_hierarchy(raw, self.zone_priors)
+        features = derive_features(raw, league_zone_rates=self.league_zone_rates)
 
-        # Add one-hot encoded dummies (matching what the model was trained on)
-        # We need zone dummies and position dummies
-        zone_dummies = pd.get_dummies(candidates_df["_zone"], prefix="zone", drop_first=True)
-        candidates_df = pd.concat([candidates_df, zone_dummies], axis=1)
-
-        # Position dummies — attacker's position
-        pos = player.get("position")
-        if pos:
-            # Create all possible position columns that may exist in the model
-            for col in self.feature_cols:
-                if col.startswith("pos_"):
-                    candidates_df[col] = 1 if col == f"pos_{pos}" else 0
-
-        # Select only the features the model expects
-        X = candidates_df.reindex(columns=self.feature_cols)
-
-        # Fill missing columns with NaN (XGBoost handles NaN)
         for col in self.feature_cols:
-            if col not in X.columns:
-                X[col] = np.nan
+            if col not in features.columns:
+                features[col] = np.nan
 
-        X = X[self.feature_cols].astype(float)
+        make_prob = self._predict(as_model_matrix(features, self.feature_cols))
 
-        # Run inference
-        if self.is_hierarchical:
-            raw_probs = np.zeros(len(X))
-            make_probs = np.zeros(len(X))
-            
-            # Identify interior vs perimeter rows
-            interior_zones = ["Restricted Area", "In The Paint (Non-RA)"]
-            mask_int = candidates_df["_zone"].isin(interior_zones).values
-            mask_per = ~mask_int
-            
-            # Predict interior
-            if mask_int.sum() > 0:
-                X_int = X[mask_int]
-                raw_int = self.model_interior.predict_proba(X_int)[:, 1]
-                raw_probs[mask_int] = raw_int
-                if self.calibrator_int:
-                    make_probs[mask_int] = self.calibrator_int.predict(raw_int)
-                else:
-                    make_probs[mask_int] = raw_int
-                    
-            # Predict perimeter
-            if mask_per.sum() > 0:
-                X_per = X[mask_per]
-                raw_per = self.model_perimeter.predict_proba(X_per)[:, 1]
-                raw_probs[mask_per] = raw_per
-                if self.calibrator_per:
-                    make_probs[mask_per] = self.calibrator_per.predict(raw_per)
-                else:
-                    make_probs[mask_per] = raw_per
+        # ── Assemble output ──────────────────────────────────────────────
+        out = grid[["zone", "loc_x", "loc_y", "shot_distance"]].copy()
+        out["make_probability"] = make_prob
+
+        if self.uses_mechanics:
+            # Collapse the (location x mechanic) expansion back to one row per
+            # location: the reported probability is the expectation over the
+            # player's mechanic mix, and `best_mechanic` names the shot type
+            # that scored highest there — which is the actually actionable half
+            # of the answer.
+            out["_mechanic"] = grid["_mechanic"].values
+            out["_mech_weight"] = grid["_mech_weight"].values
+            out = marginalize(
+                out, key_cols=("loc_x", "loc_y", "zone", "shot_distance")
+            )
+        out["points"] = out["zone"].map(ZONE_POINTS).astype(float)
+        out["expected_points"] = out["make_probability"] * out["points"]
+
+        # Credible interval, driven by how much evidence backs this player in
+        # this zone.
+        #
+        # The interval is derived as a WIDTH around the Beta posterior mean and
+        # then applied around the model's prediction, rather than being used
+        # directly. Those are two different estimators: the posterior mean is
+        # career attempts regressed to the league zone prior, while the model's
+        # prediction also reflects the season-over-career hierarchy, the
+        # defender, and the game state. Using the raw posterior bounds as the
+        # band produced intervals that did not contain the number they were
+        # drawn under — a left-corner projection of 0.86 expected points with a
+        # lower bound of 0.97.
+        #
+        # What this band represents is therefore specific and worth stating in
+        # the UI: uncertainty about the player's SHOOTING RATE from that zone
+        # given how many attempts back it. It is not a confidence interval on
+        # the model, and it does not cover defender or context uncertainty.
+        lows, highs, attempts = [], [], []
+        for zone in out["zone"]:
+            suffix = ZONE_SUFFIX[zone]
+            makes = float(player.get(f"pit_car_mk_{suffix}", 0.0) or 0.0)
+            att = float(player.get(f"pit_car_att_{suffix}", 0.0) or 0.0)
+            prior = self.zone_priors.get(zone)
+            if prior is None:
+                lows.append(np.nan)
+                highs.append(np.nan)
+                attempts.append(att)
+                continue
+            lo, hi = posterior_interval(makes, att, prior, level=interval_level)
+            posterior_mean = (makes + prior.alpha) / (att + prior.strength)
+            lows.append(float(posterior_mean - lo))
+            highs.append(float(hi - posterior_mean))
+            attempts.append(att)
+
+        out["attempts_behind"] = attempts
+        out["ep_low"] = (
+            (out["make_probability"].values - np.array(lows)) * out["points"].values
+        ).clip(0.0)
+        out["ep_high"] = (
+            (out["make_probability"].values + np.array(highs)) * out["points"].values
+        )
+
+        out["attainability"] = self._attainability(player, creation, out["zone"])
+
+        # Ranking score. Attainability enters as a square root rather than
+        # linearly: weighting it fully would collapse every recommendation onto
+        # whatever the player already does most, which is not advice. The
+        # square root keeps a genuinely better shot competitive when it is
+        # somewhat harder to generate, while still preventing the engine from
+        # telling a rim-running centre to shoot step-back threes.
+        att = out["attainability"].fillna(out["attainability"].mean())
+        if att.notna().any() and att.max() > 0:
+            out["score"] = out["expected_points"] * np.sqrt(att / att.max())
         else:
-            raw_probs = self.model.predict_proba(X)[:, 1]
-            if self.calibrator:
-                make_probs = self.calibrator.predict(raw_probs)
-            else:
-                make_probs = raw_probs
+            out["score"] = out["expected_points"]
 
-        # Build results
-        shot_value = np.where(candidates_df["is_three"] == 1, 3.0, 2.0)
-        expected_points = make_probs * shot_value
-        shot_quality = (make_probs * 100).round(1)
-
-        results = pd.DataFrame({
-            "zone": candidates_df["_zone"],
-            "loc_x": candidates_df["loc_x"],
-            "loc_y": candidates_df["loc_y"],
-            "shot_type": candidates_df["_shot_type"],
-            "shot_distance": candidates_df["shot_distance"].round(1),
-            "make_probability": make_probs.round(4),
-            "expected_points": expected_points.round(4),
-            "shot_quality_score": shot_quality,
-            "difficulty_score": (100 - shot_quality).round(1),
-        })
-
-        # Sort by expected points (descending)
-        results = results.sort_values("expected_points", ascending=False).reset_index(drop=True)
-
-        return results.head(top_n) if top_n else results
-
-    def recommend_summary(
-        self,
-        player_id: str,
-        season: str,
-        **kwargs,
-    ) -> pd.DataFrame:
-        """
-        Zone-level summary: best EP per zone, sorted by recommendation strength.
-        Collapses the grid points into one row per zone.
-        """
-        all_recs = self.recommend(player_id=player_id, season=season, top_n=None, **kwargs)
-
-        summary = all_recs.groupby("zone").agg(
-            best_make_prob=("make_probability", "max"),
-            best_ep=("expected_points", "max"),
-            avg_make_prob=("make_probability", "mean"),
-            avg_ep=("expected_points", "mean"),
-            best_quality=("shot_quality_score", "max"),
-            shot_type=("shot_type", "first"),
-        ).sort_values("best_ep", ascending=False).reset_index()
-
-        return summary
-
-    def _get_shot_volume(self, player_id: str, season: str) -> dict:
-        """Get shot attempt counts per zone for a player-season."""
-        with self.engine.connect() as conn:
-            rows = conn.execute(text("""
-                SELECT zone, COUNT(*) as attempts, 
-                       SUM(shot_made) as makes,
-                       ROUND(AVG(shot_made) * 100, 1) as fg_pct
-                FROM shots
-                WHERE player_id = :pid AND season = :season
-                  AND zone IS NOT NULL AND zone != 'Backcourt'
-                GROUP BY zone
-            """), {"pid": player_id, "season": season}).fetchall()
-
-        return {r[0]: {"attempts": r[1], "makes": r[2], "fg_pct": r[3]} for r in rows}
-
-    def recommend_heatmap(
-        self,
-        player_id: str,
-        season: str,
-        quarter: int = 1,
-        time_remaining: float = 600.0,
-        score_diff: int = 0,
-        home_away: int = 1,
-        playoff_flag: int = 0,
-        defender_id: str = None,
-        rest_days: int = 1,
-        is_back_to_back: int = 0,
-        opp_def_rating: float = 112.0,
-    ) -> dict:
-        """
-        Return the full dense grid scored for heatmap rendering.
-
-        Returns a dict with:
-            - heatmap: list of {loc_x, loc_y, zone, make_prob, ep, quality} for every grid point
-            - zone_summary: per-zone aggregates
-            - shot_volume: shot attempt counts per zone for this player
-            - recommendations: top 10 by EP
-        """
-        # Get full predictions over the dense grid
-        all_recs = self.recommend(
-            player_id=player_id, season=season,
-            quarter=quarter, time_remaining=time_remaining,
-            score_diff=score_diff, home_away=home_away,
-            playoff_flag=playoff_flag, defender_id=defender_id,
-            top_n=None,
-            rest_days=rest_days, is_back_to_back=is_back_to_back,
-            opp_def_rating=opp_def_rating,
+        # Against the player's own average, which is what makes the number
+        # actionable. Raw EP mostly restates that a three is worth more than a
+        # two; the useful question is where THIS player beats his own baseline.
+        own_average = float(
+            np.average(out["expected_points"], weights=att.fillna(0) + 1e-9)
         )
+        out["ep_vs_own_average"] = out["expected_points"] - own_average
 
-        # Shot volume from DB
-        volume = self._get_shot_volume(player_id, season)
-
-        # Add volume + confidence to each recommendation
-        all_recs["shot_volume"] = all_recs["zone"].map(
-            lambda z: volume.get(z, {}).get("attempts", 0)
+        # ── Backwards-compatible fields ──────────────────────────────────
+        # The React client (shot-vision-engine-main) reads these names. They
+        # are kept as aliases over the new quantities rather than dropped, so
+        # the redesigned engine is a drop-in for the existing UI; the client
+        # can adopt `attainability`, `ep_low`/`ep_high` and `ep_vs_own_average`
+        # whenever it is ready, without a coordinated deploy.
+        out["shot_type"] = np.where(
+            out["points"] == 3, "3PT Field Goal", "2PT Field Goal"
         )
-        # Confidence: penalize zones with low volume
-        all_recs["confidence"] = (
-            all_recs["make_probability"] * np.log1p(all_recs["shot_volume"])
-        ).round(4)
+        out["shot_quality_score"] = out["score"]
+        out["difficulty_score"] = 1.0 - out["make_probability"]
 
-        # Zone summary with volume
-        zone_summary = all_recs.groupby("zone").agg(
-            best_make_prob=("make_probability", "max"),
-            avg_make_prob=("make_probability", "mean"),
-            best_ep=("expected_points", "max"),
-            avg_ep=("expected_points", "mean"),
-            point_count=("loc_x", "count"),
-            shot_type=("shot_type", "first"),
-        ).reset_index()
+        out["player_name"] = player.get("name")
+        out["model"] = self.model_name
 
-        # Merge volume data
-        zone_summary["attempts"] = zone_summary["zone"].map(
-            lambda z: volume.get(z, {}).get("attempts", 0)
-        )
-        zone_summary["actual_fg_pct"] = zone_summary["zone"].map(
-            lambda z: volume.get(z, {}).get("fg_pct", 0)
-        )
-        zone_summary = zone_summary.sort_values("best_ep", ascending=False)
+        return out.sort_values("score", ascending=False).head(top_n).reset_index(drop=True)
 
+    def recommend_heatmap(self, **kwargs) -> dict:
+        """
+        The full scored grid, for the court heat map.
+
+        Thin wrapper over `recommend` with the top-N cap lifted, so the map and
+        the ranked list can never disagree — they are literally the same
+        scored frame.
+        """
+        full = self.recommend(**{**kwargs, "top_n": len(SHOT_GRID)})
+        records = full.to_dict("records")
+
+        # Key names are the client's contract (HeatmapResponse in
+        # shot-vision-data.ts). Renaming `heatmap` to `grid` during the rewrite
+        # silently emptied the court — the page read `res.heatmap`, got
+        # undefined, and rendered every zone with no field at all while the
+        # court lines drew fine, so it looked like a styling problem rather
+        # than a missing payload.
         return {
-            "heatmap": all_recs.to_dict("records"),
-            "zone_summary": zone_summary.to_dict("records"),
-            "shot_volume": volume,
-            "recommendations": all_recs.nlargest(10, "expected_points").to_dict("records"),
-            "grid_size": len(all_recs),
+            "heatmap": records,
+            "recommendations": full.nlargest(10, "score").to_dict("records"),
+            "zone_summary": self._summarize(full).to_dict("records"),
+            "shot_volume": {},
+            "grid_size": len(records),
         }
 
+    @staticmethod
+    def _summarize(scored: pd.DataFrame) -> pd.DataFrame:
+        """Per-zone aggregate of an already-scored grid."""
+        summary = scored.groupby("zone").agg(
+            make_probability=("make_probability", "mean"),
+            expected_points=("expected_points", "mean"),
+            ep_low=("ep_low", "mean"),
+            ep_high=("ep_high", "mean"),
+            attainability=("attainability", "mean"),
+            attempts_behind=("attempts_behind", "max"),
+            score=("score", "mean"),
+            # Aliases the existing React client reads. See the note in
+            # `recommend` — kept so the redesign drops into the current UI.
+            best_make_prob=("make_probability", "max"),
+            avg_make_prob=("make_probability", "mean"),
+            best_ep=("expected_points", "max"),
+            avg_ep=("expected_points", "mean"),
+            best_quality=("score", "max"),
+        ).reset_index()
+        # Carry the best mechanic through: for each zone, the shot type at that
+        # zone's highest-scoring location. Aggregating a categorical needs an
+        # explicit choice, and "what to do at the best spot" is the one that
+        # matches how a reader will use it.
+        if "best_mechanic" in scored.columns:
+            best_rows = scored.loc[scored.groupby("zone")["score"].idxmax()]
+            summary = summary.merge(
+                best_rows[["zone", "best_mechanic", "best_mechanic_prob"]],
+                on="zone", how="left",
+            )
 
-if __name__ == "__main__":
-    # Quick demo
-    rec = ShotRecommender(model_version="v2")
+        summary["shot_type"] = np.where(
+            summary["zone"].map(ZONE_POINTS) == 3,
+            "3PT Field Goal", "2PT Field Goal",
+        )
+        return summary.sort_values("score", ascending=False).reset_index(drop=True)
 
-    # LeBron James in 2023-24, Q3, 5 min left, tied game, home
-    results = rec.recommend(
-        player_id="2544",
-        season="2023-24",
-        quarter=3,
-        time_remaining=300,
-        score_diff=0,
-        home_away=1,
-    )
-
-    print(f"\n{'='*80}")
-    print(f"  SHOT RECOMMENDATIONS — LeBron James (2023-24)")
-    print(f"  Q3 | 5:00 left | Score tied | Home")
-    print(f"{'='*80}")
-    print(results.to_string(index=False))
-
-    # Test heatmap
-    heatmap = rec.recommend_heatmap(
-        player_id="2544",
-        season="2023-24",
-        quarter=3,
-        time_remaining=300,
-        score_diff=0,
-        home_away=1,
-    )
-    print(f"\n  Heatmap grid: {heatmap['grid_size']} points")
-    print(f"  Shot volume: {heatmap['shot_volume']}")
-
+    def zone_summary(self, **kwargs) -> pd.DataFrame:
+        """Per-zone aggregate of the full grid, for the court heat map."""
+        full = self.recommend(**{**kwargs, "top_n": len(SHOT_GRID)})
+        return self._summarize(full)

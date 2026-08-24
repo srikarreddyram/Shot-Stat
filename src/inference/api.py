@@ -11,6 +11,7 @@ Usage:
     uvicorn src.inference.api:app --reload --port 8000
 """
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -20,14 +21,50 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from src.inference.recommender import ShotRecommender
+from src.inference.recommender import ShotRecommender, ZONE_TO_DEF_CATEGORY
+from src.inference.player_lookup import resolve_player_stats, resolve_defender_stats
+from src.inference.player_ratings import rating_lookup
 from src.db.database import get_engine
+
+# Load the recommender at startup
+recommender: ShotRecommender = None
+db_engine = None
+latest_season: str = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global recommender, db_engine, latest_season
+    db_engine = get_engine()
+    # Model names are now descriptive rather than a v1/v2/v3 counter, and each
+    # one has a runs/<stamp>__<name>/run.json recording exactly what it scored.
+    # The list is ordered newest-first; the first that loads wins.
+    for model_name in ["shot-quality-v9", "shot-quality-v8", "shot-quality-v5", "shot-quality-v4", "shot-quality", "v3", "v2", "v1"]:
+        try:
+            recommender = ShotRecommender(model_name=model_name)
+            break
+        except Exception as e:
+            print(f"⚠ Could not load model {model_name}: {e}")
+    if recommender is None:
+        print("  API will start but /recommend endpoints won't work until a model is trained.")
+
+    # The most recent season with ingested player data. Clients (the UI) should
+    # use this instead of hardcoding a season string, which silently goes stale
+    # every year and hides that season's rookies/trades from search results.
+    with db_engine.connect() as conn:
+        row = conn.execute(text("SELECT MAX(season) FROM players")).fetchone()
+        latest_season = row[0] if row else None
+    print(f"  ✓ Latest ingested season: {latest_season}")
+
+    yield
+
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="NBA Shot Quality Engine",
     description="Predicts make probability and recommends optimal shot locations based on player + defender + game state.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS — allow the frontend to call the API
@@ -38,25 +75,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Load the recommender at startup
-recommender: ShotRecommender = None
-db_engine = None
-
-
-@app.on_event("startup")
-def load_model():
-    global recommender, db_engine
-    db_engine = get_engine()
-    # Try v3 first (tuned + new features), then v2 (calibrated), fall back to v1
-    for version in ["v3", "v2", "v1"]:
-        try:
-            recommender = ShotRecommender(model_version=version)
-            break
-        except Exception as e:
-            print(f"⚠ Could not load model {version}: {e}")
-    if recommender is None:
-        print("  API will start but /recommend endpoints won't work until a model is trained.")
 
 
 # ── Request / Response models ────────────────────────────────────────────────
@@ -69,6 +87,7 @@ class RecommendRequest(BaseModel):
     home_away: int = Field(default=1, ge=0, le=1, description="0 = away, 1 = home")
     playoff_flag: int = Field(default=0, ge=0, le=1, description="0 = regular season, 1 = playoffs")
     defender_id: Optional[str] = Field(default=None, description="Defender player ID (optional)")
+    secondary_defender_id: Optional[str] = Field(default=None, description="Second defender for a double team (optional). Combined with defender_id via a heuristic — see ShotRecommender._combine_defenders.")
     top_n: int = Field(default=10, ge=1, le=30, description="Number of recommendations to return")
     rest_days: int = Field(default=1, ge=0, le=5, description="Days of rest (0 = back-to-back)")
     is_back_to_back: int = Field(default=0, ge=0, le=1, description="1 if second game in two days")
@@ -79,19 +98,46 @@ class ShotRecommendation(BaseModel):
     zone: str
     loc_x: float
     loc_y: float
-    shot_type: str
     shot_distance: float
     make_probability: float
     expected_points: float
+    # Uncertainty on the shooting rate behind this projection, from the number
+    # of attempts supporting it. A corner-three number built on nine attempts
+    # and one built on nine hundred used to render identically.
+    ep_low: float
+    ep_high: float
+    attempts_behind: float
+    # How readily this player can generate this look — largely a handle
+    # question. Reported separately from expected points so a client can
+    # distinguish "this would be a great shot for you" from "this is a shot
+    # you can actually get".
+    attainability: Optional[float] = None
+    # The ranking quantity: expected points tempered by attainability.
+    score: float
+    # Aliases retained for the existing React client. `shot_quality_score`
+    # mirrors `score`; `difficulty_score` is 1 - make_probability.
+    shot_type: str
     shot_quality_score: float
     difficulty_score: float
+    # Expected points relative to this player's own attainability-weighted
+    # average, which is the number worth showing a user. Raw expected points
+    # mostly restates that a three is worth more than a two.
+    ep_vs_own_average: float
 
 
 class ZoneSummary(BaseModel):
     zone: str
+    make_probability: float
+    expected_points: float
+    ep_low: float
+    ep_high: float
+    attainability: Optional[float] = None
+    attempts_behind: float
+    score: float
+    # Aliases retained for the existing React client.
     best_make_prob: float
-    best_ep: float
     avg_make_prob: float
+    best_ep: float
     avg_ep: float
     best_quality: float
     shot_type: str
@@ -103,6 +149,10 @@ class RecommendResponse(BaseModel):
     season: str
     game_state: dict
     recommendations: list[ShotRecommendation]
+    attacker_stats_source: str = "measured"           # "measured" | "prior"
+    attacker_resolved_season: Optional[str] = None
+    defender_stats_source: Optional[str] = None
+    defender_resolved_season: Optional[str] = None
 
 
 class SummaryResponse(BaseModel):
@@ -111,6 +161,10 @@ class SummaryResponse(BaseModel):
     season: str
     game_state: dict
     zone_summary: list[ZoneSummary]
+    attacker_stats_source: str = "measured"           # "measured" | "prior"
+    attacker_resolved_season: Optional[str] = None
+    defender_stats_source: Optional[str] = None
+    defender_resolved_season: Optional[str] = None
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -119,8 +173,18 @@ def health():
     return {
         "status": "healthy",
         "model_loaded": recommender is not None,
-        "model_version": recommender.version if recommender else None,
+        "model_name": recommender.model_name if recommender else None,
+        # Alias for the existing React client, which reads `model_version`.
+        "model_version": recommender.model_name if recommender else None,
         "features": len(recommender.feature_cols) if recommender else 0,
+        "latest_season": latest_season,
+        # Whether a calibration mapping was adopted at training time. It is
+        # deliberately not always on: the trainer adopts it only when it
+        # improves held-out log-loss, and on the current data it does not.
+        "calibrated": recommender.calibration_adopted if recommender else None,
+        "attainability_model": (
+            recommender.attainability is not None if recommender else None
+        ),
     }
 
 
@@ -139,6 +203,7 @@ def recommend(req: RecommendRequest):
             home_away=req.home_away,
             playoff_flag=req.playoff_flag,
             defender_id=req.defender_id,
+            secondary_defender_id=req.secondary_defender_id,
             top_n=req.top_n,
             rest_days=req.rest_days,
             is_back_to_back=req.is_back_to_back,
@@ -150,7 +215,8 @@ def recommend(req: RecommendRequest):
         raise HTTPException(status_code=500, detail=f"Inference error: {e}")
 
     # Get player name
-    player = recommender._get_player_data(req.player_id, req.season)
+    player = recommender._player_row(req.player_id, req.season)
+    defender = recommender._defender_row(req.defender_id, req.season) if req.defender_id else None
 
     return RecommendResponse(
         player_id=req.player_id,
@@ -163,8 +229,13 @@ def recommend(req: RecommendRequest):
             "home_away": "Home" if req.home_away else "Away",
             "playoff_flag": bool(req.playoff_flag),
             "defender_id": req.defender_id,
+            "secondary_defender_id": req.secondary_defender_id,
         },
         recommendations=results.to_dict("records"),
+        attacker_stats_source="measured",
+        attacker_resolved_season=player.get("_latest_season"),
+        defender_stats_source="measured" if defender else None,
+        defender_resolved_season=req.season if defender else None,
     )
 
 
@@ -174,7 +245,7 @@ def recommend_summary(req: RecommendRequest):
         raise HTTPException(status_code=503, detail="Model not loaded.")
 
     try:
-        summary = recommender.recommend_summary(
+        summary = recommender.zone_summary(
             player_id=req.player_id,
             season=req.season,
             quarter=req.quarter,
@@ -183,11 +254,13 @@ def recommend_summary(req: RecommendRequest):
             home_away=req.home_away,
             playoff_flag=req.playoff_flag,
             defender_id=req.defender_id,
+            secondary_defender_id=req.secondary_defender_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    player = recommender._get_player_data(req.player_id, req.season)
+    player = recommender._player_row(req.player_id, req.season)
+    defender = recommender._defender_row(req.defender_id, req.season) if req.defender_id else None
 
     return SummaryResponse(
         player_id=req.player_id,
@@ -201,70 +274,118 @@ def recommend_summary(req: RecommendRequest):
             "playoff_flag": bool(req.playoff_flag),
         },
         zone_summary=summary.to_dict("records"),
+        attacker_stats_source="measured",
+        attacker_resolved_season=player.get("_latest_season"),
+        defender_stats_source="measured" if defender else None,
+        defender_resolved_season=req.season if defender else None,
     )
 
 
 @app.get("/player/{player_id}")
-def get_player(player_id: str, season: str = "2023-24"):
-    """Look up a player's stats for a given season."""
+def get_player(player_id: str, season: Optional[str] = None):
+    """Look up a player's stats for a given season (defaults to the latest ingested season)."""
     if recommender is None:
         raise HTTPException(status_code=503, detail="Model not loaded.")
 
+    season = season or latest_season
     try:
-        player = recommender._get_player_data(player_id, season)
+        player = recommender._player_row(player_id, season)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+    # Surface the shrunk point-in-time rates rather than the raw prior counts.
+    # The counts are an internal representation; a client asking about a player
+    # wants the rate the model actually reasons with, small samples already
+    # regressed toward the league prior.
+    import pandas as _pd
+    from src.features.point_in_time import ZONE_SUFFIX as _SUFFIX, apply_hierarchy as _apply
+
+    rates = _apply(_pd.DataFrame([player]), recommender.zone_priors).iloc[0]
+    zone_rates = {
+        zone: float(rates[f"zone_rate_{suffix}"])
+        for zone, suffix in _SUFFIX.items()
+    }
+    zone_attempts = {
+        zone: float(player.get(f"pit_car_att_{suffix}", 0.0) or 0.0)
+        for zone, suffix in _SUFFIX.items()
+    }
+
+    public = {k: v for k, v in player.items() if not k.startswith(("pit_", "_"))}
     return {
         "player_id": player_id,
         "season": season,
-        **player,
+        **public,
+        "zone_rates": zone_rates,
+        # Attempts behind each rate, so a client can tell a measured number
+        # from one still leaning on the prior.
+        "zone_attempts": zone_attempts,
+        "overall_rate": float(rates["overall_rate"]),
+        "three_rate": float(rates["three_rate"]),
     }
 
 
 @app.get("/players/search")
-def search_players(q: str = Query(..., min_length=2), season: str = "2024-25", limit: int = 10):
-    """Autocomplete player search. Returns matching players with stats."""
+def search_players(q: str = Query(..., min_length=2), season: Optional[str] = None, limit: int = 10):
+    """
+    Autocomplete player search (defaults to the latest ingested season, i.e.
+    whoever is currently rostered). The season filter on `players` is the
+    "who's active right now" gate; stats for each match are resolved via
+    the measured -> prior-season -> position-prior fallback chain (see
+    src/inference/player_lookup.py), since a just-started season has no
+    real stats yet for anyone, rookies included.
+    """
     if db_engine is None:
         raise HTTPException(status_code=503, detail="Database not loaded.")
 
+    season = season or latest_season
     with db_engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT DISTINCT p.player_id, p.name, p.position, p.height, p.weight,
-                   p.career_fg_pct, p.season_fg_pct, p.career_3p_pct, ds.d_fg_pct, ds.pct_plusminus, p.wingspan,
-                   p.ast, p.tov, p.ft_pct, z_rim.fg_pct, z_mid.fg_pct
-            FROM players p
-            LEFT JOIN defender_stats ds ON p.player_id = ds.player_id AND ds.season = p.season AND ds.defense_category = 'Overall'
-            LEFT JOIN player_zone_stats z_rim ON p.player_id = z_rim.player_id AND z_rim.season = p.season AND z_rim.zone = 'Restricted Area'
-            LEFT JOIN player_zone_stats z_mid ON p.player_id = z_mid.player_id AND z_mid.season = p.season AND z_mid.zone = 'Mid-Range'
-            WHERE LOWER(p.name) LIKE LOWER(:q)
-              AND p.season = :season
-            ORDER BY p.name
+        id_rows = conn.execute(text("""
+            SELECT DISTINCT player_id FROM players
+            WHERE LOWER(UNACCENT(name)) LIKE LOWER(UNACCENT(:q)) AND season = :season
+            ORDER BY name
             LIMIT :limit
         """), {"q": f"%{q}%", "season": season, "limit": limit}).fetchall()
 
-    return [
-        {
-            "player_id": str(r[0]),
-            "name": r[1],
-            "position": r[2],
-            "height": r[3],
-            "weight": r[4],
-            "career_fg_pct": r[5],
-            "season_fg_pct": r[6],
-            "career_3p_pct": r[7],
-            "def_rating": r[8],
-            "contest_rate": r[9],
-            "wingspan": r[10],
-            "ast": r[11],
-            "tov": r[12],
-            "ft_pct": r[13],
-            "rim_pct": r[14],
-            "mid_pct": r[15],
-            "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/1040x760/{r[0]}.png",
-        }
-        for r in rows
-    ]
+        # Ratings are percentile ranks over the whole league, so they are
+        # computed for the season once (and cached) rather than per player.
+        ratings = rating_lookup(db_engine, season)
+
+        results = []
+        for (player_id,) in id_rows:
+            player = resolve_player_stats(conn, player_id, season)
+            defender = resolve_defender_stats(conn, player_id, season)
+            overall_def = (defender or {}).get("def_stats", {}).get("Overall", {})
+            results.append({
+                "player_id": str(player_id),
+                "name": player["name"],
+                "position": player["position"],
+                "height": player["height"],
+                "weight": player["weight"],
+                "career_fg_pct": player["career_fg_pct"],
+                "season_fg_pct": player["season_fg_pct"],
+                "career_3p_pct": player["career_3p_pct"],
+                "def_fg_pct_allowed": overall_def.get("d_fg_pct"),   # opponent FG% allowed (overall) — lower is better defense
+                "def_plus_minus": overall_def.get("pct_plusminus"),  # FG% allowed vs. league normal — negative is better defense
+                "wingspan": player["wingspan"],
+                "ast": player["ast"],
+                "tov": player["tov"],
+                "ft_pct": player["ft_pct"],
+                "rim_pct": player["zone_stats"].get("Restricted Area"),
+                "mid_pct": player["zone_stats"].get("Mid-Range"),
+                "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
+                "stats_source": player["stats_source"],   # "measured" | "prior"
+                "resolved_season": player["resolved_season"],
+                # Computed server-side from measured data (see
+                # src/inference/player_ratings.py). Previously the frontend
+                # invented these from a hardcoded formula that read three
+                # columns which are NULL for every player in the database.
+                **{
+                    f"rating_{k}": v
+                    for k, v in ratings.get(str(player_id), {}).items()
+                },
+            })
+
+    return results
 
 
 @app.post("/recommend/heatmap")
@@ -283,6 +404,7 @@ def recommend_heatmap(req: RecommendRequest):
             home_away=req.home_away,
             playoff_flag=req.playoff_flag,
             defender_id=req.defender_id,
+            secondary_defender_id=req.secondary_defender_id,
             rest_days=req.rest_days,
             is_back_to_back=req.is_back_to_back,
             opp_def_rating=req.opp_def_rating,
@@ -290,29 +412,36 @@ def recommend_heatmap(req: RecommendRequest):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    player = recommender._get_player_data(req.player_id, req.season)
+    player = recommender._player_row(req.player_id, req.season)
+    defender = recommender._defender_row(req.defender_id, req.season) if req.defender_id else None
 
     return {
         "player_id": req.player_id,
         "player_name": player["name"],
         "season": req.season,
+        "attacker_stats_source": "measured",
+        "attacker_resolved_season": player.get("_latest_season"),
+        "defender_stats_source": "measured" if defender else None,
+        "defender_resolved_season": req.season if defender else None,
         **result,
     }
 
 
 @app.get("/matchup/{attacker_id}/{defender_id}")
-def get_matchup(attacker_id: str, defender_id: str, season: str = "2024-25"):
-    """Get the full physical and statistical mismatch breakdown."""
+def get_matchup(attacker_id: str, defender_id: str, season: Optional[str] = None):
+    """Get the full physical and statistical mismatch breakdown (defaults to the latest ingested season)."""
     if recommender is None:
         raise HTTPException(status_code=503, detail="Model not loaded.")
 
+    season = season or latest_season
+
     try:
-        attacker = recommender._get_player_data(attacker_id, season)
+        attacker = recommender._player_row(attacker_id, season)
     except ValueError:
         raise HTTPException(status_code=404, detail=f"Attacker {attacker_id} not found in {season}")
 
-    defender = recommender._get_defender_data(defender_id, season)
-    if defender is None:
+    defender = recommender._defender_row(defender_id, season)
+    if not defender:
         raise HTTPException(status_code=404, detail=f"Defender {defender_id} not found in {season}")
 
     # Physical comparison
@@ -330,15 +459,37 @@ def get_matchup(attacker_id: str, defender_id: str, season: str = "2024-25"):
     size_mismatch = abs(height_diff) >= 4 if height_diff else False
 
     # Defender quality
-    def_overall = defender.get("def_stats", {}).get("Overall", {})
+    def_stats = defender.get("def_stats", {})
+    def_overall = def_stats.get("Overall", {})
 
-    # Zone-by-zone exploit analysis
+    # Zone-to-defense-category mapping (shared with recommender.py's grid scoring)
+    zone_to_def_cat = ZONE_TO_DEF_CATEGORY
+
+    # Zone-by-zone exploit analysis — uses the defender's zone-specific FG% allowed
+    # (falling back to overall when the zone category is missing), so an elite rim
+    # protector with mediocre overall numbers (e.g. blended with weak perimeter D)
+    # is still correctly flagged as tough at the rim specifically.
     zones = ["Restricted Area", "In The Paint (Non-RA)", "Mid-Range",
              "Left Corner 3", "Right Corner 3", "Above the Break 3"]
+    # The attacker's shrunk, point-in-time rate per zone — the same quantity
+    # the model consumes, rather than the raw season split the old endpoint
+    # showed. Small samples are regressed to the league prior here too, so the
+    # matchup screen and the recommendation cannot tell different stories.
+    import pandas as _pd
+    from src.features.point_in_time import ZONE_SUFFIX as _SUFFIX, apply_hierarchy as _apply
+    _rates = _apply(_pd.DataFrame([attacker]), recommender.zone_priors).iloc[0]
+    attacker_zone_rates = {
+        z: float(_rates[f"zone_rate_{_SUFFIX[z]}"]) for z in zones
+    }
+
     exploit_zones = []
     for zone in zones:
-        atk_eff = attacker.get("zone_stats", {}).get(zone)
-        def_fg = def_overall.get("d_fg_pct")
+        atk_eff = attacker_zone_rates.get(zone)
+        def_cat = zone_to_def_cat.get(zone)
+        zone_def = def_stats.get(def_cat, {})
+        def_fg = zone_def.get("d_fg_pct")
+        if def_fg is None:
+            def_fg = def_overall.get("d_fg_pct")
         advantage = None
         if atk_eff is not None and def_fg is not None:
             advantage = round(atk_eff - def_fg, 3)
@@ -359,12 +510,16 @@ def get_matchup(attacker_id: str, defender_id: str, season: str = "2024-25"):
             "name": attacker.get("name"),
             "position": attacker.get("position"),
             "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/1040x760/{attacker_id}.png",
+            "stats_source": "measured",
+            "resolved_season": attacker.get("_latest_season"),
         },
         "defender": {
             "player_id": defender_id,
             "name": defender.get("name"),
             "position": defender.get("position"),
             "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/1040x760/{defender_id}.png",
+            "stats_source": "measured",
+            "resolved_season": season,
         },
         "season": season,
         "physical_comparison": physical,

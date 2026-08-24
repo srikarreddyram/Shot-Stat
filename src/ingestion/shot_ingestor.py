@@ -79,7 +79,7 @@ def _api_call_with_retry(player_id: int, season: str, season_type: str = "Regula
                 context_measure_simple="FGA",
             )
             return chart.get_data_frames()[0]
-        except Exception as e:
+        except Exception:
             if attempt < max_retries - 1:
                 time.sleep(backoff)
                 backoff *= config.BACKOFF_MULTIPLIER

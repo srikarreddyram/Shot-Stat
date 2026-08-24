@@ -31,7 +31,12 @@ def _height_to_inches(height_str: str) -> float | None:
 def _get_wingspan_lookup() -> dict:
     print("  Building wingspan lookup from Draft Combine data...")
     wingspan_map = {}
-    for year in range(2000, 2026):
+    # Draft combine season strings run "2000-01" .. the most recent season we
+    # track (ALL_SEASONS + CURRENT_SEASONS), so a newly-added season/draft
+    # class is picked up automatically instead of this range going stale.
+    latest_tracked = max(config.ALL_SEASONS + getattr(config, "CURRENT_SEASONS", []))
+    end_year = int(latest_tracked.split("-")[0]) + 1
+    for year in range(2000, end_year):
         season_str = f"{year}-{str(year + 1)[-2:]}"
         try:
             dc = draftcombinestats.DraftCombineStats(season_all_time=season_str)
@@ -58,26 +63,40 @@ def _fetch_player_info_with_retry(player_id: str, max_retries=5) -> dict | None:
             if not df.empty:
                 return df.iloc[0].to_dict()
             return None
-        except Exception as e:
+        except Exception:
             if attempt == max_retries - 1: return None
             time.sleep(backoff)
             backoff *= config.BACKOFF_MULTIPLIER
     return None
 
-def ingest_physicals_nba():
+def ingest_physicals_nba(season_scope: str | None = None):
+    """
+    season_scope: if given, only check players who have a Players row for
+    that season (e.g. this year's roster) instead of scanning every player
+    in the database. Without it, this scans the full historical table, which
+    is expensive and mostly re-confirms known gaps (wingspan is genuinely
+    unmeasured for many older players — see docs/prd_checklist.md's known
+    risks — not something a rerun will fix).
+    """
     engine = get_engine()
     Session = get_session_factory(engine)
-    
+
     wingspan_map = _get_wingspan_lookup()
-    
+
     with Session() as session:
         query = select(Player.player_id).where(
-            (Player.height.is_(None)) | 
-            (Player.weight.is_(None)) | 
+            (Player.height.is_(None)) |
+            (Player.weight.is_(None)) |
             (Player.wingspan.is_(None))
         ).distinct()
+        if season_scope:
+            query = query.where(
+                Player.player_id.in_(
+                    select(Player.player_id).where(Player.season == season_scope)
+                )
+            )
         missing_players = session.execute(query).scalars().all()
-        
+
         print(f"\nFound {len(missing_players)} unique players needing physical data checks...")
         
         updated_count = 0
@@ -109,4 +128,9 @@ def ingest_physicals_nba():
         print(f"\n✓ Checked {len(missing_players)} players, applied data to {updated_count}.")
 
 if __name__ == "__main__":
-    ingest_physicals_nba()
+    import argparse
+    parser = argparse.ArgumentParser(description="Backfill height/weight/wingspan from the NBA API.")
+    parser.add_argument("--season", type=str, default=None,
+                         help="Only check players rostered for this season (e.g. 2026-27), instead of the full history.")
+    args = parser.parse_args()
+    ingest_physicals_nba(season_scope=args.season)

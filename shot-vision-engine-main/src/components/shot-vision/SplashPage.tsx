@@ -64,7 +64,10 @@ export default function SplashPage({ onLaunch }: Props) {
       };
 
       scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x0a0a0f, 0.035);
+      // Denser than the original 0.035 — at that density the floor plane's
+      // far edge stayed visible against the clear color, producing a hard
+      // horizon line across the whole viewport instead of fading to black.
+      scene.fog = new THREE.FogExp2(0x0a0a0f, 0.09);
       camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 100);
       camera.position.set(0, 2.8, 7);
       camera.lookAt(0, 0.5, 0);
@@ -177,10 +180,14 @@ export default function SplashPage({ onLaunch }: Props) {
         defender.position.x = lerp(defender.position.x, initial.defender.x + (0.9 - initial.defender.x) * closeout, 0.06);
         defender.position.z = lerp(defender.position.z, initial.defender.z + (0.2 - initial.defender.z) * closeout, 0.06);
 
-        // Ball
-        const bx = attacker.position.x;
-        const by = attacker.position.y + 0.8 + (s >= 1 ? 0.3 * jumpProgress : 0);
-        const bz = attacker.position.z;
+        // Ball — held at hip height (attacker.y + ~0.35) and offset to the
+        // side, not centered on the body: at head height (attacker.y +
+        // 0.75, where the head mesh sits) and dead-center on x/z, it read
+        // as a basketball stuck on top of the figure's head instead of a
+        // held ball. Rises toward shooting-pocket height on the jump.
+        const bx = attacker.position.x + 0.34;
+        const by = attacker.position.y + 0.1 + (s >= 1 ? 0.75 * jumpProgress : 0);
+        const bz = attacker.position.z + 0.2;
         ball.position.x = lerp(ball.position.x, bx, 0.12);
         ball.position.y = lerp(ball.position.y, by, 0.12);
         ball.position.z = lerp(ball.position.z, bz, 0.12);
@@ -232,6 +239,28 @@ export default function SplashPage({ onLaunch }: Props) {
           ref={canvasRef}
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 0, opacity: canvasOpacity, transition: "opacity 0.6s ease" }}
         />
+        {/* Softens the 3D floor's horizon line — GridHelper lines don't
+            respect scene.fog, so they stay crisp against the fogged floor
+            color and read as a hard seam across the viewport. A blurred
+            band over just that strip blends it without touching the
+            WebGL scene itself. */}
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: "31%",
+            height: "10%",
+            zIndex: 1,
+            pointerEvents: "none",
+            backdropFilter: "blur(18px)",
+            WebkitBackdropFilter: "blur(18px)",
+            maskImage: "linear-gradient(to bottom, transparent 0%, black 35%, black 65%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 35%, black 65%, transparent 100%)",
+            opacity: canvasOpacity,
+            transition: "opacity 0.6s ease",
+          }}
+        />
         {/* Nav dots */}
         <div style={{ position: "absolute", right: 32, top: "50%", transform: "translateY(-50%)", zIndex: 20, display: "flex", flexDirection: "column", gap: 12 }}>
           {Array.from({ length: SECTIONS }).map((_, i) => (
@@ -258,7 +287,7 @@ export default function SplashPage({ onLaunch }: Props) {
         {/* SECTION 0 */}
         <SectionOverlay active={section === 0} align="center">
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 260, color: "rgba(201,168,76,0.03)", letterSpacing: "0.02em" }}>VISION</div>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 200, color: "rgba(201,168,76,0.018)", letterSpacing: "0.02em" }}>VISION</div>
           </div>
           <div style={{ position: "relative", maxWidth: 700, margin: "0 auto", padding: "0 24px", textAlign: "center" }}>
             <Tag>SHOT VISION</Tag>

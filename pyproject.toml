@@ -1,0 +1,30 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    # Tests needing the trained model and the full (uncommitted) database.
+    # They skip cleanly without those, so CI stays green on a bare checkout:
+    #   pytest -m "not slow"
+    "slow: requires trained models and the populated database",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = ["shot-vision-engine-main", "data", "models"]
+
+[tool.ruff.lint]
+# Keep the bar low for a first CI pass on an existing codebase: catch real bugs
+# (undefined names, unused imports) without blocking on style nits.
+select = ["E9", "F"]
+
+# The project is imported as `src.*` from the repository root (see the
+# sys.path.insert at the top of every entry point), but a type checker left to
+# infer the layout guesses `src/` is the import root and then reports every
+# `from src.x import y` as unresolved. Stating the root explicitly silences a
+# few hundred false positives without changing how anything runs.
+[tool.ty.environment]
+root = ["."]
+
+[tool.pyright]
+extraPaths = ["."]

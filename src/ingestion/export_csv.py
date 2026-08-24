@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import config
@@ -39,7 +39,7 @@ def export_all():
     engine = get_engine()
 
     print(f"\n{'='*60}")
-    print(f"  EXPORTING DATABASE TO CSV")
+    print("  EXPORTING DATABASE TO CSV")
     print(f"  Output: {CSV_DIR}/")
     print(f"{'='*60}\n")
 
@@ -51,7 +51,7 @@ def export_all():
             print(f"  ✗ {table}: {e}")
 
     # Also export a summary/sample view for quick inspection
-    print(f"\n  Creating summary views...")
+    print("\n  Creating summary views...")
 
     # Shot summary: first 100 rows with player name joined
     try:

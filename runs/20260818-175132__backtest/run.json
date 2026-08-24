@@ -1,0 +1,34 @@
+{
+  "name": "backtest",
+  "started_at": "2026-08-18T17:51:32+00:00",
+  "finished_at": "2026-08-18T18:04:59+00:00",
+  "git_sha": "82f55b257efc40d630fe2cad1f3fd6846e2c1afb",
+  "git_dirty": true,
+  "python": "3.13.9",
+  "params": {
+    "seasons": [
+      "2016-17",
+      "2017-18",
+      "2018-19",
+      "2019-20",
+      "2020-21",
+      "2021-22",
+      "2022-23",
+      "2023-24",
+      "2024-25",
+      "2025-26"
+    ],
+    "origins": 3
+  },
+  "data": {},
+  "metrics": {
+    "mean_log_loss": 0.6332280022944516,
+    "mean_lift": 0.03147274913829468,
+    "lift_sd": 0.004979510351685806,
+    "mean_zone_rank_rho": 0.742794600337219
+  },
+  "artifacts": [
+    "rolling_origin.csv",
+    "ablations.csv"
+  ]
+}

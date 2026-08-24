@@ -1,4 +1,28 @@
 """
+DEPRECATED — superseded by src/training/train.py.
+
+Kept as a readable record of the previous approach. It no longer executes: it
+imports `fit_calibrator`/`apply_calibration`, which were removed when
+calibration.py was rewritten, precisely because those functions implemented the
+in-sample calibration bug described below. Do not extend it, and do not restore
+those functions to make it run.
+
+Three defects are baked into this script and are fixed in the replacement:
+
+  * It trains on whole-season aggregate features, which contain the outcome of
+    the very shot being predicted and cannot be reproduced at serving time.
+  * It fits the isotonic calibrator on the model's own training-set
+    predictions, so the calibrator learns a mapping that is true in-sample and
+    wrong everywhere else.
+  * It reports lift against a zone-average baseline, which mostly measures
+    that shots get harder with distance.
+
+Use:
+    python -m src.training.train
+"""
+
+# Original module docstring follows.
+"""
 Phase 1 Model Training — Zone-Average Baseline, Logistic Regression, XGBoost.
 
 Trains three models using a strict temporal split:
@@ -16,7 +40,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import joblib
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -27,7 +50,6 @@ import xgboost as xgb
 from src.training.calibration import (
     fit_calibrator,
     apply_calibration,
-    save_calibrator,
     print_calibration_report,
     save_calibration_plot,
 )
@@ -57,26 +79,43 @@ def train_and_evaluate(version="v1"):
     feature_cols = get_feature_columns(df)
 
     # ── Step 2: Temporal split ───────────────────────────────────────────────
-    # Train on everything EXCEPT the most recent season.
-    # Test on the most recent season.
-    # This prevents any future data leakage.
+    # Three-way split, strictly chronological:
+    #   Fit seasons  → XGBoost trains on these
+    #   Val season   → most recent training-side season, used ONLY for
+    #                  early-stopping. Never touches the reported metrics.
+    #   Test season  → held out completely; final log-loss/accuracy/AUC and
+    #                  the promoted model's evaluation all come from here.
+    # Using the test season itself as the early-stopping eval_set (as this
+    # pipeline used to) lets the model pick its stopping point based on test
+    # performance — the reported test log-loss would then be optimistic, not
+    # a true estimate of out-of-sample performance. Carving out a separate
+    # validation season keeps the test season genuinely unseen until Step 8.
     TRAIN_SEASONS = seasons_to_use[:-1]
     TEST_SEASON = seasons_to_use[-1]
+    FIT_SEASONS = TRAIN_SEASONS[:-1]
+    VAL_SEASON = TRAIN_SEASONS[-1]
 
     train_df = df[df["season"].isin(TRAIN_SEASONS)].copy()
+    fit_df = df[df["season"].isin(FIT_SEASONS)].copy()
+    val_df = df[df["season"] == VAL_SEASON].copy()
     test_df = df[df["season"] == TEST_SEASON].copy()
 
     X_train = train_df[feature_cols]
     y_train = train_df[TARGET_COL]
+    X_fit = fit_df[feature_cols]
+    y_fit = fit_df[TARGET_COL]
+    X_val = val_df[feature_cols]
+    y_val = val_df[TARGET_COL]
     X_test = test_df[feature_cols]
     y_test = test_df[TARGET_COL]
 
     print(f"\n{'='*60}")
-    print(f"  TEMPORAL SPLIT")
+    print("  TEMPORAL SPLIT")
     print(f"{'='*60}")
-    print(f"  Train: {len(X_train):>10,} shots  ({TRAIN_SEASONS[0]} → {TRAIN_SEASONS[-1]})")
-    print(f"  Test:  {len(X_test):>10,} shots  ({TEST_SEASON})")
-    print(f"  Train FG%: {y_train.mean():.3f}")
+    print(f"  Fit:   {len(X_fit):>10,} shots  ({FIT_SEASONS[0]} → {FIT_SEASONS[-1]})")
+    print(f"  Val:   {len(X_val):>10,} shots  ({VAL_SEASON}) — early stopping only")
+    print(f"  Test:  {len(X_test):>10,} shots  ({TEST_SEASON}) — held out for reported metrics")
+    print(f"  Train FG% (fit+val): {y_train.mean():.3f}")
     print(f"  Test FG%:  {y_test.mean():.3f}")
     print(f"  Features:  {len(feature_cols)}")
 
@@ -84,7 +123,7 @@ def train_and_evaluate(version="v1"):
     # The dumbest possible model: "predict the historical zone average."
     # If our ML can't beat this, something is wrong.
     print(f"\n{'='*60}")
-    print(f"  MODEL 1/3: Zone-Average Baseline")
+    print("  MODEL 1/3: Zone-Average Baseline")
     print(f"{'='*60}")
 
     zone_avg = train_df.groupby("zone")[TARGET_COL].mean().to_dict()
@@ -107,7 +146,7 @@ def train_and_evaluate(version="v1"):
 
     # ── Step 4: Logistic Regression ──────────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"  MODEL 2/3: Logistic Regression")
+    print("  MODEL 2/3: Logistic Regression")
     print(f"{'='*60}")
 
     # LR can't handle NaN → fill with training set medians
@@ -141,14 +180,14 @@ def train_and_evaluate(version="v1"):
         key=lambda x: abs(x[1]),
         reverse=True,
     )
-    print(f"\n  Top 10 LR coefficients (absolute value):")
+    print("\n  Top 10 LR coefficients (absolute value):")
     for feat, coef in coef_pairs[:10]:
         direction = "+" if coef > 0 else "-"
         print(f"    {direction} {feat:<35} {coef:>8.4f}")
 
     # ── Step 5: XGBoost ─────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"  MODEL 3/3: XGBoost (Hierarchical Split: Interior vs Perimeter)")
+    print("  MODEL 3/3: XGBoost (Hierarchical Split: Interior vs Perimeter)")
     print(f"{'='*60}")
 
     # Default XGBoost parameters
@@ -183,14 +222,20 @@ def train_and_evaluate(version="v1"):
 
     # Split data into interior and perimeter
     interior_zones = ["Restricted Area", "In The Paint (Non-RA)"]
-    mask_train_int = train_df["zone"].isin(interior_zones)
+    mask_fit_int = fit_df["zone"].isin(interior_zones)
+    mask_val_int = val_df["zone"].isin(interior_zones)
+    mask_train_int = train_df["zone"].isin(interior_zones)  # fit+val, for calibration
     mask_test_int = test_df["zone"].isin(interior_zones)
 
+    X_fit_int, y_fit_int = X_fit[mask_fit_int], y_fit[mask_fit_int]
+    X_val_int, y_val_int = X_val[mask_val_int], y_val[mask_val_int]
     X_train_int, y_train_int = X_train[mask_train_int], y_train[mask_train_int]
-    X_test_int, y_test_int = X_test[mask_test_int], y_test[mask_test_int]
-    
+    X_test_int = X_test[mask_test_int]
+
+    X_fit_per, y_fit_per = X_fit[~mask_fit_int], y_fit[~mask_fit_int]
+    X_val_per, y_val_per = X_val[~mask_val_int], y_val[~mask_val_int]
     X_train_per, y_train_per = X_train[~mask_train_int], y_train[~mask_train_int]
-    X_test_per, y_test_per = X_test[~mask_test_int], y_test[~mask_test_int]
+    X_test_per = X_test[~mask_test_int]
 
     # Train Interior Model
     # Monotonic constraints for interior:
@@ -224,17 +269,17 @@ def train_and_evaluate(version="v1"):
     
     xgb_interior = xgb.XGBClassifier(**xgb_params_int)
     xgb_interior.fit(
-        X_train_int, y_train_int,
-        eval_set=[(X_test_int, y_test_int)],
+        X_fit_int, y_fit_int,
+        eval_set=[(X_val_int, y_val_int)],
         verbose=100,
     )
-    
+
     # Train Perimeter Model
     print("\n  → Training PERIMETER Model...")
     xgb_perimeter = xgb.XGBClassifier(**xgb_params)
     xgb_perimeter.fit(
-        X_train_per, y_train_per,
-        eval_set=[(X_test_per, y_test_per)],
+        X_fit_per, y_fit_per,
+        eval_set=[(X_val_per, y_val_per)],
         verbose=100,
     )
 
@@ -253,7 +298,7 @@ def train_and_evaluate(version="v1"):
 
     # ── Step 6: Probability Calibration ─────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"  PROBABILITY CALIBRATION (Isotonic Regression)")
+    print("  PROBABILITY CALIBRATION (Isotonic Regression)")
     print(f"{'='*60}")
 
     # Fit separate calibrators
@@ -298,6 +343,8 @@ def train_and_evaluate(version="v1"):
             "train_medians": train_medians.to_dict(),
             "zone_avg": zone_avg,
             "train_seasons": TRAIN_SEASONS,
+            "fit_seasons": FIT_SEASONS,
+            "val_season": VAL_SEASON,
             "test_season": TEST_SEASON,
             "calibrated": True,
             "hierarchical": True,
@@ -323,13 +370,13 @@ def train_and_evaluate(version="v1"):
         lift = (baseline_logloss - xgb_logloss) / baseline_logloss * 100
         print(f"\n  ✅ XGBoost beats zone-average baseline by {lift:.2f}% log-loss")
     else:
-        print(f"\n  ❌ XGBoost did NOT beat baseline — investigate!")
+        print("\n  ❌ XGBoost did NOT beat baseline — investigate!")
 
     if lr_logloss < baseline_logloss:
         lr_lift = (baseline_logloss - lr_logloss) / baseline_logloss * 100
         print(f"  ✅ LR beats zone-average baseline by {lr_lift:.2f}% log-loss")
     else:
-        print(f"  ❌ LR did NOT beat baseline")
+        print("  ❌ LR did NOT beat baseline")
 
     print(f"\n{'='*60}\n")
 
@@ -364,7 +411,7 @@ def train_and_evaluate(version="v1"):
         print(f"\n  ⚠ Could not save plot: {e}")
 
     # ── Step 9: Per-zone breakdown ───────────────────────────────────────────
-    print(f"\n  Per-Zone Log-Loss Breakdown:")
+    print("\n  Per-Zone Log-Loss Breakdown:")
     print(f"  {'Zone':<30} {'XGBoost':>10} {'Baseline':>10} {'Lift':>8}")
     print(f"  {'-'*30} {'-'*10} {'-'*10} {'-'*8}")
 
@@ -379,7 +426,7 @@ def train_and_evaluate(version="v1"):
         print(f"  {icon} {zone:<28} {zone_xgb_ll:>10.4f} {zone_base_ll:>10.4f} {lift_pct:>+7.1f}%")
 
     print(f"\n{'='*60}")
-    print(f"  ✓ Training pipeline complete!")
+    print("  ✓ Training pipeline complete!")
     print(f"{'='*60}\n")
 
 if __name__ == "__main__":

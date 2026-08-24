@@ -89,7 +89,7 @@ def ingest_matchups(season=None):
     games_to_do = [g for g in all_games if g not in completed]
 
     print(f"\n{'='*60}")
-    print(f"  MATCHUP INGESTOR")
+    print("  MATCHUP INGESTOR")
     if season:
         print(f"  Season: {season}")
     else:
@@ -174,7 +174,7 @@ def ingest_matchups(season=None):
         time.sleep(config.REQUEST_DELAY)
 
     print(f"\n{'='*60}")
-    print(f"  MATCHUP INGESTOR COMPLETE")
+    print("  MATCHUP INGESTOR COMPLETE")
     print(f"  Total matchup rows: {total_rows:,}")
     print(f"  Games failed:       {total_errors:,}")
     print(f"{'='*60}\n")

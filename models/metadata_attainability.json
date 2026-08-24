@@ -1,0 +1,59 @@
+{
+  "name": "attainability",
+  "feature_cols": [
+    "height",
+    "weight",
+    "wingspan",
+    "avg_drib_per_touch",
+    "avg_sec_per_touch",
+    "touches_per_min",
+    "poss_time_per_min",
+    "drives_per_min",
+    "drive_fg_pct",
+    "drive_tov_pct",
+    "drive_pf_pct",
+    "avg_def_dist",
+    "open_share",
+    "tight_share",
+    "pullup_share",
+    "catch_shoot_share",
+    "self_created_dribble_share",
+    "zero_dribble_share",
+    "creation_retention",
+    "self_creation_index",
+    "playmaking_gravity",
+    "rim_pressure",
+    "zone_index",
+    "is_three"
+  ],
+  "zones": [
+    "Restricted Area",
+    "In The Paint (Non-RA)",
+    "Mid-Range",
+    "Left Corner 3",
+    "Right Corner 3",
+    "Above the Break 3"
+  ],
+  "zone_index": {
+    "Restricted Area": 0,
+    "In The Paint (Non-RA)": 1,
+    "Mid-Range": 2,
+    "Left Corner 3": 3,
+    "Right Corner 3": 4,
+    "Above the Break 3": 5
+  },
+  "league_zone_shares": {
+    "Above the Break 3": 0.25791012300293326,
+    "In The Paint (Non-RA)": 0.16234871927086164,
+    "Left Corner 3": 0.05034646602491594,
+    "Mid-Range": 0.1510510469282411,
+    "Restricted Area": 0.3314690760792541,
+    "Right Corner 3": 0.04687456869379405
+  },
+  "test_season": "2025-26",
+  "metrics": {
+    "mae": 0.05118008959363699,
+    "rmse": 0.07243593085288096,
+    "baseline_mae": 0.08039838096004469
+  }
+}

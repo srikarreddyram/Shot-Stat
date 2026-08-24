@@ -59,7 +59,6 @@ def ingest_games(seasons: list[str], include_playoffs: bool = True):
     Session = get_session_factory(engine)
 
     total_inserted = 0
-    total_updated = 0
 
     for season in tqdm(seasons, desc="Seasons"):
         season_types = ["Regular Season"]

@@ -23,3 +23,15 @@ venv.bak/
 
 # MacOS
 .DS_Store
+
+# Model binaries and run artifacts. The run MANIFEST (runs/*/run.json) is small,
+# diffable and worth committing — it records params, metrics, the data hash and
+# the git SHA. The .json boosters, .png plots and .csv dumps beside it are not:
+# they are large, regenerable, and produce useless binary diffs.
+models/*.json
+models/*.joblib
+models/*.png
+!models/best_params_*.json
+!models/metadata_*.json
+runs/*/*.png
+runs/*/*.csv

@@ -5,6 +5,115 @@ All commands should be run from the project root:
 cd /Users/tejsr/Projects/NBA_Shot_Predictor
 ```
 
+> **Note on the redesign.** The training and inference pipeline was rebuilt
+> around a shared feature layer (`src/features/`). See [docs/redesign.md](docs/redesign.md)
+> for what changed and why. The old entry points (`train_baseline.py`,
+> `feature_engineering.py`, `position_priors.py`) are deprecated and documented
+> as such in their module docstrings.
+
+---
+
+## The current pipeline
+
+```bash
+# 1. Creation-skill data (handle + passing). ~1 min and ~10 min respectively.
+python -m src.ingestion.tracking_ingestor --full
+python -m src.ingestion.shot_profile_ingestor --full
+
+# 2. Per-shot play-by-play context (shot mechanics, putbacks, transition).
+#    ~1.2 hours at 6 workers. Resumable — re-run it and it picks up where it
+#    stopped, newest seasons first.
+python -m src.ingestion.pbp_ingestor --seasons 2016-17+
+
+# 3. Train the shot-quality model. Writes models/ + runs/<stamp>__<name>/
+python -m src.training.train --name shot-quality-v5
+
+# 4. Train the attainability model ("can this player GET this shot?")
+python -m src.training.attainability --name attainability
+
+# 5. Serve
+uvicorn src.inference.api:app --reload --port 8000
+```
+
+### Keeping the laptop cool
+
+Training defaults to every core, which on a laptop is a real thermal event.
+`XGB_N_JOBS` caps it:
+
+```bash
+XGB_N_JOBS=6 python -m src.training.train --name shot-quality-v5
+```
+
+The play-by-play ingest is network-bound and barely touches the CPU, so it is
+safe to leave running.
+
+### Evaluating honestly
+
+```bash
+# The full accuracy argument, with fresh numbers — calibration table, Murphy
+# decomposition, baselines, and what the model still misses.
+python -m src.training.accuracy_report
+
+# Rolling-origin backtest — several held-out seasons, not one
+python -m src.training.backtest --origins 3
+
+# Plus feature-group ablations (what is each group actually worth?)
+python -m src.training.backtest --origins 3 --ablate
+
+# Ablate a single group during training
+python -m src.training.train --no-creation --name ablation-no-creation
+python -m src.training.train --no-defender --name ablation-no-defender
+
+# Train the old interior/perimeter split for comparison
+python -m src.training.train --split --name split-model
+
+# Feature groups held out by default because they measured WORSE.
+# Both flags re-enable them for re-measurement — see docs/redesign.md.
+python -m src.training.train --defender-physicals --name with-physicals
+python -m src.training.train --spatial-basis --name with-basis
+
+# Hyperparameter search over the CURRENT features (the old best_params_v3.json
+# was tuned against the pre-rewrite leaky features and is unused).
+python -m src.training.tune_hyperparams --trials 30 --sample-frac 0.45
+
+# Hierarchical player/defender effects on top of a trained model.
+# Measured: no gain — the search prefers maximum shrinkage.
+python -m src.training.player_effects --model shot-quality-v5
+```
+
+### Calibration modes
+
+```bash
+# recent (default) — fit on the latest unseen data, adopt only if it helps
+python -m src.training.train --calibration recent
+
+# oof — chronological out-of-fold over the fit window, adopted unconditionally
+python -m src.training.train --calibration oof --folds 3
+
+# none — skip entirely
+python -m src.training.train --calibration none
+```
+
+### Inspecting runs
+
+```bash
+# Recent training runs with their headline metrics
+python -m src.common.runs
+
+# One run's full record
+cat runs/<stamp>__<name>/run.json
+```
+
+### Tests
+
+```bash
+pytest                      # everything
+pytest -m "not slow"        # skip tests needing trained models + the full DB
+pytest tests/test_train_serve_parity.py    # the train/serve skew guard
+pytest tests/test_no_leaky_features.py    # keeps is_assisted out of the model
+pytest tests/test_pbp_extraction.py       # play-by-play parsing, no network
+```
+
 ---
 
 ## Setup

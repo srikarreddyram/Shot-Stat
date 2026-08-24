@@ -9,7 +9,7 @@ Tables:
 """
 from sqlalchemy import (
     Column, String, Integer, Float, Date, ForeignKey, ForeignKeyConstraint,
-    UniqueConstraint, Index, Boolean
+    Index, Boolean
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -209,6 +209,48 @@ class DefenderStats(Base):
         return f"<DefenderStats {self.player_id} {self.season} | {self.defense_category}: {self.d_fg_pct}>"
 
 
+class PositionPrior(Base):
+    """
+    Historical rookie-season averages, bucketed by broad position group
+    (G / F / C). This is the ONLY sanctioned exception to the project's
+    "exact data or NULL, never impute" policy: it exists solely to give a
+    labeled, clearly-flagged starting estimate for a player with zero NBA
+    shot history (e.g. this year's draft class before they've played a
+    single game). Consumers must surface that a value came from here
+    (stats_source="prior") rather than presenting it as measured data.
+
+    "Rookie season" = a player's earliest season present in the Shots /
+    DefenderStats tables. Priors are computed across ALL historical rookie
+    seasons in the dataset, not just the most recent one.
+
+    One row per (position_bucket, stat_type, stat_key):
+      stat_type="zone"     stat_key = one of the 6 PlayerZoneStats zones
+      stat_type="defense"  stat_key = one of the 6 DefenderStats categories
+      stat_type="overall"  stat_key = "career" (season_fg_pct/3p_pct/ft_pct/ast/tov)
+
+    Populated by src/training/position_priors.py.
+    """
+    __tablename__ = "position_priors"
+
+    position_bucket = Column(String, primary_key=True)  # "G", "F", or "C"
+    stat_type = Column(String, primary_key=True)         # "zone" | "defense" | "overall"
+    stat_key = Column(String, primary_key=True)           # zone / defense_category / "career"
+
+    fg_pct = Column(Float, nullable=True)
+    fg3_pct = Column(Float, nullable=True)
+    d_fg_pct = Column(Float, nullable=True)
+    pct_plusminus = Column(Float, nullable=True)
+    ast = Column(Float, nullable=True)
+    tov = Column(Float, nullable=True)
+    ft_pct = Column(Float, nullable=True)
+
+    sample_size = Column(Integer, nullable=True)   # rookie-seasons or shots/attempts underlying this row
+    computed_through_season = Column(String, nullable=True)  # most recent season included, for reproducibility
+
+    def __repr__(self):
+        return f"<PositionPrior {self.position_bucket} {self.stat_type}:{self.stat_key}>"
+
+
 class Matchup(Base):
     """
     Game-level matchup data: who guarded whom for how long.
@@ -279,3 +321,195 @@ class TeamSchedule(Base):
 
     def __repr__(self):
         return f"<TeamSchedule {self.team_id} Game:{self.game_id} Date:{self.date}>"
+
+
+class PlayerTrackingStats(Base):
+    """
+    Season-level player tracking ("SportVU") stats describing CREATION SKILL —
+    how well a player handles the ball and passes, as distinct from how well
+    they shoot.
+
+    One row per (player_id, season). Available 2013-14 onward only; earlier
+    seasons have no tracking cameras and stay absent (never imputed).
+
+    Why this table exists
+    ---------------------
+    Two players with an identical Mid-Range FG% are not equally good shooters
+    if one gets there off a screen with four feet of space and the other
+    creates the look himself against a set defender. Shooting splits alone
+    confound *shooting skill* with *shot difficulty*, and shot difficulty is
+    largely a function of handle. These columns let the model separate them,
+    and — more importantly — let the recommender estimate whether a player can
+    actually GENERATE a given shot, not just whether they'd make it.
+
+    Populated by src/ingestion/tracking_ingestor.py from LeagueDashPtStats
+    measure types Drives, Passing, and Possessions.
+    """
+    __tablename__ = "player_tracking_stats"
+
+    player_id = Column(String, primary_key=True)
+    season = Column(String, primary_key=True)  # e.g. "2023-24"
+
+    gp = Column(Integer, nullable=True)
+    min_per_game = Column(Float, nullable=True)
+
+    # ── Handle / on-ball load (measure type: Possessions) ──────────────────
+    touches = Column(Float, nullable=True)              # per game
+    front_ct_touches = Column(Float, nullable=True)     # frontcourt touches per game
+    time_of_poss = Column(Float, nullable=True)         # minutes of possession per game
+    avg_sec_per_touch = Column(Float, nullable=True)    # how long they hold it
+    avg_drib_per_touch = Column(Float, nullable=True)   # the core "handle usage" signal
+    pts_per_touch = Column(Float, nullable=True)
+    elbow_touches = Column(Float, nullable=True)
+    post_touches = Column(Float, nullable=True)
+    paint_touches = Column(Float, nullable=True)
+
+    # ── Rim pressure (measure type: Drives) ───────────────────────────────
+    drives = Column(Float, nullable=True)               # per game
+    drive_fg_pct = Column(Float, nullable=True)         # finishing off the bounce
+    drive_pts = Column(Float, nullable=True)
+    drive_passes_pct = Column(Float, nullable=True)     # share of drives kicked out
+    drive_ast_pct = Column(Float, nullable=True)        # share of drives → assist
+    drive_tov_pct = Column(Float, nullable=True)        # share of drives → turnover
+    drive_pf_pct = Column(Float, nullable=True)         # share of drives drawing a foul
+
+    # ── Playmaking / gravity (measure type: Passing) ──────────────────────
+    passes_made = Column(Float, nullable=True)          # per game
+    passes_received = Column(Float, nullable=True)
+    ast = Column(Float, nullable=True)
+    secondary_ast = Column(Float, nullable=True)        # hockey assists
+    potential_ast = Column(Float, nullable=True)        # passes that WOULD be assists if made
+    ast_points_created = Column(Float, nullable=True)
+    ast_to_pass_pct = Column(Float, nullable=True)
+    ast_to_pass_pct_adj = Column(Float, nullable=True)  # includes potential assists
+
+    __table_args__ = (
+        Index("ix_tracking_player_season", "player_id", "season"),
+    )
+
+    def __repr__(self):
+        return f"<PlayerTrackingStats {self.player_id} {self.season} drib/touch:{self.avg_drib_per_touch}>"
+
+
+class PlayerShotProfile(Base):
+    """
+    Per-player-season shooting splits broken out by SHOT DIFFICULTY CONTEXT —
+    how many dribbles preceded the shot, how long the ball was held, and how
+    close the nearest defender was.
+
+    One row per (player_id, season, split_type, split_value).
+
+    split_type / split_value pairs:
+        "dribbles"   → "0 Dribbles" | "1 Dribble" | "2 Dribbles"
+                       | "3-6 Dribbles" | "7+ Dribbles"
+        "def_dist"   → "0-2 Feet - Very Tight" | "2-4 Feet - Tight"
+                       | "4-6 Feet - Open" | "6+ Feet - Wide Open"
+        "touch_time" → "Touch < 2 Seconds" | "Touch 2-6 Seconds"
+                       | "Touch 6+ Seconds"
+        "general"    → "Catch and Shoot" | "Pull Ups" | "Less Than 10 ft"
+
+    Why this table exists
+    ---------------------
+    Two things the rest of the pipeline cannot see anywhere else:
+
+      1. **Openness propensity.** Per-shot defender distance is not available
+         from any public endpoint, so contest level is unobservable at the
+         shot level — that is the model's hard noise floor. The `def_dist`
+         split recovers it at the PLAYER level: the share of a player's shots
+         that come wide open is a stable, measurable trait, and it is exactly
+         the trait that separates a self-creator from a spot-up specialist.
+
+      2. **Skill net of difficulty.** The gap between a player's Pull Ups
+         FG% and their Catch and Shoot FG% measures how much efficiency they
+         retain when they have to make the shot themselves.
+
+    FGA_FREQUENCY is the share of that player's total attempts falling in the
+    split, so the splits within a split_type form a distribution summing to ~1.
+
+    Populated by src/ingestion/shot_profile_ingestor.py from
+    LeagueDashPlayerPtShot (one league-wide call per season per split value).
+    """
+    __tablename__ = "player_shot_profile"
+
+    player_id = Column(String, primary_key=True)
+    season = Column(String, primary_key=True)
+    split_type = Column(String, primary_key=True)   # dribbles | def_dist | touch_time | general
+    split_value = Column(String, primary_key=True)  # e.g. "3-6 Dribbles"
+
+    gp = Column(Integer, nullable=True)
+    fga_frequency = Column(Float, nullable=True)  # share of the player's total FGA
+    fgm = Column(Integer, nullable=True)
+    fga = Column(Integer, nullable=True)
+    fg_pct = Column(Float, nullable=True)
+    efg_pct = Column(Float, nullable=True)
+    fg3m = Column(Integer, nullable=True)
+    fg3a = Column(Integer, nullable=True)
+    fg3_pct = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("ix_shot_profile_player_season", "player_id", "season"),
+        Index("ix_shot_profile_split", "split_type", "split_value"),
+    )
+
+    def __repr__(self):
+        return (f"<PlayerShotProfile {self.player_id} {self.season} "
+                f"{self.split_type}={self.split_value}: {self.fg_pct}>")
+
+
+class ShotContext(Base):
+    """
+    Per-shot context derived from play-by-play.
+
+    One row per shot, keyed by the same `shot_id` the shots table uses
+    (game_id + "_" + play-by-play actionNumber), so it joins directly.
+
+    Why this table exists
+    ---------------------
+    Everything the model knew about *how* a shot came about was previously a
+    season-level average: a player's typical dribble count, his typical
+    openness. That describes a player, not a shot. Two above-the-break threes
+    by the same shooter — one a catch-and-shoot off a kick-out, one a step-back
+    over a set defender — were identical rows.
+
+    Play-by-play resolves them individually:
+
+      is_assisted    ⚠ NOT A MODEL FEATURE — this is target leakage. Assists
+                     are credited only on MADE baskets, so the column predicts
+                     the label perfectly (FG% is exactly 1.000 when set). It is
+                     stored for descriptive use only: a player's assisted rate
+                     is a genuine quantity, and it is the right denominator for
+                     self-creation work. See the warning in pbp_ingestor.py.
+      subtype        the league's own shot taxonomy — "Step Back Jump shot",
+                     "Pullup Jump shot", "Driving Floating Jump Shot", "Dunk
+                     Shot". This is the per-shot version of the self-creation
+                     signal that `player_shot_profile` could only supply as a
+                     season aggregate.
+      is_putback     a shot immediately following an offensive rebound is a
+                     different event from a halfcourt possession, and they are
+                     common enough at the rim to matter.
+      seconds_since_prev_event
+                     a transition proxy. Early-clock shots after a live-ball
+                     event convert differently from set-defense halfcourt looks,
+                     and nothing else in the pipeline could see the difference.
+
+    Populated by src/ingestion/pbp_ingestor.py (one API call per game).
+    """
+    __tablename__ = "shot_context"
+
+    shot_id = Column(String, primary_key=True)
+    game_id = Column(String, nullable=False)
+
+    is_assisted = Column(Integer, nullable=True)          # 0/1
+    shot_subtype = Column(String, nullable=True)          # league shot taxonomy
+    action_type = Column(String, nullable=True)           # "Made Shot"/"Missed Shot"
+    is_putback = Column(Integer, nullable=True)           # 0/1
+    seconds_since_prev_event = Column(Float, nullable=True)
+    prev_event_type = Column(String, nullable=True)
+    period = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_shot_context_game", "game_id"),
+    )
+
+    def __repr__(self):
+        return f"<ShotContext {self.shot_id} {self.shot_subtype} ast={self.is_assisted}>"
