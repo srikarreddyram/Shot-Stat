@@ -1,5 +1,7 @@
 # Model version history
 
+See [architecture.md](architecture.md) for what each module does and why; this file is the version-by-version record of what changed inside the two models and what was measured.
+
 Every training run already writes a machine record to `runs/<stamp>__<name>/run.json`
 and a `models/metadata_<name>.json`. Those are complete but not readable — they say
 what a model scored, never why it was built or what was rejected. This file is the

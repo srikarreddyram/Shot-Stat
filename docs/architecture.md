@@ -1,237 +1,296 @@
-# System Architecture: NBA Shot Quality Engine — Online Recommendation System
+# Architecture — module by module
 
-**Version:** 2.0
+What this project is, laid out the way you'd walk an interviewer through it: what
+each piece does, why it exists, and what the interesting engineering decision was.
+Model-specific numbers (which feature helped, which was rejected, why) live in
+[model-versions.md](model-versions.md); this document is about the system, not the
+results.
+
+The one-line version: a database of 3.5M NBA shots feeds two models (shot quality
+and attainability), served through a FastAPI backend to a React frontend, with
+every derived feature computed once and shared between training and serving so the
+two paths cannot silently disagree.
 
 ---
 
-## 1. Overview
+## The pipeline, top to bottom
 
-The system has three runtime modes:
+```
+nba_api (stats.nba.com)
+        │
+        ▼
+┌─────────────────┐
+│   ingestion/     │  22 scripts — one per data source, each independently rerunnable
+└────────┬─────────┘
+         ▼
+┌─────────────────┐
+│   db/            │  SQLite, 12 tables, 3.5M shot rows
+└────────┬─────────┘
+         ▼
+┌─────────────────┐
+│   features/      │  raw columns → point-in-time, shrunk, leak-free model inputs
+└────────┬─────────┘
+         ▼
+┌─────────────────┐
+│   training/      │  two XGBoost models: shot quality, attainability
+└────────┬─────────┘
+         ▼
+┌─────────────────┐
+│   inference/      │  FastAPI — same feature code, one prediction at a time
+└────────┬─────────┘
+         ▼
+┌─────────────────┐
+│  shot-vision-    │  React frontend — the interviewer-facing surface
+│  engine-main/    │
+└──────────────────┘
+```
 
-| Mode | Description |
+Every arrow above is a real module boundary with its own directory. The two that
+matter most in an interview are `features/` (why it exists as a separate layer at
+all) and `inference/explain.py` (turning a model into something a person can read).
+
+---
+
+## `src/db/` — schema
+
+**`models.py`** (515 lines, 12 SQLAlchemy tables). The two load-bearing ones:
+
+- **`Shot`** — one row per attempt, 3.5M rows. Composite foreign key to `Player`
+  (`player_id`, `season`) rather than a surrogate key, because a player's identity
+  for feature purposes genuinely changes season to season (age, team, role).
+- **`Matchup`** — one row per (game, offensive player, defensive player), with
+  possession counts. This table is what makes point-in-time defender quality
+  possible at all; it only exists from 2016-17 onward, which is why the whole
+  pipeline's usable window starts there rather than at 2010-11 (see
+  [model-versions.md](model-versions.md#what-data-actually-trains-the-model)).
+
+**`database.py`** — a thin SQLAlchemy engine factory. Nothing clever here on
+purpose: `config.py` holds the one connection string, every other module imports
+`get_engine()` rather than constructing its own, so there is exactly one place that
+knows where the database lives.
+
+---
+
+## `src/ingestion/` — 22 independent scripts
+
+One script per NBA API endpoint or data-quality fix, each runnable in isolation and
+idempotent (upsert, not insert). The interesting thing here isn't any one script —
+it's that there are 22 of them, discovered incrementally as gaps in the data turned
+up. A representative sample:
+
+| script | what it fixes |
 |---|---|
-| **Historical Bootstrap** | One-time ingestion of 12–15 seasons of shot, player, and game data |
-| **Nightly Update** | Incremental ingestion of yesterday's games + model retraining with warm start |
-| **Real-Time Inference** | Recommendation API — scores a grid of court locations for a given matchup |
+| `shot_ingestor.py` | the core shot log |
+| `matchup_ingestor.py` | who guarded whom, from BoxScoreMatchupsV3 |
+| `physical_ingestor_nba.py` → `_bref.py` → `_2k.py` | a 3-tier wingspan fallback chain, because no single source has full coverage |
+| `pbp_ingestor.py` | per-shot play-by-play context (mechanics, transition) — the slowest ingest at ~1.2 hours |
+| `home_away_backfill.py`, `score_diff_backfill.py`, `position_backfill.py` | targeted repairs for specific known data holes |
 
-These are separate pipelines sharing the same database and model registry.
-
----
-
-## 2. Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────┐
-│                  DATA SOURCES                       │
-│  nba_api (ShotChartDetail, DefenseDashboard,        │
-│           ShootingSplits, Tracking, GameLogs,        │
-│           SynergyPlayTypes)                          │
-│  Basketball Reference (Height, Weight, Wingspan)    │
-│  2kratings.com (Wingspan final fallback)            │
-└────────────────────┬────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│              INGESTION LAYER                        │
-│  bootstrap_ingestor.py  (one-time, 12-15 seasons)  │
-│  nightly_ingestor.py    (scheduled, yesterday's     │
-│                          games only)                │
-│  Rate-limit backoff · Idempotent upserts            │
-└────────────────────┬────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│              STORAGE (SQLite → PostgreSQL)          │
-│  Games · Players (per season) · Shots + defender_id │
-│  PlayerZoneStats (per player-season-zone)           │
-└────────────────────┬────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────┐
-│          FEATURE ENGINEERING PIPELINE               │
-│  Spatial: zone, angle, distance_from_center         │
-│  Context: score_diff, time_remaining, home_away     │
-│  Rolling: recent_10_fg, recent_20_fg (leakage-safe) │
-│  Matchup: height_diff, wingspan_diff, reach_adv     │
-│  Defender: def_fg_pct_allowed_by_zone, contest_rate │
-└────────────────────┬────────────────────────────────┘
-                     │
-          ┌──────────┴──────────┐
-          ▼                     ▼
-┌──────────────────┐   ┌─────────────────────────────┐
-│ TRAINING PIPELINE│   │     INFERENCE PIPELINE      │
-│                  │   │                             │
-│  Temporal split  │   │  FastAPI endpoint           │
-│  Baseline LR     │   │  Input: player_id,          │
-│  XGBoost         │   │         defender_id,        │
-│  MLflow tracking │   │         game_state          │
-│  Log-loss eval   │   │                             │
-│  Model registry  │   │  Grid of court locations    │
-│  Nightly warm    │   │  → batch feature vectors    │
-│  start retrain   │   │  → XGBoost batch inference  │
-└────────┬─────────┘   │  → ranked by EP             │
-         │             │  → top-N zones returned     │
-         └─────────────┤                             │
-                       │  Response: make_prob, EP,   │
-                       │  shot_quality, difficulty,  │
-                       │  recommended_zone           │
-                       └─────────────────────────────┘
-```
+**A genuinely interesting bug, worth telling an interviewer about directly:**
+`physical_ingestor_2k.py` logs nothing on a successful scrape — only failures print
+— so a first read of its output looked like 434 of 447 remaining players were never
+attempted. They were; the script is just silent on success. Confirmed by
+re-scraping one player directly and finding it worked. The fix was a second pass,
+which recovered players the first read wrongly wrote off as absent. The lesson —
+verify a script's own logging before trusting what it appears to say — is the kind
+of thing worth having a concrete story for.
 
 ---
 
-## 3. Component Design
+## `src/features/` — the layer that makes the model trustworthy
 
-### 3.1 Data Ingestion & Storage
+This is the module to lead with. Two things make it worth a separate directory
+rather than inline SQL in the training script:
 
-**nba_api Integration:**
-- Python scripts polling `ShotChartDetail`, `DefenseDashboardPtDefend`, `PlayerDashboardByShootingSplits`, `SynergyPlayTypes`, `PlayerDefenseDashboard`, `PlayerGameLogs`, and tracking endpoints.
-- 12–15 seasons of historical data during bootstrap.
-- Nightly incremental pulls after bootstrap.
-- Rate-limit handling via exponential backoff.
+### 1. One feature definition, two callers
 
-**Web Scraper:**
-- `requests` + `BeautifulSoup` for Basketball Reference and 2kratings.com. No Selenium.
-- Targets: height, weight, wingspan (combine data), positional designation.
-- **Waterfall priority:** NBA API → Basketball Reference → 2K Ratings (never overwrites upstream data).
-- Cache all responses aggressively to avoid rate limits.
+`spec.py::derive_features()` is a pure function: raw columns in, model features
+out. The training matrix builder calls it on 2 million rows; the recommender calls
+it on a single row at serving time. **Nothing else in the codebase is allowed to
+compute a derived feature.** `tests/test_train_serve_parity.py` asserts the two
+paths agree on identical inputs — this is the test that catches the failure mode
+where training and serving quietly drift apart because someone hand-copied a
+feature computation into two places and only updated one.
 
-**Storage:**
-- **Dev:** SQLite via `SQLAlchemy`.
-- **Prod:** PostgreSQL via `SQLAlchemy` — same schema, swap connection string.
-- **Tables:**
-  - `Games` — `game_id`, `date`, `home_team`, `away_team`, `playoff_flag`
-  - `Players` (per-season) — `player_id`, `season`, `name`, `height`, `weight`, `wingspan`, `wingspan_source`, `position`, `career_fg_pct`, `career_3p_pct`, `season_fg_pct`, `def_rating`, `contest_rate`, `def_fg_pct_allowed`
-  - `PlayerZoneStats` (per-player-season-zone) — `player_id`, `season`, `zone`, `fgm`, `fga`, `fg_pct`, `fg3m`, `fg3a`, `fg3_pct` — captures rim finishing %, paint %, mid-range %, corner 3 %, above-the-break 3 % per player
-  - `Shots` — `shot_id`, `game_id`, `player_id`, `defender_id`, `shot_made`, `loc_x`, `loc_y`, `shot_distance`, `shot_type`, `zone`, `shot_angle`, `quarter`, `time_remaining`, `score_diff`, `home_away`, `playoff_flag`, `touch_time`, `dribbles`, `catch_and_shoot`, `closest_defender_dist`
+That test caught three real bugs before they shipped:
+- `recent_10_fg`/`recent_20_fg` were never populated at serving time, so every
+  live prediction looked like a player's career debut.
+- A shot with no named defender left defender columns NaN, which in training
+  means "no matchup data exists" — a different population from "an average
+  defender," which is what an omitted defender in a live request actually means.
+- The court grid emitted restricted-area candidates outside the range shots are
+  ever actually attempted from.
 
-### 3.2 Feature Engineering Pipeline (Pandas)
+### 2. Point-in-time, everywhere
 
-| Category | Features | Notes |
-|---|---|---|
-| **Spatial** | `shot_angle`, `distance_from_center`, `zone` | `zone` is rule-based from coordinates |
-| **Game Context** | `score_diff`, `time_remaining`, `quarter`, `home_away`, `playoff_flag` | Direct or simple derivations |
-| **Player Form** | `recent_10_fg`, `recent_20_fg`, `fatigue_proxy` | Leakage-safe: strictly prior games only |
-| **Zone Efficiency** | `fg_pct_restricted_area`, `fg_pct_paint`, `fg_pct_midrange`, `fg_pct_corner3`, `fg_pct_above_break3` | From `PlayerZoneStats` table |
-| **Physical Matchup** | `height_diff`, `wingspan_diff`, `reach_advantage`, `size_mismatch_flag` | Derived at inference time from Players table |
-| **Defender Tendencies** | `def_fg_pct_allowed_by_zone`, `contest_rate`, `def_rating` | From `DefenseDashboard` endpoints |
+**`point_in_time.py`** (1,195 lines, the largest module in the codebase) is a
+single discipline applied repeatedly: every rate a player or team "has" is computed
+from **strictly prior games only**, shrunk toward an empirical-Bayes prior so a
+30-attempt sample doesn't read as a settled fact.
 
-### 3.3 Training Pipeline
+This module is worth walking through carefully because the same leak was found and
+fixed **twice**, in two different places, which is itself the interview-worthy
+story:
 
-- **Temporal split:** Train on seasons 1→N, test on season N+1. No random splits.
-- **Baseline:** Zone-level historical FG% averages.
-- **Logistic Regression:** Interpretable baseline ML model.
-- **XGBoost:** Primary model. Handles non-linear interactions (zone × time × player ability × defender quality).
-- **Evaluation:** Log-loss. Must beat zone-average baseline.
-- **Experiment tracking:** MLflow — hyperparameters, metrics, model artifacts.
-- **Nightly warm start:** Retrain on updated dataset using previous model as starting point. Promote only if log-loss holds or improves.
+1. **Shooter rates.** The original pipeline joined `player_zone_stats`, a
+   whole-season aggregate, onto every shot in that season — so a shot's own
+   outcome was inside its own feature. Rewritten to accumulate makes/attempts
+   strictly before each game's date.
+2. **Defender rates**, fixed later, independently, for the identical reason:
+   `defender_stats` (a season-aggregate NBA API table) was joined by season alone.
+   `build_defender_category_rates` rebuilds it from `matchups` + `shots`,
+   prior-games-only. Both origins of a rolling-origin backtest improved on the fix
+   ([details](model-versions.md#v10--point-in-time-defender-quality)).
 
-### 3.4 Inference Pipeline (Recommendation Engine)
+The general shape (`build_prior_counts` → shrink toward a fitted prior → hand the
+exact same shrink function to both the training builder and the serving lookup) is
+reused for shooting rate, defender quality, opponent zone defence, and — the newest
+instance — a player's own **shot diet** in the attainability model.
 
-**Input:** `player_id`, `defender_id`, `quarter`, `time_remaining`, `score_diff`, `home_away`
+**`creation.py`** — handle/passing features (dribbles per touch, drive rate,
+self-creation index), lagged one season, since these come from a separate tracking
+endpoint that isn't available in-season.
 
-**Process:**
-1. Generate a grid of candidate shot locations covering all viable court zones.
-2. For each candidate, construct the full feature vector (spatial + context + player + defender + matchup).
-3. Run XGBoost over all candidates in a single batch.
-4. Return top-N recommendations ranked by **Expected Points (EP)**.
+**`mechanics.py`** — collapses ~40 raw NBA shot-type strings into 8 buckets
+(pullup, stepback, cutting, etc.) via ordered substring rules, with a test asserting
+every bucket name round-trips through its own classifier — necessary because the
+recommender scores hypothetical shots by naming a mechanic and re-classifying it,
+so a bucket that doesn't round-trip would silently encode differently at serving
+time than in training.
 
-**Output per candidate:**
+**`shrinkage.py`** — the empirical-Bayes machinery (`fit_beta_prior`, `shrink`,
+`shrink_toward`) used by every point-in-time computation above. One implementation,
+imported everywhere, rather than five ad hoc "if attempts < 30" guards scattered
+across the codebase.
 
-| Field | Description |
-|---|---|
-| `make_probability` | P(shot goes in), 0.0–1.0 |
-| `expected_points` | `make_probability × shot_value` |
-| `shot_quality_score` | 0–100 index |
-| `difficulty_score` | `100 − shot_quality_score` |
-| `recommended_zone` | Top-ranked zone for this matchup |
-
----
-
-## 4. Key Design Decisions
-
-**Why XGBoost over a neural network?**
-Tree models handle tabular sports data extremely well and are interpretable enough to debug. Inference is microseconds per shot, which matters when scoring a grid of 50+ court locations per request. A neural net would offer marginal lift at the cost of much harder debugging and serving.
-
-**Why SQLite → PostgreSQL?**
-SQLite is fine for local development and the bootstrap phase. Once nightly writes + concurrent API reads happen simultaneously, PostgreSQL handles locking correctly. The schema is identical — it's a one-flag change in SQLAlchemy.
-
-**Why nightly retraining over true online learning?**
-True online learning (updating model weights per shot) is complex to implement correctly for tree models and adds significant engineering risk. Nightly retraining on the full updated dataset with a warm start captures recent form reliably, is easy to test, and is simple to roll back if a bad model gets promoted.
-
-**Why FastAPI over a heavier serving framework?**
-The model is XGBoost loaded in memory. Inference for a full court grid takes under 10ms. FastAPI with a single worker is sufficient for this use case and keeps the stack simple.
+**`build.py`** — orchestrates all of the above into one training matrix. Uses
+DuckDB attached read-only over the SQLite file for the heavy joins — a deliberate
+choice: the workload (a handful of joins and group-bys over 3.5M rows, read once)
+is exactly what a columnar engine is for, and it required no change to how the data
+is stored.
 
 ---
 
-## 5. Nightly Pipeline Sequence
+## `src/training/` — two models, one honest measurement discipline
 
-```
-11:30 PM  → Ingest yesterday's completed games (shots, game metadata)
-11:45 PM  → Upsert new player season stats from nba_api
-12:00 AM  → Recompute rolling features for affected players
-12:15 AM  → Retrain XGBoost (warm start from current production model)
-12:30 AM  → Evaluate on rolling 30-day holdout window
-12:35 AM  → If log-loss ≤ current model + tolerance: promote to production
-           → Else: keep current model, log alert
-12:40 AM  → Done
-```
+**`train.py`** — the shot-quality model. XGBoost, monotone constraints on features
+where the direction is known a priori (e.g. a defender's zone FG%-allowed should
+never *decrease* predicted make probability), so the model can't learn a
+counter-intuitive relationship purely from correlation noise.
 
----
+**`attainability.py`** (892 lines, the largest training module) — answers a
+different question: not "will this shot go in" but "how readily can this player
+generate this shot at all." Exists because ranking shot locations by expected
+points alone always recommends the rim to everyone — true and useless, since the
+entire difficulty is *getting* there. The model went through five iterations this
+project, documented in full in
+[model-versions.md](model-versions.md#attainability-model); the short version is
+that it moved from a single season-level snapshot to a genuinely point-in-time
+model (season-to-date, career-to-date, and last season, all shrunk and blended),
+because the current season's partial evidence turned out to predict a player's
+rest-of-season shot diet better than his *entire previous season* did.
 
-## 6. Full Tech Stack
+**`backtest.py`** — rolling-origin evaluation and per-feature-group ablation.
+The reason this exists rather than trusting a single train/test split: XGBoost's
+own feature importances are close to meaningless when features are correlated, and
+in this matrix they heavily are (`zone_rate`, `overall_rate`, and the creation
+features all describe overlapping aspects of the same player). Ablation — retrain
+with one group removed, measure the actual delta — is the only honest way to know
+what a feature group is worth. This is what caught the counter-intuitive finding
+that the `creation` feature group costs almost nothing to remove from *shot
+quality* (a player's point-in-time zone rate already absorbs shot difficulty) while
+being the dominant signal in *attainability* — a genuinely different question.
 
-| Layer | Tool | Notes |
-|---|---|---|
-| Data collection | `nba_api` | Primary shot + matchup source |
-| Scraping | `requests` + `BeautifulSoup` | Physical attributes only, no Selenium |
-| Storage (dev) | SQLite via `SQLAlchemy` | — |
-| Storage (prod) | PostgreSQL via `SQLAlchemy` | Same schema, swap connection string |
-| Processing | `pandas` | Feature engineering |
-| ML | `xgboost`, `scikit-learn` | — |
-| Experiment tracking | `MLflow` | Hyperparams, metrics, model artifacts |
-| Scheduling | `APScheduler` or cron | Nightly pipeline trigger |
-| Serving | `FastAPI` | Recommendation endpoint |
-| Visualization | `Plotly` | Shot charts, EP heatmaps |
-| Language | Python 3.10+ | — |
+**`calibration.py`** — fits a probability-calibration mapping and only adopts it if
+it measurably improves held-out calibration error; otherwise the raw model output
+ships. The trainer never assumes calibration helps.
 
----
-
-## 7. Phased Implementation
-
-### Phase 1 — Offline Foundation (MVP)
-- Pull 12–15 seasons of shot data via `nba_api`
-- Scrape player physical attributes from Basketball Reference
-- Build SQLite schema, joins, and core spatial/game features
-- Train baseline LR and XGBoost models without defender data
-- Validate log-loss beats zone-average baseline
-
-### Phase 2 — Defender Integration
-- Add `defender_id` to Shots table
-- Ingest defensive matchup data (`DefenseDashboardPtDefend`)
-- Add physical matchup features (`height_diff`, `wingspan_diff`, `reach_advantage`)
-- Add defender tendency features (`def_fg_pct_allowed_by_zone`, `contest_rate`)
-- Retrain and evaluate model lift from defender features
-
-### Phase 3 — Online System
-- Build nightly ingestion + retraining pipeline
-- Wrap model in FastAPI serving layer
-- Implement recommendation engine (grid scoring → top-N by EP)
-- Add rolling form features with proper leakage guards
-
-### Phase 4 — Tracking Data (Stretch)
-- Ingest closest defender distance, touch time, dribbles from `nba_api` tracking endpoints (2013–14 onward)
-- Evaluate lift; backfill historical shots where available
+**`train_baseline.py`, `feature_engineering.py`, `position_priors.py`** —
+deliberately kept, explicitly marked deprecated in their own docstrings. Worth
+having in a portfolio repo: it shows the *previous* architecture (whole-season
+joins, hand-copied SQL feature code) next to what replaced it, which is a more
+concrete way to explain a design decision than describing it in the abstract.
 
 ---
 
-## 8. Known Risks & Mitigations
+## `src/inference/` — serving
 
-| Risk | Impact | Mitigation |
-|---|---|---|
-| No live defender coordinates | Can't know exact defender position in real-time | Use pre-game matchup assignment + defensive tendency features as proxy |
-| Wingspan data sparse pre-2010 | Missing physical matchup signal | 3-source waterfall: NBA API → BRef → 2K Ratings. Remaining NULLs accepted; model must be robust. |
-| `nba_api` rate limiting | Slow historical ingestion | Exponential backoff; incremental daily pulls after bootstrap |
-| Rolling feature leakage | Inflated evaluation metrics | Strictly enforce lookback window excludes current game |
-| Model staleness mid-season | Recommendations miss recent form | Nightly retraining with warm start addresses this |
-| Defender assignment errors | Wrong physical matchup features | Flag low-confidence matchup assignments; fall back to positional average |
+**`recommender.py`** (1,029 lines) — loads both trained models once at startup,
+scores an ~180-point analytic grid over the court for a given matchup, and ranks by
+expected points weighted by `√attainability` (a square root rather than linear
+weighting deliberately, so attainability nudges the ranking toward gettable shots
+without collapsing every recommendation onto whatever the player already does
+most).
+
+Every projection carries a 95% credible interval, derived from how many real
+attempts back it — a corner-three estimate built on 9 attempts and one built on 900
+no longer render identically.
+
+**`explain.py`** (488 lines) — turns one attainability number into a decomposition
+a person can read, via exact TreeSHAP contributions (they sum to the prediction
+exactly, so nothing can be silently left out of the explanation). Splits the
+output into three parts a reader actually distinguishes between:
+
+1. **baseline** — what any player gets in this zone
+2. **history** — what *his own record* says, reported separately from traits
+   because his own prior share is not a trait, it's evidence, and at r=0.94
+   season-over-season it would otherwise dominate every other reason listed
+3. **factors** — ranked, signed, with the player's value and league percentile
+
+This module is worth reading end to end for an interview, because three real
+copy bugs were caught here by generating live output and reading it rather than
+trusting the template: a sentence that attributed a player's own prior-season
+number to "his game," a rate computed *this season* mislabeled as "last season,"
+and a 0.2% share that rendered as "0%" beside a non-zero projection in the same
+sentence. Each has a regression test pinned to the exact wrong sentence it used to
+produce.
+
+**`api.py`** — FastAPI. Loads models once at startup (`lifespan`), tries a
+newest-first list of model names so a bad or missing artifact degrades to the
+previous version rather than crashing the app.
+
+**`player_lookup.py`, `player_ratings.py`** — display-path lookups (search,
+percentile ratings) that deliberately do **not** feed the model; kept separate so
+a change to how a player card renders can never accidentally change a prediction.
+
+---
+
+## `shot-vision-engine-main/` — the frontend
+
+React + TanStack Start. Structured as a cinematic splash (real numbers pulled live
+from the API — "2.1M shots, 10 seasons" — not hardcoded copy) leading into the
+actual engine: a matchup configurator, an analytic-grid heat map rendered on
+canvas, and the click-to-expand attainability panel described above.
+
+Two decisions worth naming if asked:
+- **The heat map interpolates a court render from ~180 discrete grid points**
+  rather than being pixel-native, because the model only ever scores locations on
+  that analytic grid — anything smoother would be interpolation dressed up as
+  precision.
+- **The splash page's stats are fetched, not authored.** They previously read
+  "847,000 shots · 12 seasons," which was simply wrong on both numbers — caught by
+  comparing it against what `build_matrix()` actually reports at training time.
+
+---
+
+## Tests
+
+13 files, organized by what they guard against rather than by module:
+
+- `test_train_serve_parity.py` — the parity guarantee described above
+- `test_no_leaky_features.py` — asserts `is_assisted` (and other perfect-leak
+  columns) can never reach the feature list, however a future refactor is written
+- `test_explain.py` — pins the exact wrong sentences the explanation used to
+  produce, so a regression reads as a specific named failure, not a diff
+- `test_combine_defenders.py`, `test_mechanics.py`, `test_pbp_extraction.py` —
+  one file per parsing/encoding rule that has to round-trip correctly
+
+---
+
+## The one sentence version, if asked to summarize in an elevator
+
+*"Two XGBoost models over 2.1M NBA shots — one for shot quality, one for whether a
+player can actually generate a given shot at all — built around a single shared
+feature layer so training and serving can never quietly disagree, with every rate
+computed strictly from games before the one being predicted so nothing in the
+model has ever seen its own answer."*
