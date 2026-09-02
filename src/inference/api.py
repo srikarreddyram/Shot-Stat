@@ -15,8 +15,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -39,7 +41,7 @@ async def lifespan(app: FastAPI):
     # Model names are now descriptive rather than a v1/v2/v3 counter, and each
     # one has a runs/<stamp>__<name>/run.json recording exactly what it scored.
     # The list is ordered newest-first; the first that loads wins.
-    for model_name in ["shot-quality-v9", "shot-quality-v8", "shot-quality-v5", "shot-quality-v4", "shot-quality", "v3", "v2", "v1"]:
+    for model_name in ["shot-quality-v10", "shot-quality-v9", "shot-quality-v8", "shot-quality-v5", "shot-quality-v4", "shot-quality", "v3", "v2", "v1"]:
         try:
             recommender = ShotRecommender(model_name=model_name)
             break
@@ -324,6 +326,48 @@ def get_player(player_id: str, season: Optional[str] = None):
     }
 
 
+HEADSHOT_CDN = "https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+HEADSHOT_CACHE = Path(__file__).resolve().parent.parent.parent / "data" / "cache" / "headshots"
+
+
+@app.get("/headshot/{player_id}")
+def get_headshot(player_id: str):
+    """Serve a player headshot, proxied and cached from the NBA CDN.
+
+    The frontend used to point <img> straight at cdn.nba.com. That silently
+    fails on some networks — Chrome gets ERR_HTTP2_PROTOCOL_ERROR for every
+    headshot while curl fetches the same URL fine — and because the avatar
+    component falls back to initials on error, the failure looked like a
+    design choice rather than a broken image. Going through the backend uses
+    the same HTTP stack as the rest of the ingest pipeline, which works, and
+    caches each PNG on disk so the CDN is hit once per player, ever.
+    """
+    if not player_id.isdigit():
+        raise HTTPException(status_code=400, detail="player_id must be numeric")
+
+    path = HEADSHOT_CACHE / f"{player_id}.png"
+
+    if not path.exists():
+        try:
+            resp = requests.get(HEADSHOT_CDN.format(player_id=player_id), timeout=10)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail=f"headshot fetch failed: {exc}")
+
+        # A missing player returns an HTML error page, not a 404, so the
+        # content type is the thing worth trusting here.
+        if resp.status_code != 200 or not resp.headers.get("content-type", "").startswith("image/"):
+            raise HTTPException(status_code=404, detail="no headshot for that player")
+
+        HEADSHOT_CACHE.mkdir(parents=True, exist_ok=True)
+        # Write via a temp file so a killed request can never leave a
+        # truncated PNG behind to be served forever after.
+        tmp = path.with_suffix(".part")
+        tmp.write_bytes(resp.content)
+        tmp.replace(path)
+
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
+
+
 @app.get("/players/search")
 def search_players(q: str = Query(..., min_length=2), season: Optional[str] = None, limit: int = 10):
     """
@@ -425,6 +469,34 @@ def recommend_heatmap(req: RecommendRequest):
         "defender_resolved_season": req.season if defender else None,
         **result,
     }
+
+
+@app.get("/explain/attainability/{player_id}")
+def explain_attainability(
+    player_id: str,
+    zone: str = Query(..., description="One of the six court zones, e.g. 'Left Corner 3'"),
+    season: Optional[str] = None,
+    loc_x: Optional[float] = Query(None, description="Shot x, NBA chart units. With loc_y, resolves the angle sub-zone (dead-centre vs wing)."),
+    loc_y: Optional[float] = Query(None, description="Shot y, NBA chart units."),
+):
+    """
+    Why this player can or cannot get a shot in this zone.
+
+    Splits the attainability estimate into the zone's baseline share for any
+    player and this player's own deviation from it, with the traits
+    responsible ranked by their exact TreeSHAP contribution. See
+    src/inference/explain.py for the decomposition.
+    """
+    if recommender is None:
+        raise HTTPException(status_code=503, detail="Model not loaded.")
+
+    try:
+        return recommender.explain_attainability(
+            player_id=player_id, zone=zone, season=season or latest_season,
+            loc_x=loc_x, loc_y=loc_y,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/matchup/{attacker_id}/{defender_id}")

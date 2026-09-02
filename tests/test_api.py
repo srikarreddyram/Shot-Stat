@@ -15,10 +15,12 @@ from fastapi.testclient import TestClient
 
 import src.inference.api as api_mod
 import src.inference.recommender as rec_mod
+from src.features.point_in_time import DEFENSE_CATEGORIES
+from src.features.shrinkage import BetaPrior
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
-MODEL_NAME = "shot-quality-v9"
+MODEL_NAME = "shot-quality-v10"
 
 pytestmark = pytest.mark.skipif(
     not (MODELS_DIR / f"metadata_{MODEL_NAME}.json").exists(),
@@ -31,6 +33,13 @@ def client(seeded_db, monkeypatch):
     monkeypatch.setattr(api_mod, "get_engine", lambda: seeded_db)
     monkeypatch.setattr(rec_mod, "get_engine", lambda: seeded_db)
     with TestClient(api_mod.app) as c:
+        # `models/metadata_shot-quality-v9.json` predates point-in-time
+        # defender quality, so it carries no `category_priors` and every
+        # lookup would short-circuit to empty (see the same override in
+        # tests/test_recommender.py's `recommender` fixture).
+        api_mod.recommender.category_priors = {
+            cat: BetaPrior(mean=0.0, strength=0.0) for cat in DEFENSE_CATEGORIES
+        }
         yield c
 
 
@@ -132,13 +141,18 @@ def test_matchup_uses_zone_level_defender_fg_pct(client):
     /matchup should use zone-level (not overall) defender FG% for the
     Restricted Area exploit analysis — the same fix ZONE_TO_DEF_CATEGORY
     documents in recommender.py.
+
+    P_DEF is every seeded shooter's only matchup in G1: 2 makes allowed at
+    the rim on 2 attempts (S1 off P_TALL, S4 off P_SHORT), against an
+    Overall of 2/5 — see test_defender_row_returns_zone_level_stats_not_just_overall
+    for the full breakdown.
     """
     resp = client.get("/matchup/P_TALL/P_DEF", params={"season": "2023-24"})
     assert resp.status_code == 200
     body = resp.json()
 
     rim_zone = next(z for z in body["exploit_zones"] if z["zone"] == "Restricted Area")
-    assert rim_zone["defender_fg_pct_allowed"] == pytest.approx(0.357)
+    assert rim_zone["defender_fg_pct_allowed"] == pytest.approx(1.0)
     assert rim_zone["defender_fg_pct_allowed"] != body["defender_quality"]["fg_pct_allowed"]
 
 

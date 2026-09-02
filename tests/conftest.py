@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.db.database import register_unaccent
 from src.db.models import (
-    Base, Game, Player, PlayerZoneStats, Shot, DefenderStats,
+    Base, Game, Player, PlayerZoneStats, Shot, DefenderStats, Matchup,
 )
 
 SEASON = "2023-24"
@@ -155,7 +155,22 @@ def seeded_db(db_engine, db_session):
              quarter=3, time_remaining=200, score_diff=5, home_away=1, playoff_flag=0),
     ]
 
-    db_session.add_all(zone_rows + def_rows + shot_rows)
+    # Point-in-time defender quality (point_in_time.build_defender_category_rates
+    # / lookup_defender_category_rates) is rebuilt from matchups + shots rather
+    # than read off `defender_stats`, so P_DEF needs real matchup rows too — the
+    # possession weight used to split a shot's outcome across whoever guarded
+    # the shooter that game. One row per (game, shooter) is enough here since
+    # P_DEF is each shooter's only defender in this fixture.
+    matchup_rows = [
+        Matchup(game_id="G1", offense_player_id="P_TALL", defense_player_id="P_DEF",
+                matchup_minutes=10.0, partial_possessions=3.0,
+                matchup_fgm=1, matchup_fga=2, matchup_fg_pct=0.5),
+        Matchup(game_id="G1", offense_player_id="P_SHORT", defense_player_id="P_DEF",
+                matchup_minutes=8.0, partial_possessions=2.0,
+                matchup_fgm=0, matchup_fga=1, matchup_fg_pct=0.0),
+    ]
+
+    db_session.add_all(zone_rows + def_rows + shot_rows + matchup_rows)
     db_session.commit()
 
     return db_engine

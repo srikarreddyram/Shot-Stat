@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ZONES, heightToFeet, type Player, type ZoneResult, type HeatmapPoint, type MatchupResponse, type HealthStatus } from "@/lib/shot-vision-data";
-import { searchPlayersAPI, getRecommendationHeatmapAPI, getMatchupAPI, checkHealthAPI } from "@/lib/api";
+import { ZONES, heightToFeet, type Player, type ZoneResult, type HeatmapPoint, type MatchupResponse, type HealthStatus, type AttainabilityExplanation } from "@/lib/shot-vision-data";
+import { searchPlayersAPI, getRecommendationHeatmapAPI, getMatchupAPI, checkHealthAPI, getAttainabilityExplanationAPI } from "@/lib/api";
 
 interface Props { onBack: () => void; }
 
@@ -566,7 +566,7 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
           </span>
         </div>
       )}
-      <CourtCanvas bestKey={best.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} />
+      <CourtCanvas bestKey={best.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} attacker={attacker} defender={defender} season={season} />
 
       <div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -676,6 +676,23 @@ const HOOP_Y = COURT_AREA_H - FT.hoopFromBaseline * COURT_SCALE;
 
 const ft = (feet: number) => feet * COURT_SCALE;
 
+// How far the heat field reaches from a real sample point. This is the single
+// source of truth for it: the renderer fades the field out past this radius,
+// and click hit-testing uses the same number so that anywhere the map shows
+// colour is somewhere you can click. They were separate values briefly, and
+// the result was large visibly-hot regions that silently ignored clicks.
+const FIELD_REACH = ft(7.0);
+
+// Peach hardwood. Markings are dark on a light floor, the way a real court
+// is painted — light lines would disappear into the boards.
+const COURT_SURFACE = "#DCB489";
+const COURT_PLANK = "rgba(140, 95, 52, 0.22)";
+const COURT_GRAIN = "rgba(112, 74, 40, 0.075)";
+const COURT_LINE = "rgba(92, 58, 30, 0.5)";
+const COURT_LINE_STRONG = "rgba(58, 35, 16, 0.85)";
+const COURT_RIM = "#B4491C";
+const LEGEND_BG = "#15110D";
+
 // Backend grid coordinates are tenths of a foot, basket-centred, y toward
 // half-court. This is the ONLY place that conversion happens.
 function courtToCanvas(locX: number, locY: number) {
@@ -698,15 +715,41 @@ function courtToCanvas(locX: number, locY: number) {
 // survives loss of hue. Heat is the one multi-hue sequential exception the
 // house style allows, and it is the domain's own vocabulary for this chart.
 // ─────────────────────────────────────────────────────────────────────────────
+// Heat ramp for a light hardwood floor — MULTIPLY tints, not opaque colours.
+//
+// Painting the field over the boards with source-over hid the wood: at any
+// alpha strong enough to read as heat, the plank seams and grain underneath
+// were gone. These entries are multiplicative tints instead, composited with
+// globalCompositeOperation = "multiply", so every pixel of heat is the wood's
+// own value scaled down. A seam that is 12% darker than the surface stays 12%
+// darker inside the hottest blob on the floor — the texture is preserved by
+// construction, at every intensity, rather than by choosing a timid alpha.
+//
+// The cold end is near white, which is the identity for multiply and so leaves
+// the boards untouched. From there the tint deepens and saturates; over
+// #DCB489 the ramp resolves to roughly:
+//
+//   d5af86 -> d69f60 -> d6893c -> d16b28 -> c04a20 -> a0301d -> 74151a
+//
+// Lightness falls monotonically across that range, so magnitude still survives
+// greyscale and red-green colour blindness.
 const HEAT_RAMP: Array<[number, number, number]> = [
-  [0x2b, 0x1a, 0x4d],
-  [0x6a, 0x1f, 0x6e],
-  [0xa7, 0x2c, 0x62],
-  [0xd9, 0x4d, 0x3e],
-  [0xf0, 0x87, 0x1f],
-  [0xfb, 0xc9, 0x3d],
-  [0xfd, 0xf0, 0xa8],
+  [0xf7, 0xf4, 0xef],
+  [0xf9, 0xe2, 0xb2],
+  [0xf9, 0xc4, 0x72],
+  [0xf2, 0x9a, 0x4c],
+  [0xdd, 0x6b, 0x3c],
+  [0xb9, 0x45, 0x36],
+  [0x86, 0x1e, 0x30],
 ];
+
+// The legend sits on a dark panel, where a multiply tint would be meaningless.
+// Compositing it against the floor first means the legend shows the colours
+// that actually appear on the court.
+function heatSwatch(r: number, g: number, b: number) {
+  const surface = [0xdc, 0xb4, 0x89];
+  return `rgb(${Math.round((r * surface[0]) / 255)}, ${Math.round((g * surface[1]) / 255)}, ${Math.round((b * surface[2]) / 255)})`;
+}
 
 function heatColor(t: number) {
   const clamped = Math.max(0, Math.min(1, t));
@@ -722,8 +765,198 @@ function heatColor(t: number) {
   };
 }
 
-function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: string; results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; showProb: boolean }) {
+// Headshot for the on-floor matchup badges, as a decoded <img> the canvas can
+// draw. Deliberately NOT crossOrigin: the NBA CDN is not guaranteed to send
+// CORS headers, and a rejected CORS load is a permanently blank badge, whereas
+// tainting this canvas costs nothing — the field is composed in a separate
+// offscreen canvas and no code ever reads pixels back off the visible one.
+function useHeadshot(url?: string) {
+  const [img, setImg] = useState<HTMLImageElement | null>(null);
+  useEffect(() => {
+    setImg(null);
+    if (!url) return;
+    let alive = true;
+    const im = new Image();
+    im.onload = () => { if (alive) setImg(im); };
+    im.onerror = () => { if (alive) setImg(null); };
+    im.src = url;
+    return () => { alive = false; };
+  }, [url]);
+  return img;
+}
+
+// Canvas text silently falls back to a system font if the webfont has not
+// finished loading when the effect runs, which is a coin flip on first paint.
+// Flipping this state after document.fonts settles gives the draw a second
+// pass with the real faces.
+function useFontsReady() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    document.fonts?.ready.then(() => { if (alive) setReady(true); });
+    return () => { alive = false; };
+  }, []);
+  return ready;
+}
+
+// "Victor Wembanyama" -> "V. WEMBANYAMA". Full names do not fit beside a
+// 42px badge on a 400px floor, and the surname is the identifying half.
+function badgeName(name: string) {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length < 2) return name.toUpperCase();
+  return `${parts[0][0]}. ${parts.slice(1).join(" ")}`.toUpperCase();
+}
+
+function initialsOf(name: string) {
+  return name.split(" ").filter(Boolean).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+}
+
+// One corner decal: circular headshot, accent ring, role label and name
+// painted onto the boards. `side` decides which way the text runs so both
+// badges hug their own corner.
+function drawMatchupBadge(
+  ctx: CanvasRenderingContext2D,
+  opts: { cx: number; cy: number; r: number; side: "left" | "right"; accent: string; ink: string; role: string; name: string; img: HTMLImageElement | null },
+) {
+  const { cx, cy, r, side, accent, ink, role, name, img } = opts;
+
+  ctx.save();
+
+  // Seat the disc on the floor with a soft shadow, so it reads as an object
+  // on the boards rather than a hole cut through them.
+  ctx.shadowColor = "rgba(40, 20, 6, 0.45)";
+  ctx.shadowBlur = 7;
+  ctx.shadowOffsetY = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = "#12121A";
+  ctx.fill();
+  ctx.restore();
+
+  if (img) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    // NBA headshots are 1040x760 with the player centred and shoulders-up.
+    // Crop a square around the head rather than squashing the full frame
+    // into the circle.
+    const s = Math.min(img.naturalWidth, img.naturalHeight) * 0.72;
+    const sx = (img.naturalWidth - s) / 2;
+    const sy = Math.max(0, img.naturalHeight * 0.06);
+    ctx.drawImage(img, sx, sy, s, s, cx - r, cy - r, r * 2, r * 2);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = accent;
+    ctx.font = "16px 'Bebas Neue', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(initialsOf(name) || "?", cx, cy + 1);
+  }
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const tx = side === "left" ? cx + r + 9 : cx - r - 9;
+  ctx.textAlign = side === "left" ? "left" : "right";
+  ctx.textBaseline = "alphabetic";
+
+  // The role label is a darkened version of the accent, not the accent itself:
+  // #C9A84C gold on #DCB489 peach is barely a colour difference, and the ring
+  // already carries the attacker/defender coding at full strength. Darkening
+  // it keeps the association and makes it readable as pigment on wood.
+  ctx.font = "8px 'JetBrains Mono', monospace";
+  ctx.fillStyle = ink;
+  ctx.fillText(role, tx, cy - 7);
+
+  // The name is painted in the same dark pigment as the court markings, so it
+  // belongs to the floor. It stays legible over the heat because the ramp is
+  // monotonic in lightness and never gets light enough to swallow it.
+  ctx.font = "18px 'Bebas Neue', sans-serif";
+  ctx.fillStyle = COURT_LINE_STRONG;
+  ctx.fillText(badgeName(name), tx, cy + 13);
+
+  ctx.restore();
+}
+
+function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defender, season }: { bestKey: string; results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; showProb: boolean; attacker: Player; defender: Player; season: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Click-to-inspect. Every grid point already carries its shot type,
+  // distance and model outputs; before this they were only ever aggregated
+  // into the heat field, so a specific shot could be seen but not read.
+  const [selected, setSelected] = useState<number | null>(null);
+
+  // Both players, on the floor. Without them the top of the court is a large
+  // empty stretch of boards, and the chart carries no reminder of whose
+  // matchup it is once you have scrolled the inputs off screen.
+  const attackerImg = useHeadshot(attacker.headshotUrl);
+  const defenderImg = useHeadshot(defender.headshotUrl);
+  const fontsReady = useFontsReady();
+  const [nearCursor, setNearCursor] = useState(false);
+
+  // Canvas-space position of every point, computed once per result set and
+  // reused for hit-testing so a click never re-runs the field interpolation.
+  const plotted = useMemo(
+    () => heatmapPoints.map((pt) => ({ pt, ...courtToCanvas(pt.loc_x, pt.loc_y) })),
+    [heatmapPoints]
+  );
+
+  // A new run replaces the grid, so any previous pick is meaningless.
+  useEffect(() => { setSelected(null); }, [heatmapPoints]);
+
+  useEffect(() => {
+    if (selected === null) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelected(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
+  // The canvas is 400px internally but rendered at width:100%, so pointer
+  // coordinates have to be mapped through the displayed size, not the buffer.
+  const toCanvasSpace = (e: { clientX: number; clientY: number }) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * COURT_CW,
+      y: ((e.clientY - rect.top) / rect.height) * COURT_CH,
+    };
+  };
+
+  // Matching the field's reach means click coverage equals painted coverage:
+  // if a spot shows heat it is selectable, and bare floor still clears.
+  // Mid-range samples sit up to 24px apart, so a tighter radius left dead
+  // patches in the middle of bright blobs.
+  const HIT_RADIUS = FIELD_REACH;
+  const nearestTo = (x: number, y: number) => {
+    let bestIdx = -1;
+    let bestD2 = HIT_RADIUS * HIT_RADIUS;
+    for (let i = 0; i < plotted.length; i++) {
+      const dx = plotted[i].x - x;
+      const dy = plotted[i].y - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) { bestD2 = d2; bestIdx = i; }
+    }
+    return bestIdx;
+  };
+
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const c = toCanvasSpace(e);
+    if (!c) return;
+    const i = nearestTo(c.x, c.y);
+    // Clicking bare floor clears, so the card is never stuck open.
+    setSelected(i >= 0 ? i : null);
+  };
+
+  const handleMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const c = toCanvasSpace(e);
+    setNearCursor(!!c && nearestTo(c.x, c.y) >= 0);
+  };
 
   // Centroid (in canvas px) of each zone's real grid points — used both to
   // place the aggregate EP/probability label and to anchor the best-zone
@@ -759,36 +992,43 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
     // show the values actually on screen rather than invented endpoints.
     let heatScale: { lo: number; hi: number } | null = null;
 
-    // STEP 1 - HARDWOOD FLOOR BASE
-    ctx.fillStyle = "#2C1A0A";
-    ctx.fillRect(0, 0, cw, COURT_AREA_H);
-    
-    const baseGrad = ctx.createLinearGradient(0, 0, 0, ch);
-    baseGrad.addColorStop(0.0, "#3D1F08");
-    baseGrad.addColorStop(0.4, "#4A2810");
-    baseGrad.addColorStop(0.7, "#3D1F08");
-    baseGrad.addColorStop(1.0, "#2C1508");
-    ctx.fillStyle = baseGrad;
+    // ── STEP 1: PLAYING SURFACE ───────────────────────────────────────────
+    // Peach hardwood. The earlier version of this had a vertical gradient,
+    // grain lines every 12px and plank seams at 25/50/75% — enough contrast
+    // that the eye had to discard it before it could read the data. The wood
+    // here is deliberately quiet: seams at a realistic plank width and a grain
+    // whisper, both far below the weakest heat step, so the boards read as
+    // texture and never as signal.
+    ctx.fillStyle = COURT_SURFACE;
     ctx.fillRect(0, 0, cw, ch);
-    
-    for (let y = 0; y <= ch; y += 12) {
-      ctx.strokeStyle = (y / 12) % 2 === 0 ? "rgba(180, 100, 30, 0.15)" : "rgba(120, 60, 15, 0.08)";
-      ctx.lineWidth = 1;
+
+    // Planks run baseline to baseline, i.e. vertically in this view.
+    const PLANK_W = ft(2.5);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = COURT_PLANK;
+    for (let x = PLANK_W / 2; x < cw; x += PLANK_W) {
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(cw, y);
+      ctx.moveTo(Math.round(x) + 0.5, 0);
+      ctx.lineTo(Math.round(x) + 0.5, COURT_AREA_H);
       ctx.stroke();
     }
-    
-    ctx.strokeStyle = "rgba(100, 50, 10, 0.1)";
-    ctx.lineWidth = 1;
-    [cw * 0.25, cw * 0.5, cw * 0.75].forEach(x => {
+
+    // Grain: short dashes along the planks, offset per plank so the boards
+    // do not line up into visible rows.
+    ctx.strokeStyle = COURT_GRAIN;
+    ctx.setLineDash([9, 15]);
+    let plankIndex = 0;
+    for (let x = PLANK_W / 2; x < cw; x += PLANK_W) {
+      ctx.lineDashOffset = (plankIndex % 4) * 7;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, ch);
+      ctx.moveTo(Math.round(x - PLANK_W / 3) + 0.5, 0);
+      ctx.lineTo(Math.round(x - PLANK_W / 3) + 0.5, COURT_AREA_H);
       ctx.stroke();
-    });
-    
+      plankIndex += 1;
+    }
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+
     // ── STEP 2: SHOT-QUALITY FIELD ────────────────────────────────────────
     //
     // The previous implementation splatted one additive radial blob per grid
@@ -807,13 +1047,6 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
     const values = heatmapPoints.map((p) => (showProb ? p.make_probability : p.expected_points));
 
     if (values.length > 0) {
-      // Scale the ramp to the data actually on screen rather than to hardcoded
-      // limits, so a low-usage bench player's chart still uses the full ramp
-      // instead of rendering as one flat colour.
-      let lo = Math.min(...values);
-      let hi = Math.max(...values);
-      if (hi - lo < 1e-6) { lo -= 0.05; hi += 0.05; }
-
       const pts = heatmapPoints.map((p, i) => {
         const c = courtToCanvas(p.loc_x, p.loc_y);
         return { x: c.x, y: c.y, v: values[i] };
@@ -830,11 +1063,20 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
       // Interpolation falloff. Also the honesty control: past this radius from
       // any real sample the field fades out rather than inventing values for
       // parts of the floor nobody shoots from.
-      const REACH = ft(7.0);
+      const REACH = FIELD_REACH;
       // Total kernel weight at which the field is fully opaque. Below it the
       // field fades out, so thinly-sampled edges of the court recede instead
       // of asserting a value.
       const WEIGHT_FULL = 1.6;
+
+      // PASS 1 — interpolate. The ramp is scaled to the values that actually
+      // end up ON the lattice, not to the raw point values: averaging pulls
+      // peaks in, so scaling to the point maximum meant the top of the ramp
+      // was never reached and the legend promised a red that never appeared.
+      const cellValue = new Float32Array(gw * gh).fill(NaN);
+      const cellAlpha = new Float32Array(gw * gh);
+      let lo = Infinity;
+      let hi = -Infinity;
 
       for (let gy = 0; gy < gh; gy++) {
         for (let gx = 0; gx < gw; gx++) {
@@ -856,11 +1098,11 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
             vsum += w * pts[i].v;
           }
 
-          const idx = (gy * gw + gx) * 4;
-          if (wsum <= 0) { field.data[idx + 3] = 0; continue; }
+          const cell = gy * gw + gx;
+          if (wsum <= 0) continue;
 
           const value = vsum / wsum;
-          const { r, g, b } = heatColor((value - lo) / (hi - lo));
+          cellValue[cell] = value;
 
           // Fade on TOTAL weight rather than distance to the nearest sample.
           // Nearest-distance gives every point its own circular cutoff, so the
@@ -870,16 +1112,36 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
           // better looking and a more honest depiction of where the estimate
           // is actually supported.
           const edge = Math.max(0, Math.min(1, wsum / WEIGHT_FULL));
-
-          field.data[idx] = r;
-          field.data[idx + 1] = g;
-          field.data[idx + 2] = b;
           // Cubed rather than squared: the field should die off quickly past
           // the last real sample. With a gentler falloff it flooded the whole
           // upper half of the court with colour in places nobody shoots from,
           // which reads as data and is not.
-          field.data[idx + 3] = Math.round(224 * edge * edge * edge);
+          cellAlpha[cell] = edge * edge * edge;
+
+          // Only cells that are actually drawn get to set the scale — a cell
+          // that fades to nothing should not stretch the legend.
+          if (cellAlpha[cell] > 0.02) {
+            if (value < lo) lo = value;
+            if (value > hi) hi = value;
+          }
         }
+      }
+
+      if (!isFinite(lo) || !isFinite(hi)) { lo = 0; hi = 1; }
+      if (hi - lo < 1e-6) { lo -= 0.05; hi += 0.05; }
+
+      // PASS 2 — colourise against the range the field actually spans.
+      for (let cell = 0; cell < cellValue.length; cell++) {
+        const idx = cell * 4;
+        const value = cellValue[cell];
+        if (Number.isNaN(value)) { field.data[idx + 3] = 0; continue; }
+        const { r, g, b } = heatColor((value - lo) / (hi - lo));
+        field.data[idx] = r;
+        field.data[idx + 1] = g;
+        field.data[idx + 2] = b;
+        // Multiply preserves the grain at any alpha, so the field no longer has to
+        // be held back to keep the boards visible.
+        field.data[idx + 3] = Math.round(246 * cellAlpha[cell]);
       }
 
       // Blit the lattice, then let drawImage upscale it smoothly.
@@ -889,7 +1151,14 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
       tmp.getContext("2d")!.putImageData(field, 0, 0);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
+      // The extra blur is what makes the blobs read as organic rather than as
+      // an upscaled lattice. Applied to the field only, before the lines are
+      // drawn, so the court markings stay crisp on top.
+      ctx.filter = "blur(3.5px)";
+      ctx.globalCompositeOperation = "multiply";
       ctx.drawImage(tmp, 0, 0, cw, ch);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.filter = "none";
 
       heatScale = { lo, hi };
     }
@@ -899,8 +1168,8 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
     // same transform the data uses, so the arc and the above-the-break cluster
     // cannot drift apart the way they did before.
     ctx.globalCompositeOperation = "source-over";
-    ctx.strokeStyle = "rgba(255, 240, 200, 0.55)";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = COURT_LINE;
+    ctx.lineWidth = 1.2;
 
     const baselineY = HOOP_Y + ft(FT.hoopFromBaseline);
 
@@ -946,23 +1215,23 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
     ctx.stroke();
 
     // BACKBOARD
-    ctx.strokeStyle = "rgba(255,240,200,0.75)";
-    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = COURT_LINE_STRONG;
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(HOOP_X - ft(FT.backboardWidth / 2), HOOP_Y + ft(FT.backboardFromHoop));
     ctx.lineTo(HOOP_X + ft(FT.backboardWidth / 2), HOOP_Y + ft(FT.backboardFromHoop));
     ctx.stroke();
 
     // RIM
-    ctx.strokeStyle = "#C9A84C";
+    ctx.strokeStyle = COURT_RIM;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(HOOP_X, HOOP_Y, ft(FT.rimRadius), 0, Math.PI * 2);
     ctx.stroke();
 
     // BASELINE + SIDELINES
-    ctx.strokeStyle = "rgba(255,240,200,0.4)";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = COURT_LINE;
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
     ctx.moveTo(1, baselineY);
     ctx.lineTo(cw - 1, baselineY);
@@ -970,59 +1239,28 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
     ctx.moveTo(cw - 1, 0); ctx.lineTo(cw - 1, baselineY);
     ctx.stroke();
 
-    // STEP 4 - FLOOR VARNISH EFFECT
-    const varnishGrad = ctx.createRadialGradient(cw * 0.5, COURT_AREA_H * 0.5, 0, cw * 0.5, COURT_AREA_H * 0.5, cw * 0.7);
-    varnishGrad.addColorStop(0.0, "rgba(255,200,100,0.04)");
-    varnishGrad.addColorStop(0.5, "rgba(255,150,50,0.02)");
-    varnishGrad.addColorStop(1.0, "rgba(0,0,0,0)");
-    ctx.fillStyle = varnishGrad;
-    ctx.globalCompositeOperation = "overlay";
-    ctx.fillRect(0, 0, cw, COURT_AREA_H);
-    ctx.globalCompositeOperation = "source-over";
-    
-    // STEP 5 - EP LABELS
-    ctx.font = "bold 12px JetBrains Mono";
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.shadowColor = "rgba(0,0,0,0.8)";
-    ctx.shadowBlur = 4;
-    ctx.shadowOffsetX = 1;
-    ctx.shadowOffsetY = 1;
-    
-    // Label each zone once at the centroid of its real grid points (falls
-    // back to a rough manual position if a zone had no returned points).
-    const fallbackPos: Record<string, { x: number; y: number }> = {
-      restrictedArea: { x: 200, y: 318 },
-      paintNonRA: { x: 200, y: 230 },
-      leftCorner3: { x: 32, y: 310 },
-      rightCorner3: { x: 368, y: 310 },
-      aboveBreak3: { x: 200, y: 100 },
-      midRange: { x: 200, y: 250 },
-    };
+    // The floor varnish and the per-zone EP numbers that used to be painted
+    // here are both gone. The varnish was a wood effect with nothing left to
+    // sit on, and stamping values onto the surface is the least SofaScore
+    // thing on the chart — clicking a spot now gives the full readout, which
+    // is strictly more information than five numbers baked into the image.
 
-    for (const z of ZONES) {
-      const r = results.find((res) => res.zone.key === z.key);
-      if (!r) continue;
-      const val = showProb ? `${Math.round(r.makeProb * 100)}%` : r.ep.toFixed(2);
-      const pos = centroids[z.label] ?? fallbackPos[z.key];
-      if (!pos) continue;
-      // Corner-3 centroids land ~12px from the sideline, so centred text ran
-      // off the canvas and rendered as half a number.
-      const lx = Math.min(cw - 22, Math.max(22, pos.x));
-      const ly = Math.min(COURT_AREA_H - 14, Math.max(14, pos.y));
-      ctx.fillText(val, lx, ly);
-    }
+    // ── STEP 5b: MATCHUP BADGES ───────────────────────────────────────────
+    // Backcourt corners: the two areas of floor the heat field never reaches,
+    // since nobody shoots from there. Gold left / red right is the same
+    // attacker/defender convention the rest of the page uses.
+    const BADGE_R = 21;
+    const BADGE_Y = 36;
+    drawMatchupBadge(ctx, { cx: 14 + BADGE_R, cy: BADGE_Y, r: BADGE_R, side: "left", accent: "#C9A84C", ink: "#6B4E0A", role: "ATTACKER", name: attacker.name, img: attackerImg });
+    drawMatchupBadge(ctx, { cx: cw - 14 - BADGE_R, cy: BADGE_Y, r: BADGE_R, side: "right", accent: "#DC2626", ink: "#8A1512", role: "DEFENDER", name: defender.name, img: defenderImg });
 
-    ctx.shadowColor = "transparent";
-    
     // ── STEP 6: SCALE LEGEND ──────────────────────────────────────────────
     // The old legend was a bare gradient labelled "LOW EP" / "HIGH EP", which
     // tells a reader the direction but not the magnitude — two players' charts
     // looked identical whether they differed by 0.02 expected points or 0.6.
     // Heat is a multi-hue ramp, and the house rule is that it always ships with
     // a scale, so this one carries the real endpoints and midpoint.
-    ctx.fillStyle = "#12100E";
+    ctx.fillStyle = LEGEND_BG;
     ctx.fillRect(0, COURT_AREA_H, cw, LEGEND_H);
 
     const barX = 80;
@@ -1032,13 +1270,13 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
     const legGrad = ctx.createLinearGradient(barX, barY, barX + barW, barY);
     for (let i = 0; i < HEAT_RAMP.length; i++) {
       const [r, g, b] = HEAT_RAMP[i];
-      legGrad.addColorStop(i / (HEAT_RAMP.length - 1), `rgb(${r}, ${g}, ${b})`);
+      legGrad.addColorStop(i / (HEAT_RAMP.length - 1), heatSwatch(r, g, b));
     }
     ctx.fillStyle = legGrad;
     ctx.fillRect(barX, barY, barW, 6);
 
     ctx.font = "9px JetBrains Mono, monospace";
-    ctx.fillStyle = "#8A8578";
+    ctx.fillStyle = "#9BA8A0";
     ctx.textBaseline = "top";
 
     const fmt = (v: number) => (showProb ? `${Math.round(v * 100)}%` : v.toFixed(2));
@@ -1054,10 +1292,10 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
     // One label, right-aligned into the gutter left of the bar. The previous
     // version also drew "COLD" at x=8, which overlapped this text.
     ctx.textAlign = "right";
-    ctx.fillStyle = "#6B6759";
+    ctx.fillStyle = "#71807A";
     ctx.fillText(showProb ? "MAKE %" : "EXP. PTS", barX - 10, barY + 11);
 
-  }, [results, heatmapPoints, centroids, showProb]);
+  }, [results, heatmapPoints, centroids, showProb, attacker, defender, attackerImg, defenderImg, fontsReady]);
 
   // STEP 7 - BEST ZONE PULSE RING, anchored to the real centroid of that
   // zone's grid points (falls back to a rough manual position if missing).
@@ -1071,8 +1309,10 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
   };
   const bestZone = ZONES.find((z) => z.key === bestKey);
   const ring = (bestZone && centroids[bestZone.label]) ?? ringFallback[bestKey];
+  const sel = selected !== null ? plotted[selected] : null;
 
   return (
+    <>
     <div style={{ position: "relative", width: "100%", borderRadius: 3, overflow: "hidden", border: "1px solid rgba(255,255,255,0.05)" }}>
       <style>{`
         @keyframes pulseRing {
@@ -1080,7 +1320,17 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
           50% { opacity: 0; transform: translate(-50%, -50%) scale(1.6); box-shadow: 0 0 24px #C9A84C; }
         }
       `}</style>
-      <canvas ref={canvasRef} width={COURT_CW} height={COURT_CH} style={{ width: "100%", height: "auto", display: "block" }} />
+      <canvas
+        ref={canvasRef}
+        width={COURT_CW}
+        height={COURT_CH}
+        onClick={handleClick}
+        onMouseMove={handleMove}
+        onMouseLeave={() => setNearCursor(false)}
+        role="img"
+        aria-label={`Shot quality map for ${attacker.name} against ${defender.name}. Click a spot on the floor for that shot's numbers.`}
+        style={{ width: "100%", height: "auto", display: "block", cursor: nearCursor ? "pointer" : "default" }}
+      />
       {ring && (
         <div style={{
           position: "absolute",
@@ -1093,6 +1343,451 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb }: { bestKey: s
           transformOrigin: "top left",
           animation: "pulseRing 2s ease-in-out infinite"
         }} />
+      )}
+      {sel && (
+        <div style={{
+          position: "absolute",
+          left: `${(sel.x / COURT_CW) * 100}%`,
+          top: `${(sel.y / COURT_CH) * 100}%`,
+          width: 16, height: 16,
+          marginLeft: -8, marginTop: -8,
+          borderRadius: "50%",
+          border: "2px solid #FFFFFF",
+          boxShadow: "0 0 0 2px rgba(0,0,0,0.55), 0 0 12px rgba(255,255,255,0.5)",
+          pointerEvents: "none",
+        }} />
+      )}
+    </div>
+    {sel && (
+      <ShotDetail
+        point={sel.pt}
+        attacker={attacker}
+        defender={defender}
+        showProb={showProb}
+        season={season}
+        onClose={() => setSelected(null)}
+      />
+    )}
+    </>
+  );
+}
+
+// One grid point, read out in full. The heat field can only show magnitude;
+// this is where the shot the model is actually scoring becomes legible.
+function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { point: HeatmapPoint; attacker: Player; defender: Player; showProb: boolean; season: string; onClose: () => void }) {
+  // `shot_type` is only ever "2PT/3PT Field Goal". `best_mechanic` is the
+  // actual shot — stepback, cutting, driving — so it leads.
+  const mechanic = point.best_mechanic ? point.best_mechanic.toUpperCase() : null;
+  const isThree = /3PT/.test(point.shot_type);
+
+  // The attainability breakdown is fetched only when opened. Six zone
+  // explanations per heatmap request would be computed for every shot a user
+  // never asks about.
+  const [whyOpen, setWhyOpen] = useState(false);
+  const [why, setWhy] = useState<AttainabilityExplanation | null>(null);
+  const [whyError, setWhyError] = useState<string | null>(null);
+
+  // A new shot means the open explanation describes the wrong zone.
+  useEffect(() => {
+    setWhyOpen(false);
+    setWhy(null);
+    setWhyError(null);
+  }, [point.zone, point.loc_x, point.loc_y, attacker.id, season]);
+
+  useEffect(() => {
+    if (!whyOpen || why || whyError) return;
+    let cancelled = false;
+    getAttainabilityExplanationAPI(attacker.id, point.zone, season, point.loc_x, point.loc_y)
+      .then((res) => { if (!cancelled) setWhy(res); })
+      .catch((e) => { if (!cancelled) setWhyError(e instanceof Error ? e.message : "Could not load"); });
+    return () => { cancelled = true; };
+  }, [whyOpen, why, whyError, attacker.id, point.zone, point.loc_x, point.loc_y, season]);
+
+  const band =
+    point.ep_low != null && point.ep_high != null
+      ? `${point.ep_low.toFixed(2)}–${point.ep_high.toFixed(2)}`
+      : null;
+
+  const rows: Array<{ label: string; value: string; accent?: string; note?: string; expandable?: boolean }> = [
+    {
+      label: "MAKE PROB",
+      value: `${(point.make_probability * 100).toFixed(1)}%`,
+      accent: showProb ? "#C9A84C" : undefined,
+    },
+    {
+      label: "EXPECTED PTS",
+      value: point.expected_points.toFixed(2),
+      accent: showProb ? undefined : "#C9A84C",
+      note: band ? `95% ${band}` : undefined,
+    },
+    { label: "SHOT QUALITY", value: point.shot_quality_score.toFixed(2) },
+    { label: "DIFFICULTY", value: point.difficulty_score.toFixed(2) },
+  ];
+
+  if (point.ep_vs_own_average != null) {
+    const v = point.ep_vs_own_average;
+    rows.push({
+      label: "VS HIS AVERAGE",
+      value: `${v >= 0 ? "+" : ""}${v.toFixed(2)} EP`,
+      accent: v >= 0 ? "#16A34A" : "#DC2626",
+    });
+  }
+  if (point.attainability != null) {
+    rows.push({
+      label: "ATTAINABILITY",
+      // Same precision the breakdown uses. Rounding a 1.6% to "2%" here while
+      // the panel below reads "1.6%" makes one number look like two.
+      value: formatAttainability(point.attainability),
+      note: "tap for why",
+      expandable: true,
+    });
+  }
+  if (point.attempts_behind != null) {
+    rows.push({
+      label: "SAMPLE",
+      value: point.attempts_behind.toLocaleString(),
+      note: "similar shots",
+    });
+  }
+  if (typeof point.shot_volume === "number") rows.push({ label: "ATTEMPTS HERE", value: String(point.shot_volume) });
+
+  return (
+    <div style={{
+      marginTop: 10,
+      background: "#111118",
+      border: "1px solid rgba(201,168,76,0.28)",
+      borderRadius: 3,
+      padding: "12px 14px 14px",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#C9A84C", letterSpacing: "0.3em" }}>
+            SELECTED SHOT
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 3, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, color: "#F0F0F0", lineHeight: 1.05 }}>
+              {mechanic ?? point.shot_type}
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#9aa7bd", letterSpacing: "0.1em" }}>
+              {point.shot_distance.toFixed(1)} FT · {isThree ? "3PT" : "2PT"} · {point.zone.toUpperCase()}
+            </div>
+          </div>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#64748b", marginTop: 3 }}>
+            {attacker.name} vs {defender.name}
+            {point.best_mechanic_prob != null && mechanic
+              ? ` · model picks ${mechanic.toLowerCase()} ${(point.best_mechanic_prob * 100).toFixed(0)}% of the time here`
+              : ""}
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="Clear selected shot"
+          style={{
+            background: "transparent",
+            border: "1px solid rgba(255,255,255,0.14)",
+            color: "#9aa7bd",
+            borderRadius: 3,
+            fontSize: 11,
+            lineHeight: 1,
+            padding: "5px 8px",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          CLEAR
+        </button>
+      </div>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))",
+        gap: "10px 14px",
+        marginTop: 12,
+        paddingTop: 12,
+        borderTop: "1px solid rgba(255,255,255,0.07)",
+      }}>
+        {rows.map((r) => {
+          const body = (
+            <>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
+                {r.label}
+              </div>
+              <div style={{
+                fontFamily: "'Inter', sans-serif",
+                fontWeight: 600,
+                fontSize: 15,
+                color: r.accent || "#F0F0F0",
+                marginTop: 3,
+              }}>
+                {r.value}
+                {r.expandable && (
+                  <span style={{ fontSize: 9, color: "#C9A84C", marginLeft: 5 }}>
+                    {whyOpen ? "▾" : "▸"}
+                  </span>
+                )}
+              </div>
+              {r.note && (
+                <div style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 8,
+                  color: r.expandable ? "#C9A84C" : "#4a5568",
+                  marginTop: 2,
+                }}>
+                  {r.note}
+                </div>
+              )}
+            </>
+          );
+
+          if (!r.expandable) return <div key={r.label}>{body}</div>;
+          return (
+            <button
+              key={r.label}
+              onClick={() => setWhyOpen((v) => !v)}
+              aria-expanded={whyOpen}
+              aria-label={`${r.label} ${r.value}. Show why.`}
+              style={{
+                background: "transparent",
+                border: "none",
+                borderBottom: "1px dotted rgba(201,168,76,0.4)",
+                padding: 0,
+                textAlign: "left",
+                cursor: "pointer",
+                font: "inherit",
+              }}
+            >
+              {body}
+            </button>
+          );
+        })}
+      </div>
+      {whyOpen && (
+        <AttainabilityWhy explanation={why} error={whyError} />
+      )}
+    </div>
+  );
+}
+
+// The attainability breakdown, opened from the shot detail panel.
+//
+// Reports the split the model actually makes: what any player would get in
+// this zone, then what this player's own game adds or gives up. Collapsing
+// those into one number is what makes a bare "4%" unreadable — it hides
+// whether the shot is rare for everybody or rare for him.
+function AttainabilityWhy({ explanation, error }: { explanation: AttainabilityExplanation | null; error: string | null }) {
+  const wrap: React.CSSProperties = {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTop: "1px solid rgba(201,168,76,0.2)",
+  };
+
+  if (error) {
+    return (
+      <div style={{ ...wrap, fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#DC2626" }}>
+        {error}
+      </div>
+    );
+  }
+  if (!explanation) {
+    return (
+      <div style={{ ...wrap, fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#64748b", letterSpacing: "0.18em" }}>
+        LOADING…
+      </div>
+    );
+  }
+
+  const pct = formatAttainability;
+  const delta = explanation.player_effect;
+
+  return (
+    <div style={wrap}>
+      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#CBD5E1", lineHeight: 1.5 }}>
+        {explanation.summary}
+      </div>
+
+      <div style={{ display: "flex", gap: 18, marginTop: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
+            TYPICAL PLAYER HERE
+          </div>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: 14, color: "#94A3B8", marginTop: 2 }}>
+            {pct(explanation.baseline)}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
+            HIS GAME
+          </div>
+          <div style={{
+            fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: 14,
+            color: delta >= 0 ? "#16A34A" : "#DC2626", marginTop: 2,
+          }}>
+            {delta >= 0 ? "+" : ""}{pct(delta)}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
+            RESULT
+          </div>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: 14, color: "#C9A84C", marginTop: 2 }}>
+            {pct(explanation.attainability)}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+        {explanation.factors.map((f) => {
+          const lowers = f.direction === "lowers";
+          // Bar width is relative to the largest factor shown, so the ranking
+          // stays legible whether the spread is 6 points or half a point.
+          const max = Math.max(...explanation.factors.map((x) => Math.abs(x.impact)), 1e-9);
+          const width = `${Math.max(4, (Math.abs(f.impact) / max) * 100)}%`;
+          return (
+            <div key={f.feature}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#E2E8F0", minWidth: 0 }}>
+                  {f.detail}
+                  <span style={{ color: "#64748b" }}>
+                    {" — "}{f.label.toLowerCase()} {f.display_value}
+                    {f.percentile != null && `, ${ordinal(f.percentile)} pct`}
+                  </span>
+                </div>
+                <div style={{
+                  fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+                  color: lowers ? "#DC2626" : "#16A34A", whiteSpace: "nowrap",
+                }}>
+                  {lowers ? "−" : "+"}{(Math.abs(f.impact) * 100).toFixed(1)}pp
+                </div>
+              </div>
+              <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2, marginTop: 4 }}>
+                <div style={{
+                  width, height: "100%", borderRadius: 2,
+                  background: lowers ? "#DC2626" : "#16A34A", opacity: 0.75,
+                }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {explanation.creation?.note && (
+        <div style={{
+          marginTop: 12,
+          paddingTop: 10,
+          borderTop: "1px solid rgba(255,255,255,0.07)",
+        }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
+            WHO CREATES IT
+          </div>
+          {/* Attainability says how OFTEN he shoots here. This says whether he
+              can go get it or has to be found — the same number means very
+              different things in those two cases. */}
+          {explanation.creation.self_created_share != null
+            && explanation.creation.league_self_created_share != null && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 5px" }}>
+              <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden", display: "flex" }}>
+                <div style={{
+                  width: `${explanation.creation.self_created_share * 100}%`,
+                  background: "#C9A84C",
+                }} />
+              </div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#94A3B8", whiteSpace: "nowrap" }}>
+                {Math.round(explanation.creation.self_created_share * 100)}% SELF
+                <span style={{ color: "#4a5568" }}>
+                  {" / LG "}{Math.round(explanation.creation.league_self_created_share * 100)}%
+                </span>
+              </div>
+            </div>
+          )}
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#CBD5E1", lineHeight: 1.5 }}>
+            {explanation.creation.note}
+          </div>
+        </div>
+      )}
+
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#4a5568", marginTop: 10, lineHeight: 1.5 }}>
+        CONTRIBUTIONS ARE EXACT (TREESHAP) AND SUM TO THE ESTIMATE. PERCENTILES ARE LEAGUE-WIDE.
+      </div>
+    </div>
+  );
+}
+
+// Attainability spans two orders of magnitude across the floor — a corner
+// three can sit near 1% while the rim is over 30% — so a single fixed
+// precision either rounds the small end into noise or clutters the large end.
+function formatAttainability(v: number) {
+  return `${(v * 100).toFixed(Math.abs(v) < 0.1 ? 1 : 0)}%`;
+}
+
+function ordinal(p: number) {
+  const n = Math.round(p);
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+/**
+ * A tappable row that expands an explanation in place.
+ *
+ * The matchup panel is dense with paired numbers ("79% vs 47%", "8\" DEFENDER")
+ * that are meaningless unless you already know which side is which and what
+ * the pairing is measuring. Rather than shrink the data down or bolt on
+ * tooltips that never appear on touch, each block can be opened for a
+ * plain-English reading of the exact numbers on screen.
+ */
+function Disclosure({ label, children, tone = "#C9A84C", dense = false }: { label: React.ReactNode; children: React.ReactNode; tone?: string; dense?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          width: "100%",
+          background: "transparent",
+          border: "none",
+          padding: dense ? 0 : "2px 0",
+          cursor: "pointer",
+          textAlign: "left",
+          color: "inherit",
+          font: "inherit",
+        }}
+      >
+        {label}
+        <span
+          aria-hidden
+          style={{
+            marginLeft: "auto",
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 9,
+            color: tone,
+            border: `1px solid ${tone}55`,
+            borderRadius: 2,
+            padding: "1px 5px",
+            flexShrink: 0,
+          }}
+        >
+          {open ? "HIDE" : "WHAT?"}
+        </span>
+      </button>
+      {open && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: "10px 12px",
+            background: "#0d0d14",
+            borderLeft: `2px solid ${tone}`,
+            borderRadius: 2,
+            fontFamily: "'Inter', sans-serif",
+            fontSize: 12.5,
+            lineHeight: 1.6,
+            color: "#9aa7bd",
+          }}
+        >
+          {children}
+        </div>
       )}
     </div>
   );
@@ -1144,12 +1839,43 @@ function MatchupEdge({ attacker, defender, season }: { attacker: Player; defende
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#C9A84C", letterSpacing: "0.4em" }}>MATCHUP EDGE</div>
-        {data?.size_mismatch && (
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#DC2626", letterSpacing: "0.15em" }}>⚠ SIZE MISMATCH</span>
-        )}
-        {(data?.attacker.stats_source === "prior" || data?.defender.stats_source === "prior") && <ProjectedBadge compact />}
+      <div style={{ marginBottom: 12 }}>
+        <Disclosure
+          label={
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#C9A84C", letterSpacing: "0.4em" }}>MATCHUP EDGE</span>
+              {data?.size_mismatch && (
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#DC2626", letterSpacing: "0.15em" }}>⚠ SIZE MISMATCH</span>
+              )}
+              {(data?.attacker.stats_source === "prior" || data?.defender.stats_source === "prior") && <ProjectedBadge compact />}
+            </span>
+          }
+        >
+          <p style={{ margin: 0 }}>
+            Everything in this panel compares <strong style={{ color: "#C9A84C" }}>{attacker.name}</strong> (gold, left)
+            against <strong style={{ color: "#DC2626" }}>{defender.name}</strong> (red, right).
+          </p>
+          <p style={{ margin: "8px 0 0" }}>
+            <strong style={{ color: "#F0F0F0" }}>The bars</strong> are raw physicals. The label on the right names who
+            holds the advantage and by how much — so <em>8&quot; DEFENDER</em> means the defender is eight inches taller.
+          </p>
+          <p style={{ margin: "8px 0 0" }}>
+            <strong style={{ color: "#F0F0F0" }}>FG% allowed</strong> is how well opponents shoot with this defender on
+            them, across the whole floor. <em>Lower is better for the defender</em>, so a negative &quot;vs league&quot;
+            figure means he is tougher than the average defender, not worse.
+          </p>
+          <p style={{ margin: "8px 0 0" }}>
+            <strong style={{ color: "#F0F0F0" }}>Exploit zones</strong> put the attacker&apos;s shooting in a zone next to
+            what the defender allows there. A green row is where that gap is biggest — the mismatch to attack. Tap any
+            row for its own numbers spelled out.
+          </p>
+          {data?.size_mismatch && (
+            <p style={{ margin: "8px 0 0", color: "#DC2626" }}>
+              <strong>Size mismatch</strong> flags a physical gap wide enough that the model expects it to change shot
+              quality on its own.
+            </p>
+          )}
+        </Disclosure>
       </div>
 
       {loading && (
@@ -1181,7 +1907,7 @@ function MatchupEdge({ attacker, defender, season }: { attacker: Player; defende
             ))}
           </div>
 
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b", letterSpacing: "0.15em", marginTop: 16 }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b", letterSpacing: "0.15em", marginTop: 16, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             DEFENDER OVERALL FG% ALLOWED:{" "}
             <span style={{ color: "#F0F0F0" }}>
               {data.defender_quality.fg_pct_allowed != null ? `${(data.defender_quality.fg_pct_allowed * 100).toFixed(1)}%` : "N/A"}
@@ -1196,30 +1922,73 @@ function MatchupEdge({ attacker, defender, season }: { attacker: Player; defende
 
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#C9A84C", letterSpacing: "0.3em", margin: "16px 0 8px" }}>EXPLOIT ZONES</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {data.exploit_zones.map((z) => (
-              <div
-                key={z.zone}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "9px 12px",
-                  background: "#111118",
-                  borderRadius: 3,
-                  border: z.exploit ? "1px solid rgba(22,163,74,0.3)" : "1px solid rgba(255,255,255,0.05)",
-                }}
-              >
-                <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#F0F0F0" }}>{z.zone}</span>
-                <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#64748b" }}>
-                    {z.attacker_fg_pct != null ? `${(z.attacker_fg_pct * 100).toFixed(0)}%` : "—"} vs {z.defender_fg_pct_allowed != null ? `${(z.defender_fg_pct_allowed * 100).toFixed(0)}%` : "—"}
-                  </span>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: z.exploit ? "#16A34A" : "#64748b", minWidth: 56, textAlign: "right" }}>
-                    {z.matchup_advantage != null ? `${z.matchup_advantage > 0 ? "+" : ""}${(z.matchup_advantage * 100).toFixed(1)}%` : "N/A"}
-                  </span>
+            {data.exploit_zones.map((z) => {
+              const pct = (v: number | null) => (v != null ? `${(v * 100).toFixed(0)}%` : "—");
+              const adv = z.matchup_advantage;
+              return (
+                <div
+                  key={z.zone}
+                  style={{
+                    padding: "9px 12px",
+                    background: "#111118",
+                    borderRadius: 3,
+                    border: z.exploit ? "1px solid rgba(22,163,74,0.3)" : "1px solid rgba(255,255,255,0.05)",
+                  }}
+                >
+                  <Disclosure
+                    dense
+                    tone={z.exploit ? "#16A34A" : "#64748b"}
+                    label={
+                      <span style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
+                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#F0F0F0", flex: 1 }}>{z.zone}</span>
+                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#64748b" }}>
+                          {pct(z.attacker_fg_pct)} vs {pct(z.defender_fg_pct_allowed)}
+                        </span>
+                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: z.exploit ? "#16A34A" : "#64748b", minWidth: 56, textAlign: "right" }}>
+                          {adv != null ? `${adv > 0 ? "+" : ""}${(adv * 100).toFixed(1)}%` : "N/A"}
+                        </span>
+                      </span>
+                    }
+                  >
+                    {z.attacker_fg_pct != null && z.defender_fg_pct_allowed != null && adv != null ? (
+                      <>
+                        <p style={{ margin: 0 }}>
+                          <strong style={{ color: "#C9A84C" }}>{attacker.name}</strong> shoots{" "}
+                          <strong style={{ color: "#F0F0F0" }}>{pct(z.attacker_fg_pct)}</strong> from the{" "}
+                          {z.zone.toLowerCase()}.
+                        </p>
+                        <p style={{ margin: "6px 0 0" }}>
+                          <strong style={{ color: "#DC2626" }}>{defender.name}</strong> lets opponents shoot{" "}
+                          <strong style={{ color: "#F0F0F0" }}>{pct(z.defender_fg_pct_allowed)}</strong> there.
+                        </p>
+                        <p style={{ margin: "8px 0 0", color: adv > 0 ? "#16A34A" : "#DC2626" }}>
+                          {adv > 0 ? (
+                            <>
+                              Gap of <strong>{(adv * 100).toFixed(1)} points</strong> in the attacker&apos;s favour
+                              {z.exploit ? " — flagged as a zone worth attacking." : "."}
+                            </>
+                          ) : (
+                            <>
+                              Gap of <strong>{Math.abs(adv * 100).toFixed(1)} points</strong> against the attacker — the
+                              defender is stronger here than {attacker.name.split(" ").slice(-1)[0]} is.
+                            </>
+                          )}
+                        </p>
+                        <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "#64748b" }}>
+                          Season averages, not a model output — it ignores game state and who else is on the floor. The
+                          shot map above is the model&apos;s actual answer.
+                        </p>
+                      </>
+                    ) : (
+                      <p style={{ margin: 0 }}>
+                        Not enough recorded shots in this zone for one or both players this season, so the comparison is
+                        left blank rather than guessed at.
+                      </p>
+                    )}
+                  </Disclosure>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}

@@ -34,9 +34,11 @@ from src.features.point_in_time import (
     ZONES,
     apply_hierarchy,
     apply_opponent_defence,
+    build_defender_category_rates,
     build_opponent_zone_defence,
     build_prior_counts,
     build_rolling_form,
+    fit_league_category_priors,
     fit_league_zone_priors,
 )
 from src.features.spec import ZONE_TO_DEF_CATEGORY, derive_features
@@ -126,7 +128,9 @@ def load_base_shots(seasons: list[str], con=None) -> pd.DataFrame:
     return df
 
 
-def build_defender_mixture(seasons: list[str], con=None) -> pd.DataFrame:
+def build_defender_mixture(
+    seasons: list[str], con=None, defender_category_rates: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """
     Possession-weighted defender aggregates per (game, shooter, defense category).
 
@@ -154,6 +158,19 @@ def build_defender_mixture(seasons: list[str], con=None) -> pd.DataFrame:
     the five defenders on the floor, which needs lineup reconstruction from
     play-by-play. This mixture is a strict improvement over an argmax, not a
     solution to that problem.
+
+    Where the quality numbers come from
+    ------------------------------------
+    `defender_category_rates` supplies `d_fg_pct` / `pct_plusminus` / `freq`
+    per (defender, game, category) — pass the output of
+    `point_in_time.build_defender_category_rates`, computed point-in-time
+    from `matchups` + `shots`. This used to read `defender_stats`
+    (LeagueDashPtDefend) directly, joined by season alone; that table is a
+    whole-season aggregate with no as-of-date version, so a shot's own
+    outcome was inside the feature describing it — the same leak
+    `point_in_time.py` was built to remove for shooters, just never applied
+    to defenders. `defender_category_rates=None` falls back to all-NaN
+    quality columns (physicals and matchup concentration still populate).
     """
     close = con is None
     con = con or _duckdb_connection()
@@ -182,12 +199,6 @@ def build_defender_mixture(seasons: list[str], con=None) -> pd.DataFrame:
         defenders = con.execute("""
             SELECT player_id, season, height, weight, wingspan
             FROM nba.players
-        """).df()
-
-        def_stats = con.execute("""
-            SELECT player_id, season, defense_category,
-                   d_fg_pct, pct_plusminus, freq
-            FROM nba.defender_stats
         """).df()
 
         game_seasons = con.execute(f"""
@@ -243,11 +254,21 @@ def build_defender_mixture(seasons: list[str], con=None) -> pd.DataFrame:
     phys_agg = phys_agg[["game_id", "offense_player_id",
                          "def_height", "def_weight", "def_wingspan"]]
 
-    # ── Weighted defensive quality, per category ─────────────────────────
+    # ── Weighted defensive quality, per category (point-in-time) ─────────
+    if defender_category_rates is None or defender_category_rates.empty:
+        def_stats = pd.DataFrame(columns=[
+            "defense_player_id", "game_id", "defense_category",
+            "d_fg_pct", "pct_plusminus", "freq",
+        ])
+    else:
+        def_stats = defender_category_rates
+
+    # Keyed on (defender, game) rather than (defender, season) — the whole
+    # point of the point-in-time rebuild is that quality no longer needs a
+    # season bucket to be looked up, it is already specific to this game.
     qual = weights.merge(
         def_stats,
-        left_on=["defense_player_id", "season"],
-        right_on=["player_id", "season"],
+        on=["defense_player_id", "game_id"],
         how="inner",
     )
     for col in ("d_fg_pct", "pct_plusminus", "freq"):
@@ -354,6 +375,22 @@ def build_matrix(
     log(f"  Priors fit through: {prior_through_season}")
     log(f"{'='*62}")
 
+    defender_category_rates = None
+    category_priors: dict = {}
+    if use_defender:
+        log("  → defender category rates (point-in-time) ...")
+        defender_category_rates = build_defender_category_rates(
+            engine, through_season=prior_through_season
+        )
+        # Threaded through `artifacts` below, same as `zone_priors` — the
+        # recommender must shrink toward the SAME fitted priors the model was
+        # trained against, not ones refit from whatever is in the database at
+        # request time.
+        category_priors = fit_league_category_priors(
+            engine, through_season=prior_through_season
+        )
+        log(f"    {len(defender_category_rates):,} (defender, game, category) rows")
+
     try:
         log("  → shots + context ...")
         df = load_base_shots(seasons, con=con)
@@ -361,7 +398,9 @@ def build_matrix(
 
         if use_defender:
             log("  → defender mixture (possession-weighted) ...")
-            mixture = build_defender_mixture(seasons, con=con)
+            mixture = build_defender_mixture(
+                seasons, con=con, defender_category_rates=defender_category_rates
+            )
             log(f"    {len(mixture):,} (game, shooter, category) aggregates")
             df = _attach_defender_features(df, mixture)
     finally:
@@ -444,6 +483,7 @@ def build_matrix(
     artifacts = {
         "zone_priors": zone_priors,
         "league_zone_rates": league_zone_rates,
+        "category_priors": category_priors,
         "prior_through_season": prior_through_season,
         "feature_cols": feature_cols,
     }

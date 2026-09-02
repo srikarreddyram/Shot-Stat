@@ -1,4 +1,4 @@
-import { Player, HeatmapResponse, MatchupResponse, HealthStatus } from "./shot-vision-data";
+import { Player, HeatmapResponse, MatchupResponse, HealthStatus, AttainabilityExplanation } from "./shot-vision-data";
 
 // Ratings are computed by the backend (src/inference/player_ratings.py) as
 // percentile ranks over the whole league, from measured data.
@@ -64,13 +64,26 @@ function mapBackendPlayer(backendPlayer: any): Player {
     ftPct: backendPlayer.ft_pct,
     rimPct: backendPlayer.rim_pct,
     midPct: backendPlayer.mid_pct,
-    headshotUrl: backendPlayer.headshot_url,
+    headshotUrl: headshotUrl(backendPlayer.player_id),
     statsSource: backendPlayer.stats_source,
     resolvedSeason: backendPlayer.resolved_season,
   };
 }
 
-const API_BASE = "http://127.0.0.1:8000";
+// Backend origin. Override with VITE_API_BASE (e.g. in .env.local) when the
+// API is not on its default port — a mismatch here reads as "engine offline"
+// in the UI, since every call including /health simply fails to connect.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+
+// Headshots go through the backend rather than straight to cdn.nba.com.
+// Chrome fails every direct CDN request on some networks with
+// ERR_HTTP2_PROTOCOL_ERROR — curl fetches the identical URL without
+// complaint — and since the avatar falls back to initials on error, the
+// result looked deliberate instead of broken. The backend proxies and caches
+// the PNG, so this works wherever the API itself works.
+export function headshotUrl(playerId: string | undefined) {
+  return playerId ? `${API_BASE}/headshot/${playerId}` : undefined;
+}
 
 // Backend errors (FastAPI HTTPException) come back as {"detail": "..."}.
 // Surface that message to the UI instead of a generic "request failed".
@@ -103,6 +116,28 @@ export async function getPlayerAPI(id: string, season: string): Promise<Player> 
   if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to fetch player"));
   const data = await res.json();
   return mapBackendPlayer(data);
+}
+
+// Why a player can or cannot get a shot in a given zone. Fetched on demand —
+// only when a user actually opens the attainability breakdown — rather than
+// bundled into the heatmap response, which would mean computing six
+// explanations per request that are usually never read.
+export async function getAttainabilityExplanationAPI(
+  playerId: string,
+  zone: string,
+  season: string,
+  // Coordinates resolve the angle sub-zone: "Above the Break 3" splits into a
+  // dead-centre and a wing half, which have materially different attainability.
+  // Omitting them collapses back to the blended parent zone.
+  locX?: number,
+  locY?: number
+): Promise<AttainabilityExplanation> {
+  const loc = locX != null && locY != null ? `&loc_x=${locX}&loc_y=${locY}` : "";
+  const res = await fetch(
+    `${API_BASE}/explain/attainability/${playerId}?zone=${encodeURIComponent(zone)}&season=${season}${loc}`
+  );
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to explain attainability"));
+  return res.json();
 }
 
 export async function getMatchupAPI(

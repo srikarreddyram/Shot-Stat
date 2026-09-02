@@ -35,3 +35,11 @@ models/*.png
 !models/metadata_*.json
 runs/*/*.png
 runs/*/*.csv
+
+# Dev-server runtime state (scripts/dev.sh) — process groups and ports
+# for the current run. Machine-local and meaningless in a diff.
+.dev-runtime/
+
+# Local editor/assistant tooling config. Machine-local, not part of the project.
+.claude/
+.cursor/

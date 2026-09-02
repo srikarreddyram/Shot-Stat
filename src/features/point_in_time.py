@@ -43,6 +43,8 @@ including the same-day game would reintroduce the leak in miniature.
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -72,12 +74,33 @@ ZONE_SUFFIX = {
     "Above the Break 3": "above_break_3",
 }
 
+# Zone → the LeagueDashPtDefend category whose FG%-allowed best describes
+# defending that zone. Single source of truth: the recommender, the API's
+# /matchup endpoint, and the training join all read this. Defined here rather
+# than in `spec.py` (which imports it back) so `build_defender_category_rates`
+# below can use it without spec.py importing point_in_time importing spec.
+ZONE_TO_DEF_CATEGORY = {
+    "Restricted Area": "Less Than 6Ft",
+    "In The Paint (Non-RA)": "Less Than 10Ft",
+    "Mid-Range": "Greater Than 15Ft",
+    "Left Corner 3": "3 Pointers",
+    "Right Corner 3": "3 Pointers",
+    "Above the Break 3": "3 Pointers",
+}
+
+DEFENSE_CATEGORIES = sorted(set(ZONE_TO_DEF_CATEGORY.values()))
+
 # How many attempts of season-specific evidence it takes to move a player off
 # his career rate. Lower than a league prior's strength because a player's own
 # career mean is a far better starting guess than the league's, so less
 # evidence is needed to justify departing from it. Tuned by backtest; see
 # src/training/backtest.py.
 SEASON_TO_CAREER_STRENGTH = 60.0
+
+# Teammate attempts required this season before a supporting-cast rate is
+# reported at all (see `build_supporting_cast`). Roughly two games' worth of
+# team shooting — enough that the rate describes a cast rather than a night.
+MIN_CAST_ATTEMPTS = 150
 
 
 def _load_player_game_zone_counts(engine, seasons: list[str] | None = None) -> pd.DataFrame:
@@ -553,6 +576,354 @@ def build_opponent_zone_defence(engine) -> pd.DataFrame:
     return wide.reset_index()
 
 
+def build_supporting_cast(engine) -> pd.DataFrame:
+    """
+    What the shooter's OWN team gives him, computed leave-one-out and
+    point-in-time.
+
+    Why this exists
+    ---------------
+    The model knows a great deal about who is defending a shot and nothing at
+    all about who is playing alongside it. `team_stats` carries exactly one
+    column, `def_rating`, and it is consumed as `opp_def_rating` — the
+    opponent's. The shooter's supporting cast has never been a feature.
+
+    Why leave-one-out is not optional
+    ---------------------------------
+    A star's team stats are mostly the star. Denver's assisted-FG rate ranked
+    6th of 30 in 2024-25 and Oklahoma City's 27th, which reads as "Jokic plays
+    with better passers than Shai" — but Denver's number IS Jokic. Feeding the
+    raw team rate into a Jokic shot re-encodes Jokic, and the model would
+    happily learn a circular relationship.
+
+    Every quantity here therefore EXCLUDES the shooter's own contribution:
+    these are his teammates' numbers, not his team's. That is the quantity
+    that answers "does this player get help", which is the question worth
+    asking.
+
+    Strictly prior, same as everything else in this module: a shot never
+    contributes to the features describing it.
+
+    Returns one row per (player_id, game_id) with:
+        cast_ast_rate   teammates' assisted share of made field goals —
+                        ball movement the shooter is not himself producing
+        cast_3p_rate    teammates' three-point percentage — the spacing that
+                        determines how much help defence he draws
+        cast_efg        teammates' effective field-goal percentage — how much
+                        attention the rest of the lineup commands
+        cast_att        teammate attempts behind those rates, the model's
+                        confidence cue
+    """
+    rows = pd.read_sql("""
+        SELECT s.player_id,
+               s.game_id,
+               s.season,
+               g.date AS game_date,
+               CASE WHEN s.home_away = 1 THEN g.home_team ELSE g.away_team END
+                   AS off_team,
+               s.shot_made,
+               CASE WHEN s.zone IN ('Left Corner 3', 'Right Corner 3',
+                                    'Above the Break 3') THEN 1 ELSE 0 END AS is_three,
+               CASE WHEN sc.shot_id IS NULL THEN 0 ELSE 1 END AS has_context,
+               COALESCE(sc.is_assisted, 0) AS is_assisted
+        FROM shots s
+        JOIN games g ON g.game_id = s.game_id
+        LEFT JOIN shot_context sc ON sc.shot_id = s.shot_id
+        WHERE s.zone IS NOT NULL
+          AND s.zone != 'Backcourt'
+          AND s.home_away IS NOT NULL
+    """, engine)
+
+    if rows.empty:
+        return pd.DataFrame(columns=["player_id", "game_id"])
+
+    rows["game_date"] = pd.to_datetime(rows["game_date"])
+    rows["made_three"] = rows["shot_made"] * rows["is_three"]
+    # `is_assisted` is a per-shot label leak (assists are credited only on
+    # makes) and is banned as a shot feature by tests/test_no_leaky_features.py.
+    # Aggregated over a team's PRIOR games it leaks nothing about tonight's
+    # shot, which is what makes the ball-movement signal reachable at all.
+    #
+    # The assisted rate is computed over makes WITH play-by-play context only.
+    # Coverage starts in 2016-17, and counting an uncovered make as unassisted
+    # would not read as missing data — it would read as a team that never
+    # passes, which is a confident wrong answer rather than an absent one.
+    rows["assisted_make"] = rows["shot_made"] * rows["is_assisted"]
+    rows["make_with_context"] = rows["shot_made"] * rows["has_context"]
+    # Effective FG% weights a made three at 1.5, the standard adjustment for
+    # its extra point.
+    rows["efg_num"] = rows["shot_made"] + 0.5 * rows["made_three"]
+
+    stat_cols = ["shot_made", "made_three", "is_three", "assisted_make",
+                 "make_with_context", "efg_num"]
+
+    # Team totals per game, then the same totals attributed to each player, so
+    # subtracting one from the other leaves the teammates' contribution alone.
+    agg = {c: "sum" for c in stat_cols}
+    team_game = rows.groupby(
+        ["off_team", "season", "game_id", "game_date"], as_index=False
+    ).agg({**agg, "player_id": "size"}).rename(columns={"player_id": "fga"})
+
+    player_game = rows.groupby(
+        ["player_id", "off_team", "season", "game_id", "game_date"], as_index=False
+    ).agg({**agg, "shot_made": "sum"})
+    player_game["fga"] = rows.groupby(
+        ["player_id", "off_team", "season", "game_id", "game_date"]
+    ).size().values
+
+    # Cumulative totals reset EACH SEASON. A roster turns over completely; a
+    # team's ball movement three years ago describes a different set of
+    # players and is not evidence about the cast around this shooter tonight.
+    team_game = team_game.sort_values(
+        ["off_team", "season", "game_date", "game_id"]
+    ).reset_index(drop=True)
+    g_team = team_game.groupby(["off_team", "season"], sort=False)
+    for col in stat_cols + ["fga"]:
+        team_game[f"team_{col}"] = g_team[col].cumsum() - team_game[col]
+
+    # Same for the player, within (team, season) so a midseason trade does not
+    # carry his old team's contribution into the subtraction.
+    player_game = player_game.sort_values(
+        ["player_id", "off_team", "season", "game_date", "game_id"]
+    ).reset_index(drop=True)
+    g_player = player_game.groupby(["player_id", "off_team", "season"], sort=False)
+    for col in stat_cols + ["fga"]:
+        player_game[f"self_{col}"] = g_player[col].cumsum() - player_game[col]
+
+    merged = player_game.merge(
+        team_game[["off_team", "season", "game_id"]
+                  + [f"team_{c}" for c in stat_cols + ["fga"]]],
+        on=["off_team", "season", "game_id"], how="left",
+    )
+
+    # The leave-one-out step.
+    for col in stat_cols + ["fga"]:
+        merged[f"cast_{col}"] = merged[f"team_{col}"] - merged[f"self_{col}"]
+
+    def _rate(num: str, den: str) -> pd.Series:
+        """
+        A rate, or NaN when the teammates have not yet accumulated enough
+        evidence this season to support one.
+
+        Below the gate the honest answer is "not known yet", which XGBoost
+        handles natively as a missing value. Emitting 0.667 off three attempts
+        would instead assert an elite shooting cast on no evidence — the same
+        low-sample trap `shrink()` exists to avoid elsewhere, handled here by
+        abstention because these rates have no fitted prior to regress toward.
+        """
+        denom = merged[den]
+        out = merged[num] / denom.replace(0, np.nan)
+        return out.where(denom >= MIN_CAST_ATTEMPTS)
+
+    merged["cast_ast_rate"] = _rate("cast_assisted_make", "cast_make_with_context")
+    merged["cast_3p_rate"] = _rate("cast_made_three", "cast_is_three")
+    merged["cast_efg"] = _rate("cast_efg_num", "cast_fga")
+    merged["cast_att"] = merged["cast_fga"]
+
+    return merged[[
+        "player_id", "game_id",
+        "cast_ast_rate", "cast_3p_rate", "cast_efg", "cast_att",
+    ]]
+
+
+def fit_league_creation_priors(engine, through_season: str) -> dict[str, BetaPrior]:
+    """
+    Per zone, a Beta prior over "what share of a player's makes here did he
+    create himself".
+
+    The quantity the recommender's attainability number cannot express on its
+    own. Attainability is a frequency — what share of a player's shots come
+    from a spot — and frequency conflates two very different situations: a
+    shot he can manufacture whenever he wants, and a shot that only exists
+    when a teammate finds him. League-wide those separate sharply: 44% of
+    restricted-area makes are unassisted against 4% of corner threes. A corner
+    three is not a shot anybody goes and gets.
+
+    Keyed by SUB-zone, so a dead-centre three and a wing three get separate
+    priors — the split is sharpest exactly here (27% self-created within ten
+    degrees of dead centre against 9.5% beyond sixty), and reporting one
+    blended above-the-break figure for both would hide the distinction the
+    number exists to make.
+
+    Fit through the last TRAINING season only, same rule as every other prior
+    in this module.
+    """
+    from src.training.attainability import attach_sub_zone
+
+    df = pd.read_sql(f"""
+        SELECT s.zone, s.loc_x, s.loc_y, s.player_id, s.season, s.shot_made,
+               CASE WHEN sc.is_assisted = 1 THEN 0 ELSE 1 END AS self_make
+        FROM shots s
+        JOIN shot_context sc ON sc.shot_id = s.shot_id
+        WHERE s.shot_made = 1
+          AND s.zone IS NOT NULL AND s.zone != 'Backcourt'
+          AND s.season <= '{through_season}'
+    """, engine)
+    if df.empty:
+        return {}
+
+    df = attach_sub_zone(df)
+    grouped = df.groupby(["sub_zone", "player_id", "season"], as_index=False).agg(
+        self_makes=("self_make", "sum"), makes=("shot_made", "size")
+    )
+    priors = fit_priors(
+        grouped, ["sub_zone"], makes_col="self_makes", attempts_col="makes"
+    )
+    return {z: priors[(z,)] for z in grouped["sub_zone"].unique() if (z,) in priors}
+
+
+def lookup_zone_creation(conn, player_id: str, zone: str,
+                         creation_priors: dict[str, BetaPrior],
+                         season: str | None = None, as_of_date=None) -> dict:
+    """
+    How this player's makes in one zone were generated: by himself, or by a
+    teammate finding him.
+
+    Shrunk toward the zone's league rate, so a player with four makes in a
+    corner does not read as a 100% self-creator. Career-to-date rather than
+    season-to-date: shot creation is a stable trait and the season-only sample
+    per zone is thin for everyone but high-volume starters.
+
+    Returns the player's shrunk self-created share, the league rate for the
+    same zone, and the raw counts behind it so a caller can say how much
+    evidence there is.
+    """
+    from sqlalchemy import text
+
+    from src.training.attainability import ANGLE_SPLIT_ZONES, attach_sub_zone
+
+    # `zone` may arrive as either a plain zone or an already-split sub-zone.
+    # The parent zone is what the shots table stores, so query on that and
+    # narrow to the sub-zone in pandas afterwards.
+    parent = re.sub(r" \((centre|wing)\)$", "", zone)
+
+    clauses = []
+    params = {"pid": str(player_id), "zone": parent}
+    if season is not None:
+        clauses.append("AND s.season <= :season")
+        params["season"] = season
+    if as_of_date is not None:
+        clauses.append("AND g.date < :as_of")
+        params["as_of"] = str(as_of_date)
+
+    rows = conn.execute(text(f"""
+        SELECT s.zone, s.loc_x, s.loc_y,
+               CASE WHEN sc.is_assisted = 1 THEN 0 ELSE 1 END AS self_make
+        FROM shots s
+        JOIN shot_context sc ON sc.shot_id = s.shot_id
+        JOIN games g ON g.game_id = s.game_id
+        WHERE s.player_id = :pid
+          AND s.zone = :zone
+          AND s.shot_made = 1
+          {' '.join(clauses)}
+    """), params).fetchall()
+
+    frame = pd.DataFrame(rows, columns=["zone", "loc_x", "loc_y", "self_make"])
+    if parent in ANGLE_SPLIT_ZONES and not frame.empty:
+        frame = attach_sub_zone(frame)
+        # An unsplit parent name means "either half"; a split name narrows.
+        if zone != parent:
+            frame = frame[frame["sub_zone"] == zone]
+
+    prior = creation_priors.get(zone) or creation_priors.get(parent)
+    league = float(prior.mean) if prior is not None else None
+
+    self_makes = float(frame["self_make"].sum()) if not frame.empty else 0.0
+    makes = float(len(frame))
+
+    if prior is None:
+        share = None
+    else:
+        share = float(shrink(self_makes, makes, prior))
+
+    return {
+        "self_created_share": share,
+        "league_self_created_share": league,
+        "makes": int(makes),
+        "self_makes": int(self_makes),
+    }
+
+
+def lookup_supporting_cast(conn, player_id: str, season: str,
+                           as_of_date=None) -> dict:
+    """
+    Serving-path equivalent of `build_supporting_cast` for one player.
+
+    Returns the same `cast_*` keys the training builder produces. Without this
+    the attainability model would receive NaN for every cast feature at
+    serving time while seeing them populated for virtually every training row
+    — the precise skew that made `recent_10_fg` look like a career debut on
+    every served shot, and which tests/test_train_serve_parity.py exists to
+    catch.
+
+    The player's team is taken as the one he took the most shots for this
+    season, so a midseason trade resolves to where he actually plays now.
+    """
+    from sqlalchemy import text
+
+    date_clause = "AND g.date < :as_of" if as_of_date is not None else ""
+    params = {"pid": str(player_id), "season": season}
+    if as_of_date is not None:
+        params["as_of"] = str(as_of_date)
+
+    team_row = conn.execute(text(f"""
+        SELECT CASE WHEN s.home_away = 1 THEN g.home_team ELSE g.away_team END AS team,
+               COUNT(*) AS n
+        FROM shots s
+        JOIN games g ON g.game_id = s.game_id
+        WHERE s.player_id = :pid AND s.season = :season
+          AND s.home_away IS NOT NULL
+          {date_clause}
+        GROUP BY team ORDER BY n DESC LIMIT 1
+    """), params).fetchone()
+
+    empty = {c: None for c in
+             ("cast_ast_rate", "cast_3p_rate", "cast_efg", "cast_att")}
+    if team_row is None:
+        return empty
+
+    params["team"] = team_row[0]
+    row = conn.execute(text(f"""
+        SELECT SUM(s.shot_made)                                        AS makes,
+               COUNT(*)                                                AS fga,
+               SUM(CASE WHEN s.zone IN ('Left Corner 3','Right Corner 3',
+                                        'Above the Break 3')
+                        THEN 1 ELSE 0 END)                             AS threes,
+               SUM(CASE WHEN s.zone IN ('Left Corner 3','Right Corner 3',
+                                        'Above the Break 3')
+                        THEN s.shot_made ELSE 0 END)                   AS made_threes,
+               SUM(CASE WHEN sc.shot_id IS NOT NULL AND s.shot_made = 1
+                        THEN 1 ELSE 0 END)                             AS makes_with_ctx,
+               SUM(CASE WHEN sc.is_assisted = 1 AND s.shot_made = 1
+                        THEN 1 ELSE 0 END)                             AS assisted
+        FROM shots s
+        JOIN games g ON g.game_id = s.game_id
+        LEFT JOIN shot_context sc ON sc.shot_id = s.shot_id
+        WHERE s.season = :season
+          AND s.player_id != :pid
+          AND s.home_away IS NOT NULL
+          AND s.zone IS NOT NULL AND s.zone != 'Backcourt'
+          AND CASE WHEN s.home_away = 1 THEN g.home_team ELSE g.away_team END = :team
+          {date_clause}
+    """), params).fetchone()
+
+    if row is None or not row[1]:
+        return empty
+
+    makes, fga, threes, made_threes, makes_ctx, assisted = (
+        float(v or 0) for v in row
+    )
+    if fga < MIN_CAST_ATTEMPTS:
+        return empty
+
+    return {
+        "cast_ast_rate": (assisted / makes_ctx) if makes_ctx else None,
+        "cast_3p_rate": (made_threes / threes) if threes else None,
+        "cast_efg": ((makes + 0.5 * made_threes) / fga) if fga else None,
+        "cast_att": fga,
+    }
+
+
 def apply_opponent_defence(df: pd.DataFrame,
                            zone_priors: dict[str, BetaPrior]) -> pd.DataFrame:
     """
@@ -574,3 +945,251 @@ def apply_opponent_defence(df: pd.DataFrame,
         else:
             out[f"opp_def_rate_{suffix}"] = shrink(mk, att, prior)
     return out
+
+
+# ── Point-in-time defender quality ───────────────────────────────────────────
+#
+# `defender_stats` (LeagueDashPtDefend) is a season aggregate — the NBA API
+# never published a per-game or as-of-date version of it. Every defender
+# feature that reads it (`def_fg_pct_zone`, `def_pct_plusminus_zone`,
+# `def_fg_pct_overall`, `def_pct_plusminus`, `def_freq_zone`) was therefore
+# joined by season alone, exactly the leak this module exists to remove for
+# shooters: a shot contested by a defender contributes to that defender's own
+# season FG%-allowed, which is then used as a feature describing that same
+# shot. What follows rebuilds the same (defender, category) -> FG%-allowed
+# figures from `matchups` + `shots` instead, strictly prior-games-only, using
+# the same possession-weighted mixture `build.build_defender_mixture` already
+# uses for physicals — so the fix only touches where the QUALITY numbers come
+# from, not how they get blended into a shot's feature vector on either path.
+
+
+def _load_defender_exposure(engine) -> pd.DataFrame:
+    """
+    Per (shot, defender who guarded that shooter that game) fractional
+    credit for the shot's outcome, weighted by possession share within that
+    game.
+
+    A shot is not linked to its own contesting defender in this data — only
+    "who guarded this shooter how much, this game" is known (`matchups`).
+    Every shot a shooter took in a game therefore inherits the SAME defender
+    weight distribution, which is the same simplification
+    `build_defender_mixture` already makes and accepts; this does not make it
+    worse, only reuses it for a second purpose.
+    """
+    weights = pd.read_sql("""
+        SELECT game_id, offense_player_id, defense_player_id,
+               COALESCE(NULLIF(partial_possessions, 0), matchup_minutes, 0) AS raw_weight
+        FROM matchups
+        WHERE COALESCE(NULLIF(partial_possessions, 0), matchup_minutes, 0) > 0
+    """, engine)
+    total = weights.groupby(["game_id", "offense_player_id"])["raw_weight"].transform("sum")
+    weights["w"] = weights["raw_weight"] / total.replace(0, np.nan)
+    weights = weights.dropna(subset=["w"])
+
+    shots = pd.read_sql("""
+        SELECT s.game_id, s.player_id AS offense_player_id, s.zone,
+               s.shot_made, g.date AS game_date
+        FROM shots s
+        JOIN games g ON g.game_id = s.game_id
+        WHERE s.zone IS NOT NULL AND s.zone != 'Backcourt'
+    """, engine)
+    shots["game_date"] = pd.to_datetime(shots["game_date"])
+    shots["category"] = shots["zone"].map(ZONE_TO_DEF_CATEGORY)
+
+    exposure = shots.merge(
+        weights[["game_id", "offense_player_id", "defense_player_id", "w"]],
+        on=["game_id", "offense_player_id"], how="inner",
+    )
+    return exposure
+
+
+def fit_league_category_priors(engine, through_season: str) -> dict[str, BetaPrior]:
+    """
+    One Beta prior per defense category, pooling the zones that map to it —
+    the defender-side equivalent of `fit_league_zone_priors`. A category like
+    "3 Pointers" spans zones with different true league rates (corners run
+    cooler than above-the-break), so this refits from scratch by category
+    rather than averaging the zone priors after the fact.
+    """
+    df = pd.read_sql(f"""
+        SELECT s.zone, s.player_id, s.season,
+               SUM(s.shot_made) AS makes, COUNT(*) AS attempts
+        FROM shots s
+        WHERE s.zone IS NOT NULL
+          AND s.zone != 'Backcourt'
+          AND s.season <= '{through_season}'
+        GROUP BY s.zone, s.player_id, s.season
+    """, engine)
+    df["category"] = df["zone"].map(ZONE_TO_DEF_CATEGORY)
+    priors = fit_priors(df, ["category"], makes_col="makes", attempts_col="attempts")
+    return {cat: priors[(cat,)] for cat in df["category"].unique() if (cat,) in priors}
+
+
+def build_defender_category_rates(engine, through_season: str) -> pd.DataFrame:
+    """
+    Point-in-time FG%-allowed per (defender, game, defense category) — the
+    leak-free replacement for reading `defender_stats` by season.
+
+    Same strictly-prior discipline as `build_prior_counts`: cumulative sum
+    then shift, so a game's own shots never contribute to that game's own
+    defender features.
+
+    Returns one row per (defense_player_id, game_id, defense_category) with
+    d_fg_pct / pct_plusminus / freq, plus a pooled "Overall" row per
+    (defense_player_id, game_id) — the same shape `defender_stats` provided,
+    so `build.build_defender_mixture` only needs its join key changed to use
+    this instead, not its downstream blending logic.
+    """
+    exposure = _load_defender_exposure(engine)
+    exposure["w_mk"] = exposure["w"] * exposure["shot_made"]
+
+    per_game = exposure.groupby(
+        ["defense_player_id", "game_id", "game_date", "category"], as_index=False
+    ).agg(w_att=("w", "sum"), w_mk=("w_mk", "sum"))
+
+    defender_games = per_game[["defense_player_id", "game_id", "game_date"]].drop_duplicates()
+    grid = defender_games.merge(pd.DataFrame({"category": DEFENSE_CATEGORIES}), how="cross")
+    grid = grid.merge(
+        per_game, on=["defense_player_id", "game_id", "game_date", "category"], how="left"
+    )
+    grid["w_att"] = grid["w_att"].fillna(0.0)
+    grid["w_mk"] = grid["w_mk"].fillna(0.0)
+
+    grid = grid.sort_values(
+        ["defense_player_id", "category", "game_date", "game_id"]
+    ).reset_index(drop=True)
+    g = grid.groupby(["defense_player_id", "category"], sort=False)
+    # Strictly prior: row i holds the total through row i-1.
+    grid["pit_mk"] = g["w_mk"].cumsum() - grid["w_mk"]
+    grid["pit_att"] = g["w_att"].cumsum() - grid["w_att"]
+
+    priors = fit_league_category_priors(engine, through_season=through_season)
+    pooled_mean = float(np.mean([p.mean for p in priors.values()])) if priors else 0.45
+    pooled_strength = float(np.mean([p.strength for p in priors.values()])) if priors else 100.0
+
+    # Single-level shrinkage (career-to-date only, toward the league category
+    # rate) rather than the two-level career->season hierarchy shooting rates
+    # use: a defender's possession-weighted evidence in one category is far
+    # sparser per season than a shooter's own attempts in a zone, so a second,
+    # noisier season-only layer looked more likely to overfit than to track a
+    # real hot/cold defensive stretch. Worth re-measuring with `--ablate` if
+    # the point-in-time feature earns its place at all.
+    rate = pd.Series(np.nan, index=grid.index)
+    category_mean = pd.Series(np.nan, index=grid.index)
+    for cat in DEFENSE_CATEGORIES:
+        mask = (grid["category"] == cat).to_numpy()
+        prior = priors.get(cat, BetaPrior(mean=pooled_mean, strength=pooled_strength))
+        rate.loc[mask] = shrink(grid.loc[mask, "pit_mk"], grid.loc[mask, "pit_att"], prior)
+        category_mean.loc[mask] = prior.mean
+    grid["d_fg_pct"] = rate
+    grid["pct_plusminus"] = grid["d_fg_pct"] - category_mean
+
+    total_att = grid.groupby(["defense_player_id", "game_id"])["pit_att"].transform("sum")
+    grid["freq"] = grid["pit_att"] / total_att.replace(0, np.nan)
+
+    long_table = grid[
+        ["defense_player_id", "game_id", "category", "d_fg_pct", "pct_plusminus", "freq"]
+    ].rename(columns={"category": "defense_category"})
+
+    # Pooled "Overall" row, matching the shape `defender_stats` already had —
+    # `build_defender_mixture` filters `defense_category == "Overall"` for it.
+    overall_prior = BetaPrior(mean=pooled_mean, strength=pooled_strength)
+    overall = grid.groupby(["defense_player_id", "game_id"], as_index=False).agg(
+        pit_mk=("pit_mk", "sum"), pit_att=("pit_att", "sum")
+    )
+    overall["d_fg_pct"] = shrink(overall["pit_mk"], overall["pit_att"], overall_prior)
+    overall["pct_plusminus"] = overall["d_fg_pct"] - pooled_mean
+    overall["freq"] = 1.0
+    overall["defense_category"] = "Overall"
+    overall = overall[
+        ["defense_player_id", "game_id", "defense_category", "d_fg_pct", "pct_plusminus", "freq"]
+    ]
+
+    return pd.concat([long_table, overall], ignore_index=True)
+
+
+def lookup_defender_category_rates(
+    conn, defender_id: str, category_priors: dict[str, BetaPrior], as_of_date=None
+) -> dict:
+    """
+    Serving-path equivalent of `build_defender_category_rates` for a single
+    named defender — the parity guarantee that keeps the recommender from
+    reading the leaky `defender_stats` table the way it used to.
+
+    `category_priors` must be the SAME fitted priors the model was trained
+    against (loaded from run metadata, same as `zone_priors` is), not
+    refitted from whatever is in the database at request time — the same
+    discipline `apply_hierarchy`'s `zone_priors` argument follows.
+
+    Returns `{"by_category": {category: {"d_fg_pct", "pct_plusminus", "freq"}}}`,
+    matching the shape `_defender_row` in `recommender.py` already expects
+    from `defender_stats`, so only the data source changes there, not the
+    blending logic downstream of it.
+    """
+    from sqlalchemy import text
+
+    date_clause = "AND g.date < :as_of" if as_of_date is not None else ""
+    params = {"pid": str(defender_id)}
+    if as_of_date is not None:
+        params["as_of"] = str(as_of_date)
+
+    rows = conn.execute(text(f"""
+        SELECT s.zone, SUM(s.shot_made) AS makes, COUNT(*) AS attempts
+        FROM matchups m
+        JOIN shots s ON s.game_id = m.game_id AND s.player_id = m.offense_player_id
+        JOIN games g ON g.game_id = m.game_id
+        WHERE m.defense_player_id = :pid
+          AND COALESCE(NULLIF(m.partial_possessions, 0), m.matchup_minutes, 0) > 0
+          AND s.zone IS NOT NULL AND s.zone != 'Backcourt'
+          {date_clause}
+        GROUP BY s.zone
+    """), params).fetchall()
+
+    by_cat: dict[str, dict] = {cat: {"mk": 0.0, "att": 0.0} for cat in DEFENSE_CATEGORIES}
+    for zone, makes, attempts in rows:
+        cat = ZONE_TO_DEF_CATEGORY.get(zone)
+        if cat is None:
+            continue
+        by_cat[cat]["mk"] += float(makes or 0)
+        by_cat[cat]["att"] += float(attempts or 0)
+
+    priors = category_priors
+    if not priors:
+        return {"by_category": {}}
+
+    pooled_mean = float(np.mean([p.mean for p in priors.values()]))
+    pooled_strength = float(np.mean([p.strength for p in priors.values()]))
+
+    def _to_native(value) -> float | None:
+        # `shrink()` returns a numpy scalar even for plain-float inputs, which
+        # FastAPI's encoder cannot always serialize on its own. A 0/0 divide
+        # (no exposure and, in tests, a strength=0 prior) yields NaN, which
+        # means the same thing None does here — no basis for a rate — so both
+        # collapse to the one JSON-safe representation of "unknown".
+        f = float(value)
+        return None if np.isnan(f) else f
+
+    result = {}
+    total_mk = total_att = 0.0
+    for cat, counts in by_cat.items():
+        prior = priors.get(cat, BetaPrior(mean=pooled_mean, strength=pooled_strength))
+        rate = _to_native(shrink(counts["mk"], counts["att"], prior))
+        result[cat] = {
+            "d_fg_pct": rate,
+            "pct_plusminus": (rate - prior.mean) if rate is not None else None,
+            "freq": None,  # filled in below once the total is known
+        }
+        total_mk += counts["mk"]
+        total_att += counts["att"]
+
+    for cat, counts in by_cat.items():
+        result[cat]["freq"] = (counts["att"] / total_att) if total_att > 0 else None
+
+    overall_prior = BetaPrior(mean=pooled_mean, strength=pooled_strength)
+    overall_rate = _to_native(shrink(total_mk, total_att, overall_prior))
+    result["Overall"] = {
+        "d_fg_pct": overall_rate,
+        "pct_plusminus": (overall_rate - pooled_mean) if overall_rate is not None else None,
+        "freq": 1.0,
+    }
+    return {"by_category": result}

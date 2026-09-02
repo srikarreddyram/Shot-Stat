@@ -7,9 +7,86 @@ cd /Users/tejsr/Projects/NBA_Shot_Predictor
 
 > **Note on the redesign.** The training and inference pipeline was rebuilt
 > around a shared feature layer (`src/features/`). See [docs/redesign.md](docs/redesign.md)
-> for what changed and why. The old entry points (`train_baseline.py`,
+> for what changed and why, and [docs/model-versions.md](docs/model-versions.md)
+> for the version-by-version history of every model — what changed, what it
+> measured, and what was tried and rejected. The old entry points (`train_baseline.py`,
 > `feature_engineering.py`, `position_priors.py`) are deprecated and documented
 > as such in their module docstrings.
+
+---
+
+## Running the app
+
+```bash
+./scripts/dev.sh
+```
+
+That is the whole thing. It allocates two fresh ports from the kernel, writes
+the backend's port into `shot-vision-engine-main/.env.local` so the frontend
+knows where to look, starts both, and prints the URLs. Ctrl-C stops both and
+removes the env file. Ports are different on every run by design — there is no
+fixed number left to collide with.
+
+```
+Backend  → port 60600
+Frontend → port 60601
+
+─────────────────────────────────────────────
+  App    http://localhost:60601
+  API    http://127.0.0.1:60600
+  Model  shot-quality-v9 (100 features)
+─────────────────────────────────────────────
+```
+
+If a previous run was killed uncleanly, the next start reclaims its ports
+first. To do that without starting anything:
+
+```bash
+./scripts/dev.sh --stop
+```
+
+### Running them by hand
+
+Still fine, but then the two ports are yours to keep in sync:
+
+```bash
+uvicorn src.inference.api:app --reload --port 8000        # terminal 1
+cd shot-vision-engine-main && npm run dev                 # terminal 2
+```
+
+`src/lib/api.ts` falls back to `http://127.0.0.1:8000`, so a backend on 8000
+needs no configuration. On any other port, set `VITE_API_BASE` in
+`shot-vision-engine-main/.env.local` and restart Vite — env files are read only
+at startup. Note that `dev.sh` overwrites that file on every run.
+
+### "Engine offline" on the splash page
+
+The health poll cannot reach the API. Almost always a port mismatch rather than
+anything wrong with the model — a backend on the wrong port reads as offline
+while being perfectly healthy. Confirm with:
+
+```bash
+curl -s http://127.0.0.1:<port>/health
+```
+
+`"status":"healthy"` there means the backend is fine and the frontend is
+pointed somewhere else. `./scripts/dev.sh` exists to make this unreachable.
+
+### How the cleanup works, and why it is careful
+
+`npm run dev` spawns vite as a *child*, so killing the recorded pid orphans
+vite still holding its port. Each server therefore runs in its own process
+group and the whole group is signalled.
+
+That makes the guard important. Group ids get recycled like pids, and a
+negative kill against a recycled group is far worse than a stray single kill —
+on a dev machine the editor is typically one process group with dozens of
+members. So `reap()` keys on the **port**: it asks who currently holds the
+port, and signals the group only if that listener is genuinely inside the
+recorded group. An earlier version matched command-line text instead, which was
+too loose — any process in the group merely *mentioning* the pattern satisfied
+it, and in testing that matched the test harness itself and killed the wrong
+group.
 
 ---
 
@@ -30,6 +107,10 @@ python -m src.training.train --name shot-quality-v5
 
 # 4. Train the attainability model ("can this player GET this shot?")
 python -m src.training.attainability --name attainability
+
+#    Ablate the leave-one-out supporting-cast features (teammate ball
+#    movement, spacing, efficiency) to re-measure what they are worth:
+python -m src.training.attainability --no-cast --name attainability-nocast
 
 # 5. Serve
 uvicorn src.inference.api:app --reload --port 8000

@@ -29,19 +29,10 @@ import numpy as np
 import pandas as pd
 
 from src.features.creation import CREATION_FEATURE_COLS
-from src.features.point_in_time import ZONE_SUFFIX, ZONES
-
-# Zone → the LeagueDashPtDefend category whose FG%-allowed best describes
-# defending that zone. Single source of truth: the recommender, the API's
-# /matchup endpoint, and the training join all read this.
-ZONE_TO_DEF_CATEGORY = {
-    "Restricted Area": "Less Than 6Ft",
-    "In The Paint (Non-RA)": "Less Than 10Ft",
-    "Mid-Range": "Greater Than 15Ft",
-    "Left Corner 3": "3 Pointers",
-    "Right Corner 3": "3 Pointers",
-    "Above the Break 3": "3 Pointers",
-}
+# ZONE_TO_DEF_CATEGORY lives in point_in_time.py (not defined here) so that
+# module can use it too without an import cycle; re-exported here since
+# build.py, recommender.py, and api.py all read it as `spec.ZONE_TO_DEF_CATEGORY`.
+from src.features.point_in_time import ZONE_SUFFIX, ZONES, ZONE_TO_DEF_CATEGORY
 
 INTERIOR_ZONES = ["Restricted Area", "In The Paint (Non-RA)"]
 

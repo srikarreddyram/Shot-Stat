@@ -18,9 +18,11 @@ from pathlib import Path
 import pytest
 
 import src.inference.recommender as rec_mod
+from src.features.point_in_time import DEFENSE_CATEGORIES
+from src.features.shrinkage import BetaPrior
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
-MODEL_NAME = "shot-quality-v9"
+MODEL_NAME = "shot-quality-v10"
 
 pytestmark = pytest.mark.skipif(
     not (MODELS_DIR / f"metadata_{MODEL_NAME}.json").exists(),
@@ -31,7 +33,15 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture()
 def recommender(seeded_db, monkeypatch):
     monkeypatch.setattr(rec_mod, "get_engine", lambda: seeded_db)
-    return rec_mod.ShotRecommender(model_name=MODEL_NAME, model_dir=str(MODELS_DIR))
+    rec = rec_mod.ShotRecommender(model_name=MODEL_NAME, model_dir=str(MODELS_DIR))
+    # `models/metadata_shot-quality-v9.json` predates point-in-time defender
+    # quality, so it carries no `category_priors` and every lookup would
+    # short-circuit to empty. strength=0 priors make `shrink()` return the raw
+    # observed rate unshrunk, which is also what makes the fixture's expected
+    # values in the tests below exact, hand-checkable fractions rather than
+    # shrinkage-dependent ones.
+    rec.category_priors = {cat: BetaPrior(mean=0.0, strength=0.0) for cat in DEFENSE_CATEGORIES}
+    return rec
 
 
 def test_zone_to_def_category_mapping_covers_all_six_zones():
@@ -107,18 +117,25 @@ def test_player_row_raises_for_unknown_player(recommender):
 
 def test_defender_row_returns_zone_level_stats_not_just_overall(recommender):
     """
-    An elite rim protector can look mediocre overall while being excellent at
-    the rim specifically. Collapsing to the "Overall" category loses that, which
-    is the bug this fixture was originally built around.
+    Zone-level defender quality must differ from the pooled "Overall" figure,
+    not collapse to it — the bug this fixture was originally built around.
+
+    P_DEF is every seeded shooter's only matchup in G1, so his point-in-time
+    rates are exact fractions of the seeded shots: 2 makes allowed at the rim
+    on 2 attempts (S1 off P_TALL, S4 off P_SHORT — both Restricted Area), 0
+    of 1 at mid-range (S2), 0 of 2 on threes (S5, S3), giving Overall 2/5.
     """
     defender = recommender._defender_row("P_DEF", "2023-24")
     by_category = defender["_by_category"]
 
-    assert by_category["Overall"]["d_fg_pct"] == pytest.approx(0.50)
-    assert by_category["Less Than 6Ft"]["d_fg_pct"] == pytest.approx(0.357)
-    assert by_category["3 Pointers"]["d_fg_pct"] == pytest.approx(0.4286)
-    # Deliberately absent from the fixture, to exercise fallback-to-overall.
-    assert "Greater Than 15Ft" not in by_category
+    assert by_category["Overall"]["d_fg_pct"] == pytest.approx(0.4)
+    assert by_category["Less Than 6Ft"]["d_fg_pct"] == pytest.approx(1.0)
+    assert by_category["3 Pointers"]["d_fg_pct"] == pytest.approx(0.0)
+    assert by_category["Greater Than 15Ft"]["d_fg_pct"] == pytest.approx(0.0)
+    # No seeded shot maps to this category — with strength=0 test priors,
+    # zero attempts and zero prior pull both come out as 0/0, which
+    # `lookup_defender_category_rates` reports as None (JSON-safe "unknown").
+    assert by_category["Less Than 10Ft"]["d_fg_pct"] is None
 
 
 def test_defender_row_returns_empty_for_unknown_defender(recommender):

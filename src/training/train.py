@@ -520,6 +520,14 @@ def train(
                    "n_players": p.n_players, "n_attempts": p.n_attempts}
             for zone, p in artifacts["zone_priors"].items()
         },
+        # Point-in-time defender quality (see `build_defender_category_rates`)
+        # shrinks toward these — travel with the model for the same reason
+        # `zone_priors` does.
+        "category_priors": {
+            cat: {"mean": p.mean, "strength": p.strength,
+                  "n_players": p.n_players, "n_attempts": p.n_attempts}
+            for cat, p in artifacts.get("category_priors", {}).items()
+        },
         "calibrators": {k: c.to_dict() for k, c in calibrators.items()},
         "calibration_adopted": calibration_adopted,
         "calibration_note": calibration_note,

@@ -84,6 +84,7 @@ export interface HeatmapPoint {
   zone: string;
   loc_x: number;
   loc_y: number;
+  /** Coarse: only ever "2PT Field Goal" / "3PT Field Goal". */
   shot_type: string;
   shot_distance: number;
   make_probability: number;
@@ -92,6 +93,74 @@ export interface HeatmapPoint {
   difficulty_score: number;
   shot_volume?: number;
   confidence?: number;
+
+  // The backend sends these too. They were undeclared, so the UI could not
+  // read them — which left the shot map able to show how good a spot is but
+  // not what shot it actually is. Optional so an older backend still works.
+
+  /** The shot the model picks here: "stepback", "cutting", "driving", … */
+  best_mechanic?: string;
+  /** Model confidence in that mechanic, 0-1. */
+  best_mechanic_prob?: number;
+  /** Expected-points interval, for showing the estimate honestly. */
+  ep_low?: number;
+  ep_high?: number;
+  /** How reachable this shot is for this player in this matchup, 0-1. */
+  attainability?: number;
+  /** Expected points here relative to the player's own average. */
+  ep_vs_own_average?: number;
+  /** Historical attempts the estimate is drawn from. */
+  attempts_behind?: number;
+  score?: number;
+  player_name?: string;
+  model?: string;
+}
+
+/** One trait behind an attainability estimate, from GET /explain/attainability. */
+export interface AttainabilityFactor {
+  feature: string;
+  label: string;
+  value: number | null;
+  display_value: string;
+  /** Approximate league percentile for this player's value, 0-100. */
+  percentile: number | null;
+  /** Exact TreeSHAP contribution, in attainability share. */
+  impact: number;
+  direction: "raises" | "lowers";
+  detail: string;
+}
+
+/**
+ * Who generates this player's shots from a spot. Attainability is a frequency
+ * and cannot separate a look he manufactures at will from one that only exists
+ * when a teammate finds him; this does.
+ */
+export interface AttainabilityCreation {
+  /** Shrunk share of his makes here that were unassisted, 0-1. */
+  self_created_share: number | null;
+  /** The league's rate for the same zone, for comparison. */
+  league_self_created_share: number | null;
+  makes: number;
+  self_makes: number;
+  /** Reader-facing sentence, or null when the sample is too thin to say. */
+  note: string | null;
+}
+
+export interface AttainabilityExplanation {
+  player_id: string;
+  player_name?: string;
+  season: string;
+  zone: string;
+  attainability: number;
+  /** What a league-average player would get in this zone. */
+  baseline: number;
+  /** This player's deviation from that baseline. */
+  player_effect: number;
+  league_zone_share?: number | null;
+  position?: string | null;
+  factors: AttainabilityFactor[];
+  summary: string;
+  creation?: AttainabilityCreation;
 }
 
 export interface BackendZoneSummary {

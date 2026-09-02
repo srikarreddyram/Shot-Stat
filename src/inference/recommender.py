@@ -59,10 +59,19 @@ from src.features.point_in_time import (
     ZONE_SUFFIX,
     apply_hierarchy,
     league_average_defender,
+    lookup_defender_category_rates,
     lookup_prior_counts,
     lookup_recent_form,
+    lookup_supporting_cast,
+    lookup_zone_creation,
 )
 from src.features.shrinkage import BetaPrior, posterior_interval
+from src.inference.explain import creation_note, explain_attainability
+from src.training.attainability import (
+    attach_sub_zone,
+    encode_zone_and_position,
+    lookup_diet_history,
+)
 from src.features.spec import (
     ZONE_TO_DEF_CATEGORY,
     as_model_matrix,
@@ -169,8 +178,8 @@ SHOT_GRID = _generate_court_grid()
 class ShotRecommender:
     """Loads the trained models and scores court locations for a matchup."""
 
-    def __init__(self, model_name: str = "shot-quality-v9",
-                 attainability_name: str = "attainability",
+    def __init__(self, model_name: str = "shot-quality-v10",
+                 attainability_name: str = "attainability-pit",
                  model_dir: str | Path = MODEL_DIR):
         model_dir = Path(model_dir)
 
@@ -194,6 +203,19 @@ class ShotRecommender:
                             n_attempts=p.get("n_attempts", 0))
             for zone, p in self.metadata["zone_priors"].items()
         }
+        # Same discipline for the point-in-time defender-quality priors
+        # (`lookup_defender_category_rates`). Older metadata files predate
+        # this field, hence the empty-dict fallback.
+        self.category_priors = {
+            cat: BetaPrior(mean=p["mean"], strength=p["strength"],
+                           n_players=p.get("n_players", 0),
+                           n_attempts=p.get("n_attempts", 0))
+            for cat, p in self.metadata.get("category_priors", {}).items()
+        }
+        # Populated from the attainability metadata below, once it is loaded.
+        self.creation_priors: dict[str, BetaPrior] = {}
+        self.sub_zone_priors: dict[str, BetaPrior] = {}
+        self.max_season_progress: float = 0.7
 
         # Per-feature training range, used to stop the serving path from
         # extrapolating. See `_clip_to_training_range`.
@@ -233,6 +255,21 @@ class ShotRecommender:
             self.attainability = xgb.XGBRegressor()
             self.attainability.load_model(
                 str(model_dir / f"xgb_{attainability_name}.json")
+            )
+            self.creation_priors = {
+                zone: BetaPrior(mean=p["mean"], strength=p["strength"],
+                                n_players=p.get("n_players", 0),
+                                n_attempts=p.get("n_attempts", 0))
+                for zone, p in self.att_metadata.get("creation_priors", {}).items()
+            }
+            # Shrinkage for a partial season, and the furthest point through a
+            # season the model was actually trained at.
+            self.sub_zone_priors = {
+                zone: BetaPrior(mean=p["mean"], strength=p["strength"])
+                for zone, p in self.att_metadata.get("sub_zone_priors", {}).items()
+            }
+            self.max_season_progress = float(
+                self.att_metadata.get("max_season_progress", 0.7)
             )
 
         self.engine = get_engine()
@@ -306,8 +343,16 @@ class ShotRecommender:
         latest = rows.sort_values("season").iloc[-1]
         return {c: latest[c] for c in CREATION_FEATURE_COLS if c in latest.index}
 
-    def _defender_row(self, defender_id: str, season: str) -> dict:
-        """Defender physicals and per-category defensive quality."""
+    def _defender_row(self, defender_id: str, season: str, as_of_date=None) -> dict:
+        """
+        Defender physicals and per-category defensive quality, as of
+        `as_of_date` — point-in-time, via `lookup_defender_category_rates`,
+        rather than reading the whole-season `defender_stats` aggregate the
+        way this used to. See `point_in_time.build_defender_category_rates`
+        for why that was a leak: a shot contested by a defender used to
+        contribute to that same defender's own season FG%-allowed, which was
+        then fed back in as a feature describing that shot.
+        """
         with self.engine.connect() as conn:
             attrs = conn.execute(text("""
                 SELECT height, weight, wingspan, name, position FROM players
@@ -315,21 +360,14 @@ class ShotRecommender:
                 ORDER BY season DESC LIMIT 1
             """), {"pid": str(defender_id), "season": season}).fetchone()
 
-            stats = conn.execute(text("""
-                SELECT defense_category, d_fg_pct, pct_plusminus, freq
-                FROM defender_stats
-                WHERE player_id = :pid AND season <= :season
-                  AND season = (SELECT MAX(season) FROM defender_stats
-                                WHERE player_id = :pid AND season <= :season)
-            """), {"pid": str(defender_id), "season": season}).fetchall()
+            if attrs is None:
+                return {}
 
-        if attrs is None:
-            return {}
+            rates = lookup_defender_category_rates(
+                conn, defender_id, self.category_priors, as_of_date=as_of_date
+            )
 
-        by_category = {
-            r[0]: {"d_fg_pct": r[1], "pct_plusminus": r[2], "freq": r[3]}
-            for r in stats
-        }
+        by_category = rates["by_category"]
         # Physicals are exposed under BOTH naming conventions: `def_*` is what
         # the feature assembly reads, while the bare names are what
         # `_combine_defenders` operates on. Keeping one dict with both avoids a
@@ -443,32 +481,158 @@ class ShotRecommender:
             return self.calibrators["all"].predict(raw)
         return raw
 
-    def _attainability(self, player_row: dict, creation: dict,
-                       zones: pd.Series) -> np.ndarray:
-        """Predicted share of the player's shot diet coming from each zone."""
-        if self.attainability is None:
-            return np.full(len(zones), np.nan)
+    def _cast_row(self, player_id: str, season: str, as_of_date=None) -> dict:
+        """
+        The player's supporting cast, leave-one-out and season-to-date.
 
+        See `point_in_time.build_supporting_cast` for why these exclude the
+        player himself: a star's raw team numbers are mostly the star.
+        """
+        with self.engine.connect() as conn:
+            return lookup_supporting_cast(
+                conn, player_id, season, as_of_date=as_of_date
+            )
+
+    def _diet_row(self, player_id: str, season: str, as_of_date=None) -> dict:
+        """
+        Everything known about the player's shot diet right now: this season to
+        date, his career before it, and his last completed season.
+
+        Season-to-date is the strongest of the three by a distance — the first
+        25% of a player's own season predicts his full-season diet better than
+        all of the previous one — which is why this is a point-in-time lookup
+        rather than a season-level join. See `attainability.PRIOR_DIET_COLS`.
+        """
+        with self.engine.connect() as conn:
+            return lookup_diet_history(
+                conn, player_id, season, self.sub_zone_priors,
+                as_of_date=as_of_date, max_progress=self.max_season_progress,
+            )
+
+    def _attainability_frame(self, player_row: dict, creation: dict,
+                             zones: pd.Series, cast: dict | None = None,
+                             loc_x=None, loc_y=None,
+                             prior_diet: dict | None = None) -> pd.DataFrame:
+        """
+        Assemble the attainability model's input rows.
+
+        Split out from `_attainability` so the explainer scores the exact frame
+        the prediction came from, rather than rebuilding it and risking an
+        explanation of a slightly different row than the one served.
+
+        `loc_x`/`loc_y` are what let `attach_sub_zone` split the two wide zones
+        by angle. Without them every above-the-break three collapses to one
+        bucket and the model cannot tell a dead-centre pull-up from a wing
+        spot-up — which was the whole point of the sub-zone taxonomy.
+        """
         cols = self.att_metadata["feature_cols"]
-        zone_index = self.att_metadata["zone_index"]
 
         frame = pd.DataFrame({"zone": zones.values})
-        frame["zone_index"] = frame["zone"].map(zone_index)
-        frame["is_three"] = frame["zone"].isin(
-            ["Left Corner 3", "Right Corner 3", "Above the Break 3"]
-        ).astype(int)
+        if loc_x is not None and loc_y is not None:
+            frame["loc_x"] = np.asarray(loc_x, dtype=float)
+            frame["loc_y"] = np.asarray(loc_y, dtype=float)
+        frame["position"] = player_row.get("position")
         for key in ("height", "weight", "wingspan"):
             frame[key] = player_row.get(key)
         for key in CREATION_FEATURE_COLS:
             frame[key] = creation.get(key, np.nan)
+        # Supporting cast. Constant across the grid — who a player's teammates
+        # are does not depend on where he shoots from.
+        for key, value in (cast or {}).items():
+            frame[key] = value if value is not None else np.nan
+
+        # Shared with the training matrix builder — the encoding is defined
+        # once, in one place, for the same train/serve parity reason the
+        # shot-quality features are.
+        frame = encode_zone_and_position(frame)
+
+        # Diet history is per SUB-zone, so it is applied after the sub-zone is
+        # resolved rather than broadcast like the cast figures.
+        if prior_diet:
+            per_zone = prior_diet.get("zones", {})
+            for col in ("diet_to_date", "diet_att_to_date", "career_diet",
+                        "career_diet_att", "prior_zone_share"):
+                frame[col] = frame["sub_zone"].map(
+                    lambda z: (per_zone.get(z) or {}).get(col)
+                ).astype(float)
+            frame["season_progress"] = prior_diet.get("season_progress", 0.0)
 
         for col in cols:
             if col not in frame.columns:
                 frame[col] = np.nan
+        return frame
 
+    def _attainability(self, player_row: dict, creation: dict,
+                       zones: pd.Series, cast: dict | None = None,
+                       loc_x=None, loc_y=None,
+                       prior_diet: dict | None = None) -> np.ndarray:
+        """Predicted share of the player's shot diet coming from each sub-zone."""
+        if self.attainability is None:
+            return np.full(len(zones), np.nan)
+
+        cols = self.att_metadata["feature_cols"]
+        frame = self._attainability_frame(
+            player_row, creation, zones, cast=cast, loc_x=loc_x, loc_y=loc_y,
+            prior_diet=prior_diet,
+        )
         return np.clip(
             self.attainability.predict(as_model_matrix(frame, cols)), 0.0, 1.0
         )
+
+    def explain_attainability(self, player_id: str, zone: str,
+                              season: str | None = None,
+                              as_of_date=None, top_n: int = 4,
+                              loc_x=None, loc_y=None) -> dict:
+        """
+        Why this player can or cannot get a shot in this zone.
+
+        Returns the decomposition described in `src/inference/explain.py`:
+        the zone's baseline share for any player, this player's deviation from
+        it, and the ranked traits responsible.
+        """
+        if self.attainability is None:
+            raise ValueError("No attainability model loaded")
+
+        if season is None:
+            with self.engine.connect() as conn:
+                season = conn.execute(
+                    text("SELECT MAX(season) FROM players")
+                ).fetchone()[0]
+
+        player = self._player_row(player_id, season, as_of_date=as_of_date)
+        creation = self._creation_row(player_id, season)
+        cast = self._cast_row(player_id, season, as_of_date=as_of_date)
+        frame = self._attainability_frame(
+            player, creation, pd.Series([zone]), cast=cast,
+            loc_x=None if loc_x is None else [loc_x],
+            loc_y=None if loc_y is None else [loc_y],
+            prior_diet=self._diet_row(player_id, season, as_of_date=as_of_date),
+        )
+        # The sub-zone the shot actually resolved to, so the creation lookup
+        # and the reported label describe the same half of the arc the model
+        # scored rather than the blended parent zone.
+        resolved_zone = str(frame.iloc[0].get("sub_zone", zone))
+
+        out = explain_attainability(
+            self.attainability, self.att_metadata, frame, zone, top_n=top_n
+        )
+
+        # Who generates shots here — the question attainability itself cannot
+        # answer. A 26% attainability means very different things when the
+        # player manufactures those looks himself and when they only exist
+        # because a teammate found him.
+        with self.engine.connect() as conn:
+            out["creation"] = lookup_zone_creation(
+                conn, player_id, resolved_zone, self.creation_priors,
+                season=season, as_of_date=as_of_date,
+            )
+        out["creation"]["note"] = creation_note(out["creation"])
+
+        out["player_id"] = player_id
+        out["player_name"] = player.get("name")
+        out["season"] = season
+        out["sub_zone"] = resolved_zone
+        return out
 
     def recommend(
         self,
@@ -511,9 +675,14 @@ class ShotRecommender:
 
         player = self._player_row(player_id, season, as_of_date=as_of_date)
         creation = self._creation_row(player_id, season)
-        defender = self._defender_row(defender_id, season) if defender_id else {}
+        defender = (
+            self._defender_row(defender_id, season, as_of_date=as_of_date)
+            if defender_id else {}
+        )
         if defender and secondary_defender_id:
-            secondary = self._defender_row(secondary_defender_id, season)
+            secondary = self._defender_row(
+                secondary_defender_id, season, as_of_date=as_of_date
+            )
             if secondary:
                 defender = self._combine_defenders(defender, secondary)
                 for attr in ("height", "weight", "wingspan"):
@@ -749,7 +918,12 @@ class ShotRecommender:
             (out["make_probability"].values + np.array(highs)) * out["points"].values
         )
 
-        out["attainability"] = self._attainability(player, creation, out["zone"])
+        out["attainability"] = self._attainability(
+            player, creation, out["zone"],
+            cast=self._cast_row(player_id, season, as_of_date=as_of_date),
+            loc_x=out["loc_x"], loc_y=out["loc_y"],
+            prior_diet=self._diet_row(player_id, season, as_of_date=as_of_date),
+        )
 
         # Ranking score. Attainability enters as a square root rather than
         # linearly: weighting it fully would collapse every recommendation onto
