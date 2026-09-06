@@ -72,8 +72,7 @@ export default function EnginePage({ onBack }: Props) {
             zone: z,
             ep: bZone ? bZone.avg_ep : z.baseEP,
             makeProb: bZone ? bZone.avg_make_prob : 0.35,
-            attempts: bZone?.attempts,
-            actualFgPct: bZone?.actual_fg_pct,
+            attemptsBehind: bZone?.attempts_behind,
           };
         }).sort((a, b) => b.ep - a.ep);
         setResults(mappedResults);
@@ -99,14 +98,24 @@ export default function EnginePage({ onBack }: Props) {
           <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: "#F0F0F0", letterSpacing: "0.05em" }}>SHOT VISION</div>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#C9A84C", letterSpacing: "0.4em", marginTop: 2 }}>SHOT QUALITY ENGINE</div>
         </div>
-        <HealthIndicator status={health} />
-        <button onClick={onBack} style={{ background: "transparent", border: "none", color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", cursor: "pointer", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
-          ← BACK
-        </button>
+        {/* Status and nav sit together on the right. Under space-between the
+            status pill landed dead-centre with nothing on its axis, reading as
+            a stray element rather than as chrome. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+          <HealthIndicator status={health} />
+          <button onClick={onBack} style={{ background: "transparent", border: "none", color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", cursor: "pointer", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
+            ← BACK
+          </button>
+        </div>
       </header>
 
       <div style={{ display: "grid", gridTemplateColumns: "52% 48%", gap: 32, padding: "32px", maxWidth: 1440, margin: "0 auto", alignItems: "start" }}>
-        {/* LEFT COL */}
+        {/* LEFT COL
+            Deliberately NOT position:sticky. Pinning it fills the empty space
+            beside the taller results column, but sticky opens a stacking
+            context around the player-search dropdowns nested in here and the
+            defender dropdown stops receiving clicks — a broken control is a
+            worse trade than uneven whitespace. */}
         <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
           <InputSection label="ATTACKER">
             <PlayerSelect selected={attacker} onSelect={setAttacker} season={season} accent="#C9A84C" statLabels={["FG%", "3P%", "RIM%"]} statValues={(p) => [p.fg, p.tp, p.rim]} ratingValue={(p) => p.offRtg} excludeIds={[primaryDef?.id, secondaryDef?.id]} />
@@ -610,9 +619,14 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
               <div style={{ height: 3, background: "#1a1a2a", borderRadius: 2, marginTop: 8 }}>
                 <div style={{ height: "100%", width: `${Math.min(100, showProb ? r.makeProb * 100 : (r.ep / 1.5) * 100)}%`, background: color, borderRadius: 2, transition: "width 700ms ease" }} />
               </div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#334155", letterSpacing: "0.1em", marginTop: 6 }}>
-                {r.attempts ? `${r.attempts} SEASON ATTEMPTS · ${r.actualFgPct?.toFixed(1)}% ACTUAL FG` : "NO SEASON VOLUME DATA"}
-              </div>
+              {/* Evidence behind the estimate. Rendered only when there is
+                  some — an empty caption row is quieter than a placeholder
+                  telling the reader what the app does not know. */}
+              {r.attemptsBehind && r.attemptsBehind > 0 ? (
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#475569", letterSpacing: "0.1em", marginTop: 6 }}>
+                  {Math.round(r.attemptsBehind).toLocaleString()} SIMILAR SHOTS BEHIND THIS
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -1528,9 +1542,22 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
               {r.note && (
                 <div style={{
                   fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 8,
+                  fontSize: r.expandable ? 9 : 8,
+                  letterSpacing: r.expandable ? "0.08em" : undefined,
                   color: r.expandable ? "#C9A84C" : "#4a5568",
-                  marginTop: 2,
+                  marginTop: r.expandable ? 4 : 2,
+                  // The expandable one reads as a control rather than a
+                  // caption: a bordered chip at 8px in the same muted grey as
+                  // every other label was the single least discoverable thing
+                  // on the panel, and it is the entry point to the whole
+                  // explanation feature.
+                  ...(r.expandable ? {
+                    display: "inline-block",
+                    border: "1px solid rgba(201,168,76,0.45)",
+                    borderRadius: 3,
+                    padding: "2px 6px",
+                    background: "rgba(201,168,76,0.08)",
+                  } : {}),
                 }}>
                   {r.note}
                 </div>
@@ -1548,12 +1575,14 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
               style={{
                 background: "transparent",
                 border: "none",
-                borderBottom: "1px dotted rgba(201,168,76,0.4)",
                 padding: 0,
                 textAlign: "left",
                 cursor: "pointer",
                 font: "inherit",
+                transition: "opacity 160ms ease",
               }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.75"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
             >
               {body}
             </button>
@@ -1641,6 +1670,12 @@ function AttainabilityWhy({ explanation, error }: { explanation: AttainabilityEx
           // stays legible whether the spread is 6 points or half a point.
           const max = Math.max(...explanation.factors.map((x) => Math.abs(x.impact)), 1e-9);
           const width = `${Math.max(4, (Math.abs(f.impact) / max) * 100)}%`;
+          // Enough precision to separate the factors actually being compared.
+          // Fixed at one decimal, a spread like 0.14/0.11/0.09pp collapsed to
+          // three identical "0.1pp" labels sitting beside three visibly
+          // different bars, which reads as a rendering fault rather than as
+          // the small-but-real differences it is.
+          const decimals = max * 100 < 1 ? 2 : 1;
           return (
             <div key={f.feature}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
@@ -1655,7 +1690,7 @@ function AttainabilityWhy({ explanation, error }: { explanation: AttainabilityEx
                   fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
                   color: lowers ? "#DC2626" : "#16A34A", whiteSpace: "nowrap",
                 }}>
-                  {lowers ? "−" : "+"}{(Math.abs(f.impact) * 100).toFixed(1)}pp
+                  {lowers ? "−" : "+"}{(Math.abs(f.impact) * 100).toFixed(decimals)}pp
                 </div>
               </div>
               <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2, marginTop: 4 }}>

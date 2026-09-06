@@ -74,8 +74,13 @@ export interface ZoneResult {
   zone: Zone;
   ep: number;
   makeProb: number;
-  attempts?: number;
-  actualFgPct?: number;
+  /**
+   * Historical attempts backing this estimate, from the API's
+   * `attempts_behind`. Previously this read `attempts`/`actual_fg_pct`, which
+   * the backend has never sent — so the supporting caption fell through to a
+   * placeholder on every card, in every session.
+   */
+  attemptsBehind?: number;
 }
 
 // ── Types mirroring the FastAPI response shapes (src/inference/api.py) ──────
@@ -171,8 +176,12 @@ export interface BackendZoneSummary {
   avg_ep: number;
   shot_type: string;
   point_count?: number;
-  attempts?: number;
-  actual_fg_pct?: number;
+  /**
+   * Historical attempts backing the estimate (api.py ZoneSummary). The
+   * `attempts` / `actual_fg_pct` fields declared here previously were never
+   * emitted by the backend, so any UI reading them silently got `undefined`.
+   */
+  attempts_behind?: number;
   best_quality?: number;
 }
 

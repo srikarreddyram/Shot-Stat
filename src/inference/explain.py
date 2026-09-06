@@ -392,7 +392,17 @@ def _driver_clause(factors: list[dict], limit: int = 2) -> str:
     factor list can afford the vivid phrasing because it prints the signed
     contribution beside it; a sentence cannot.
     """
-    named = [f for f in factors if abs(f["impact"]) >= NEGLIGIBLE_EFFECT / 4]
+    # A factor with no value is not evidence. Naming one produced sentences
+    # like "mostly teammates' ball movement (unknown)" — citing a quantity in
+    # the same breath as admitting it is not known, which reads as a rendering
+    # fault and undercuts the reasons that ARE backed by data. The factor still
+    # appears in the ranked list below with its contribution; it just does not
+    # get quoted in prose.
+    named = [
+        f for f in factors
+        if abs(f["impact"]) >= NEGLIGIBLE_EFFECT / 4
+        and f.get("value") is not None
+    ]
     if not named:
         return ""
     joined = " and ".join(
@@ -471,8 +481,10 @@ def _summarize(predicted: float, baseline: float, zone: str,
         lead = (f"A typical player takes {baseline_txt} of his shots here; "
                 f"he gets there {'more' if delta > 0 else 'less'} than most{who}")
 
+    # Same rule as `_driver_clause`: only quote factors whose value is known.
     drivers = [f for f in factors
-               if f["direction"] == ("raises" if delta > 0 else "lowers")]
+               if f["direction"] == ("raises" if delta > 0 else "lowers")
+               and f.get("value") is not None]
     if not drivers:
         return lead + "."
 

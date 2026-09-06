@@ -346,3 +346,28 @@ def test_the_history_window_is_named_correctly():
     out = explain_attainability(model, metadata, lapsed, "Restricted Area")
     assert out["history"]["window"] == "last season"
     assert out["history"]["prior_share"] == pytest.approx(0.10)
+
+
+def test_summary_never_quotes_a_factor_whose_value_is_unknown():
+    """
+    A factor with no value is not evidence. Quoting one produced sentences like
+    "mostly teammates' ball movement (unknown)" — citing a quantity in the same
+    breath as admitting it is not known, which reads as a rendering fault and
+    undercuts the reasons that ARE backed by data.
+
+    It still belongs in the ranked factor list, where its contribution is shown
+    with an explicit "unknown" value; it just must not be narrated.
+    """
+    from src.inference.explain import _driver_clause
+
+    known = {"label": "Pull-up share", "display_value": "50%",
+             "value": 0.5, "impact": 0.03, "direction": "raises"}
+    unknown = {"label": "Teammates' ball movement", "display_value": "unknown",
+               "value": None, "impact": 0.04, "direction": "raises"}
+
+    clause = _driver_clause([unknown, known])
+    assert "unknown" not in clause
+    assert "pull-up share" in clause.lower()
+
+    # Nothing quotable at all is silence, not a sentence naming an unknown.
+    assert _driver_clause([unknown]) == ""
