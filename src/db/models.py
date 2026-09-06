@@ -391,6 +391,64 @@ class PlayerTrackingStats(Base):
         return f"<PlayerTrackingStats {self.player_id} {self.season} drib/touch:{self.avg_drib_per_touch}>"
 
 
+class PlayerGameContest(Base):
+    """
+    Per-player-per-GAME shot distribution across closest-defender distance
+    bands — how contested a player's looks actually were on a given night.
+
+    One row per (player_id, game_date, def_dist_range).
+
+    Why this table exists
+    ---------------------
+    Contest level is the single largest missing input to shot quality. Per-SHOT
+    defender distance is not published by any public endpoint — that remains
+    true, and it is the model's hard noise floor. What IS available, and what
+    this table captures, is the distribution one level up.
+
+    `player_shot_profile` already stores the same four bands, but only as a
+    SEASON aggregate: "Luka takes 30% of his shots wide open" across a whole
+    year. That describes a player, not a night, and it cannot be made
+    point-in-time. Pulled per game date instead, the same figures become
+    accumulable over strictly prior games, which is the construction every
+    other feature in `point_in_time.py` uses.
+
+    Provenance: LeagueDashPlayerPtShot with DateFrom == DateTo, one call per
+    (date, band). The endpoint honours the date filter — verified by
+    reconciliation, not assumption: Doncic on 2024-01-26 returns 2 + 8 + 23 + 0
+    = 33 FGA against exactly 33 shots for that game in the `shots` table.
+
+    Note `shotchartdetail` does NOT honour a CloseDefDistRange parameter; it
+    silently ignores it and returns the unfiltered set, so per-shot bands
+    cannot be recovered that way.
+
+    Populated by src/ingestion/contest_ingestor.py.
+    """
+    __tablename__ = "player_game_contest"
+
+    player_id = Column(String, primary_key=True)
+    game_date = Column(Date, primary_key=True)
+    # "0-2 Feet - Very Tight" | "2-4 Feet - Tight"
+    # | "4-6 Feet - Open"     | "6+ Feet - Wide Open"
+    def_dist_range = Column(String, primary_key=True)
+
+    season = Column(String, nullable=True)
+    fga = Column(Integer, nullable=True)
+    fgm = Column(Integer, nullable=True)
+    fg_pct = Column(Float, nullable=True)
+    # Share of that player's attempts that night falling in this band, as the
+    # endpoint reports it.
+    fga_frequency = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("ix_contest_player_date", "player_id", "game_date"),
+        Index("ix_contest_date", "game_date"),
+    )
+
+    def __repr__(self):
+        return (f"<PlayerGameContest {self.player_id} {self.game_date} "
+                f"{self.def_dist_range}: {self.fgm}/{self.fga}>")
+
+
 class PlayerShotProfile(Base):
     """
     Per-player-season shooting splits broken out by SHOT DIFFICULTY CONTEXT —
