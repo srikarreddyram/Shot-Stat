@@ -36,6 +36,10 @@ models/*.png
 runs/*/*.png
 runs/*/*.csv
 
+# Training/ingest console output. Regenerable, and the run manifest already
+# records everything durable about a run.
+logs/
+
 # Dev-server runtime state (scripts/dev.sh) — process groups and ports
 # for the current run. Machine-local and meaningless in a diff.
 .dev-runtime/
