@@ -34,6 +34,7 @@ from src.features.point_in_time import (
     ZONES,
     apply_hierarchy,
     apply_opponent_defence,
+    build_contest_history,
     build_defender_category_rates,
     build_opponent_zone_defence,
     build_prior_counts,
@@ -427,6 +428,14 @@ def build_matrix(
         df = df.merge(opp, on=["game_id", "def_team"], how="left")
         df = apply_opponent_defence(df, zone_priors)
         log(f"    {len(opp):,} (game, defending team) rows")
+
+    log("  → per-game contest history (point-in-time) ...")
+    contest = build_contest_history(engine)
+    if not contest.empty:
+        df = df.merge(contest, on=["player_id", "game_id"], how="left")
+        log(f"    {len(contest):,} (player, game) contest rows")
+    else:
+        log("    none ingested yet — skipping")
 
     log("  → rolling form ...")
     df = df.merge(build_rolling_form(engine), on=["player_id", "game_id"], how="left")

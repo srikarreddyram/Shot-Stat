@@ -246,6 +246,27 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     "opponent_defence": [
         "opp_zone_def_rate", "opp_zone_def_att",
     ] + [f"opp_def_rate_{s}" for s in ZONE_SUFFIX.values()],
+    # How contested this shooter's looks have actually been, accumulated over
+    # strictly prior games (see point_in_time.build_contest_history).
+    #
+    # Contest level is the largest single thing the model cannot see. Per-SHOT
+    # closest-defender distance is not published anywhere — `shotchartdetail`
+    # accepts a CloseDefDistRange parameter and silently ignores it — and that
+    # remains the hard noise floor on whether a given shot goes in.
+    #
+    # What these carry is the tendency one level up: LeagueDashPlayerPtShot
+    # does honour a date filter, so the four defender-distance bands are
+    # available per GAME and can therefore be accumulated point-in-time. The
+    # creation group already has `avg_def_dist` / `open_share` / `tight_share`
+    # from the same bands, but only as a season aggregate lagged a full year —
+    # it cannot say a player has been run off the line for the past month.
+    "contest": [
+        "contest_car_very_tight", "contest_car_tight",
+        "contest_car_open", "contest_car_wide_open",
+        "contest_ssn_very_tight", "contest_ssn_tight",
+        "contest_ssn_open", "contest_ssn_wide_open",
+        "contest_car_sep", "contest_ssn_sep", "contest_att",
+    ],
     "team_creation": [],  # reserved — see module docstring
 }
 

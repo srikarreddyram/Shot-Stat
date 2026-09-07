@@ -59,7 +59,8 @@ from src.training.train import DEFAULT_PARAMS, _apply_constraints
 # without location is not a variant of this model, it is a different exercise.
 ABLATABLE_GROUPS = ["creation", "defender", "interaction",
                     "shooter_skill", "context", "shooter_physical",
-                    "shot_context", "possession_origin", "opponent_defence"]
+                    "shot_context", "possession_origin", "opponent_defence",
+                    "contest"]
 
 
 def _fit_and_score(df, feature_cols, fit_seasons, val_season, test_season,
