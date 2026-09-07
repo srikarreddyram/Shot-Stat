@@ -60,7 +60,7 @@ from src.training.train import DEFAULT_PARAMS, _apply_constraints
 ABLATABLE_GROUPS = ["creation", "defender", "interaction",
                     "shooter_skill", "context", "shooter_physical",
                     "shot_context", "possession_origin", "opponent_defence",
-                    "contest"]
+                    "contest", "finish"]
 
 
 def _fit_and_score(df, feature_cols, fit_seasons, val_season, test_season,

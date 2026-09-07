@@ -110,3 +110,45 @@ def test_empty_mix_falls_back_without_crashing(grid):
 
 def test_min_share_threshold_is_a_sane_fraction():
     assert 0.0 < MIN_MECHANIC_SHARE < 0.2
+
+
+def test_finish_is_independent_of_creation():
+    """
+    Creation and finish are orthogonal and must not compete for one bucket.
+    "Driving Dunk Shot" is a driving CREATION and a dunk FINISH; the ordered
+    creation scan gives `driving` the win, which left `dunk` catching only the
+    bare "Dunk Shot" label.
+
+    That is not cosmetic. Driving dunks convert at 88.8% and driving layups at
+    60.5% over 2024-25 restricted-area shots, and both encoded identically.
+    """
+    from src.features.spec import classify_finish, classify_mechanic
+
+    cases = [
+        ("Driving Dunk Shot", "driving", "dunk"),
+        ("Running Dunk Shot", "driving", "dunk"),
+        ("Cutting Dunk Shot", "cutting", "dunk"),
+        ("Alley Oop Dunk Shot", "alley_oop", "dunk"),
+        ("Driving Layup Shot", "driving", "layup"),
+        ("Putback Layup Shot", "putback", "layup"),
+        ("Driving Finger Roll Layup Shot", "driving", "layup"),
+        ("Turnaround Hook Shot", "hook", "hook"),
+        ("Step Back Jump shot", "stepback", "jumper"),
+    ]
+    for subtype, mech, finish in cases:
+        assert classify_mechanic(subtype) == mech, subtype
+        assert classify_finish(subtype) == finish, subtype
+
+
+def test_every_dunk_label_reaches_the_dunk_finish():
+    """
+    The regression this fixes: Antetokounmpo was offered no dunk at the rim,
+    because 98% of real dunks were filed under a creation bucket and `dunk`
+    fell below the mechanic-share floor.
+    """
+    from src.features.spec import classify_finish
+
+    for label in ["Dunk Shot", "Driving Dunk Shot", "Running Dunk Shot",
+                  "Cutting Dunk Shot", "Alley Oop Dunk Shot",
+                  "Reverse Dunk Shot", "Putback Dunk Shot"]:
+        assert classify_finish(label) == "dunk", label

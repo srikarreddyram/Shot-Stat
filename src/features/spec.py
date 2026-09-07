@@ -74,6 +74,47 @@ SHOT_MECHANIC_RULES = [
 
 SHOT_MECHANICS = [name for name, _ in SHOT_MECHANIC_RULES] + ["other"]
 
+# ── Finish type ──────────────────────────────────────────────────────────────
+# What the shot physically WAS, as distinct from how it was created.
+#
+# These are two orthogonal dimensions and the single-bucket scheme above forces
+# them into one. "Driving Dunk Shot" is creation=driving AND finish=dunk;
+# first-match-wins gives creation the win, so `dunk` above only ever catches
+# the bare "Dunk Shot" label. The damage is not theoretical: measured over
+# 2024-25 restricted-area shots, `driving` absorbed 54.1% while `dunk` was left
+# with 1.7% — under `mechanics.MIN_MECHANIC_SHARE`, so it was filtered out
+# entirely and Giannis Antetokounmpo was offered no dunk at the rim at all.
+#
+# Ordered most-specific-first for the same reason as the creation rules, and
+# checked BEFORE the generic jumper so "Driving Floating Jump Shot" reads as a
+# floater rather than a jumper.
+FINISH_RULES = [
+    ("dunk", ["dunk"]),
+    ("layup", ["layup", "finger roll", "tip "]),
+    ("hook", ["hook"]),
+    ("floater", ["floating"]),
+    ("jumper", ["jump shot", "jump"]),
+]
+
+FINISH_TYPES = [name for name, _ in FINISH_RULES] + ["other"]
+
+
+def classify_finish(subtype) -> str:
+    """
+    Map a raw play-by-play subType to one of FINISH_TYPES.
+
+    Independent of `classify_mechanic`: the same label yields a creation bucket
+    there and a finish bucket here, so "Driving Dunk Shot" is (driving, dunk)
+    rather than being forced to choose.
+    """
+    if not isinstance(subtype, str) or not subtype.strip():
+        return "other"
+    text = subtype.lower()
+    for name, needles in FINISH_RULES:
+        if any(needle in text for needle in needles):
+            return name
+    return "other"
+
 # ── Possession origin ────────────────────────────────────────────────────────
 # What happened immediately before the shot, collapsed from the 14 raw
 # play-by-play event types into five buckets describing how the possession
@@ -239,6 +280,9 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     # Possession origin indicators, grouped separately so `--no-origin` style
     # ablations can measure them on their own.
     "possession_origin": [f"origin_{o}" for o in POSSESSION_ORIGINS],
+    # What the shot physically was — dunk, layup, hook, floater, jumper —
+    # kept on its own axis from how it was created. See FINISH_RULES.
+    "finish": [f"finish_{f}" for f in FINISH_TYPES],
     # Point-in-time opponent defence per zone. The model previously knew about
     # opponent defence only through one season-level `def_rating`, and residuals
     # aggregated by defending team showed it explaining essentially none of it
@@ -296,7 +340,8 @@ def all_feature_columns(df: pd.DataFrame | None = None) -> list[str]:
     dummies = sorted(
         c for c in df.columns
         if (c.startswith("zone_is_") or c.startswith("pos_")
-            or c.startswith("mech_") or c.startswith("origin_"))
+            or c.startswith("mech_") or c.startswith("origin_")
+            or c.startswith("finish_"))
     )
 
     # De-duplicate, preserving order. A column can legitimately arrive from both
@@ -506,6 +551,15 @@ def derive_features(
         mechanic = out["shot_subtype"].map(classify_mechanic)
         for name in SHOT_MECHANICS:
             out[f"mech_{name}"] = (mechanic == name).astype(int)
+
+        # Finish type, on its own axis. A driving dunk and a driving layup are
+        # the same creation and wildly different shots: measured over 2024-25
+        # restricted-area attempts, 88.8% on 4,994 driving dunks against 60.5%
+        # on 30,075 driving layups. Both encoded as mech_driving and nothing
+        # else, so those 35,069 shots were identical rows to the model.
+        finish = out["shot_subtype"].map(classify_finish)
+        for name in FINISH_TYPES:
+            out[f"finish_{name}"] = (finish == name).astype(int)
 
     # Possession origin, one indicator per bucket.
     if "prev_event_type" in out.columns:
