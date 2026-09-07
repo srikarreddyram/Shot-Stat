@@ -30,8 +30,9 @@ def grid():
 @pytest.fixture()
 def mix():
     return {
-        "Above the Break 3": {"jumper": 0.5, "pullup": 0.3, "stepback": 0.2},
-        "Restricted Area": {"driving": 0.6, "cutting": 0.4},
+        "Above the Break 3": {"spot_up jumper": 0.5, "pullup jumper": 0.3,
+                              "stepback jumper": 0.2},
+        "Restricted Area": {"driving layup": 0.6, "driving dunk": 0.4},
     }
 
 
@@ -39,8 +40,9 @@ def test_expansion_covers_every_location_and_mechanic(grid, mix):
     expanded = expand_grid_over_mechanics(grid, mix)
     # 2 above-the-break locations x 3 mechanics + 1 rim location x 2 mechanics
     assert len(expanded) == 2 * 3 + 1 * 2
-    assert set(expanded["_mechanic"]) == {"jumper", "pullup", "stepback",
-                                          "driving", "cutting"}
+    assert set(expanded["_mechanic"]) == {
+        "spot_up jumper", "pullup jumper", "stepback jumper",
+        "driving layup", "driving dunk"}
 
 
 def test_weights_form_a_distribution_per_location(grid, mix):
@@ -52,8 +54,9 @@ def test_weights_form_a_distribution_per_location(grid, mix):
 def test_marginal_is_the_weighted_expectation(grid, mix):
     expanded = expand_grid_over_mechanics(grid, mix)
     # Deterministic per-mechanic probabilities so the expectation is checkable.
-    probs = {"jumper": 0.40, "pullup": 0.30, "stepback": 0.20,
-             "driving": 0.60, "cutting": 0.80}
+    probs = {"spot_up jumper": 0.40, "pullup jumper": 0.30,
+             "stepback jumper": 0.20, "driving layup": 0.60,
+             "driving dunk": 0.80}
     expanded["make_probability"] = expanded["_mechanic"].map(probs)
 
     out = marginalize(expanded, key_cols=("loc_x", "loc_y", "zone", "shot_distance"))
@@ -73,8 +76,9 @@ def test_marginal_lies_between_the_best_and_worst_mechanic(grid, mix):
     of them or fall below the worst. If it does, the weights are wrong.
     """
     expanded = expand_grid_over_mechanics(grid, mix)
-    probs = {"jumper": 0.40, "pullup": 0.30, "stepback": 0.20,
-             "driving": 0.60, "cutting": 0.80}
+    probs = {"spot_up jumper": 0.40, "pullup jumper": 0.30,
+             "stepback jumper": 0.20, "driving layup": 0.60,
+             "driving dunk": 0.80}
     expanded["make_probability"] = expanded["_mechanic"].map(probs)
     out = marginalize(expanded, key_cols=("loc_x", "loc_y", "zone", "shot_distance"))
 
@@ -87,24 +91,25 @@ def test_marginal_lies_between_the_best_and_worst_mechanic(grid, mix):
 
 def test_best_mechanic_is_the_highest_scoring_one(grid, mix):
     expanded = expand_grid_over_mechanics(grid, mix)
-    probs = {"jumper": 0.40, "pullup": 0.30, "stepback": 0.20,
-             "driving": 0.60, "cutting": 0.80}
+    probs = {"spot_up jumper": 0.40, "pullup jumper": 0.30,
+             "stepback jumper": 0.20, "driving layup": 0.60,
+             "driving dunk": 0.80}
     expanded["make_probability"] = expanded["_mechanic"].map(probs)
     out = marginalize(expanded, key_cols=("loc_x", "loc_y", "zone", "shot_distance"))
 
     atb = out[out["zone"] == "Above the Break 3"].iloc[0]
-    assert atb["best_mechanic"] == "jumper"
+    assert atb["best_mechanic"] == "spot_up jumper"
     assert atb["best_mechanic_prob"] == pytest.approx(0.40)
 
     rim = out[out["zone"] == "Restricted Area"].iloc[0]
-    assert rim["best_mechanic"] == "cutting"
+    assert rim["best_mechanic"] == "driving dunk"
 
 
 def test_empty_mix_falls_back_without_crashing(grid):
     """A player with no play-by-play history must still get a prediction."""
     expanded = expand_grid_over_mechanics(grid, {})
     assert len(expanded) == len(grid)
-    assert set(expanded["_mechanic"]) == {"other"}
+    assert set(expanded["_mechanic"]) == {"spot_up jumper"}
     assert np.allclose(expanded["_mech_weight"].values, 1.0)
 
 
@@ -126,18 +131,43 @@ def test_finish_is_independent_of_creation():
 
     cases = [
         ("Driving Dunk Shot", "driving", "dunk"),
-        ("Running Dunk Shot", "driving", "dunk"),
+        ("Running Dunk Shot", "transition", "dunk"),
         ("Cutting Dunk Shot", "cutting", "dunk"),
         ("Alley Oop Dunk Shot", "alley_oop", "dunk"),
         ("Driving Layup Shot", "driving", "layup"),
         ("Putback Layup Shot", "putback", "layup"),
         ("Driving Finger Roll Layup Shot", "driving", "layup"),
-        ("Turnaround Hook Shot", "hook", "hook"),
+        ("Turnaround Hook Shot", "post_up", "hook"),
         ("Step Back Jump shot", "stepback", "jumper"),
     ]
     for subtype, mech, finish in cases:
         assert classify_mechanic(subtype) == mech, subtype
         assert classify_finish(subtype) == finish, subtype
+
+
+def test_every_shot_type_round_trips_through_the_classifiers():
+    """
+    The serving path does not set `mech_*`/`finish_*` by hand. It writes the
+    shot-type name into `shot_subtype` and lets `derive_features` classify it,
+    so that training and serving share one encoding. That only works if every
+    name in the vocabulary classifies to itself.
+
+    Without this, a served row silently lands in the wrong bucket: before the
+    finish split, the grid named a bare creation bucket like "driving", which
+    `classify_finish` did not recognise, so EVERY served row carried
+    `finish_other=1` — a combination holding 1.5% of training shots.
+    """
+    from src.features.mechanics import SHOT_TYPES, _shot_type
+
+    assert len(SHOT_TYPES) == 54
+    for shot_type in SHOT_TYPES:
+        assert _shot_type(shot_type) == shot_type
+
+
+def test_fallback_shot_type_is_a_real_one():
+    from src.features.mechanics import FALLBACK_SHOT_TYPE, SHOT_TYPES
+
+    assert FALLBACK_SHOT_TYPE in SHOT_TYPES
 
 
 def test_every_dunk_label_reaches_the_dunk_finish():

@@ -176,6 +176,65 @@ same contaminated signal at test time and understates the fix. The real payoff i
 correctness: a November prediction no longer borrows from April, and defender quality
 is computable at any date rather than requiring the season to finish.
 
+### v11–v12 — the finish split, and a contest group that did not work
+
+`shot_subtype` is a compound label: "Driving Dunk Shot" names both how the shot was
+*created* (a drive) and how it was *finished* (a dunk). Up to v11 a single ordered scan
+had to pick one, and creation won — so `mech_dunk` caught only the bare "Dunk Shot"
+label, about 2% of real dunks. Everything else was filed under a creation bucket and the
+dunk/layup distinction vanished, despite driving dunks converting at **88.8%** and
+driving layups at **60.5%** over 2024-25 restricted-area shots.
+
+v12 split them into two independent families, `mech_*` and `finish_*`, so a label yields
+a creation bucket *and* a finish bucket instead of choosing. It also added `contest`:
+eleven per-game defender-distance band features from `src/ingestion/contest_ingestor.py`.
+
+Ablation settled the two separately — `finish` earned **+0.0029** log-loss, `contest`
+**−0.0031**, the most harmful group in the matrix. The NBA publishes contest rates only
+per *game*, so the band any individual shot was taken under is never known; the per-game
+share ends up a noisy proxy for role that `creation` and `shooter_skill` already carry
+more cleanly. `contest` is off by default behind `--contest`.
+
+### v13 — correcting the creation taxonomy
+
+v12 shipped the finish split but left the creation buckets as they were, and auditing
+them against all 52 raw `shot_subtype` values showed the buckets were still describing
+finishes. Three rules were wrong, covering **314,690 shots (14%)**:
+
+| raw label | v12 bucket | correct | shots |
+|---|---|---|---|
+| `... Floating ...` | `pullup` | `driving` / `spot_up` | 170,479 |
+| `Turnaround ...`, `Fadeaway ...` | `stepback` | `post_up` | 107,234 |
+| `Running Jump Shot` | `driving` | `transition` | 36,977 |
+
+The third is the one that surfaced the problem: it produced *driving* corner threes, a
+shot that does not exist. v13's nine buckets — `putback`, `alley_oop`, `cutting`,
+`stepback`, `post_up`, `pullup`, `driving`, `transition`, `spot_up` — describe creation
+only, and every bucket name classifies to itself so the serving path can round-trip it.
+After the fix, 325 shots out of 2.25M (0.014%) still land in an odd zone×creation pair,
+and all of them are the NBA's own labels (long "Driving Floating Jump Shot" attempts
+from beyond the arc) rather than a rule error.
+
+v13 also drops `contest` per the ablation above.
+
+| | log-loss | AUC | ECE | zone-rank ρ |
+|---|---|---|---|---|
+| v11 | 0.6147 | 0.7050 | 0.0093 | **0.7442** |
+| v12 | 0.6131 | 0.7053 | 0.0120 | 0.7371 |
+| **v13** | **0.6106** | **0.7076** | **0.0090** | 0.7422 |
+
+**A serving bug the split introduced.** The recommender marginalises over the player's
+mechanic mix by writing a bucket name into `shot_subtype` and letting `derive_features`
+classify it — round-tripping is what keeps training and serving on one encoding. With
+finishes now a separate family, a bare creation name like `"driving"` classified to
+`finish_other`, so **every served row** carried `finish_other=1` — a combination holding
+1.5% of training shots. The mix is now estimated over joint `(creation, finish)` pairs
+and the grid names both, e.g. `"driving dunk"`.
+
+That fix also repaired a user-visible symptom: Antetokounmpo was offered no dunk at the
+rim, because with dunks scattered across creation buckets no single one cleared the 3%
+mechanic-share floor. His restricted-area mix is now 32% dunks across five pairs.
+
 ### What each feature group is actually worth
 
 Group ablation on v9 (`runs/20260824-191347__ablate-v9/ablations.csv`), retraining with

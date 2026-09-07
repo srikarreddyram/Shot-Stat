@@ -158,6 +158,7 @@ def train(
     hierarchical_split: bool = False,
     use_defender_physicals: bool = False,
     use_spatial_basis: bool = False,
+    use_contest: bool = False,
     params: dict | None = None,
     calibration_folds: int = 3,
     calibration_mode: str = "recent",
@@ -198,6 +199,15 @@ def train(
         # default: no measurable effect, and a large spurious one at serve time.
         physical_cols = set(FEATURE_GROUPS["defender_physical"])
         feature_cols = [c for c in feature_cols if c not in physical_cols]
+
+    if not use_contest:
+        # Per-game defender-distance bands. Ablation measured them as the most
+        # harmful group in the matrix (-0.0031 log loss): the NBA only publishes
+        # contest rates per game, so the band a *single* shot was taken under is
+        # never known, and the per-game share is mostly a proxy for role that
+        # the creation and shooter-skill groups already carry more cleanly.
+        contest_cols = set(FEATURE_GROUPS["contest"])
+        feature_cols = [c for c in feature_cols if c not in contest_cols]
 
     if not use_creation:
         # Ablation: drop the creation group entirely so its contribution can be
@@ -506,6 +516,7 @@ def train(
         "hierarchical_split": hierarchical_split,
         "use_creation": use_creation,
         "use_defender": use_defender,
+        "use_contest": use_contest,
         "seasons": seasons,
         "fit_seasons": fit_seasons,
         "val_season": val_season,
@@ -574,6 +585,9 @@ if __name__ == "__main__":
     parser.add_argument("--spatial-basis", action="store_true",
                         help="Include the radial spatial basis (off by default "
                              "— measured slightly harmful)")
+    parser.add_argument("--contest", action="store_true",
+                        help="Include per-game defender-distance bands (off by "
+                             "default — the most harmful group in ablation)")
     parser.add_argument("--split", action="store_true",
                         help="Train separate interior/perimeter models (old behaviour)")
     parser.add_argument("--calibration", default="recent",
@@ -597,6 +611,7 @@ if __name__ == "__main__":
         hierarchical_split=args.split,
         use_defender_physicals=args.defender_physicals,
         use_spatial_basis=args.spatial_basis,
+        use_contest=args.contest,
         params=tuned,
         calibration_folds=args.folds,
         calibration_mode=args.calibration,

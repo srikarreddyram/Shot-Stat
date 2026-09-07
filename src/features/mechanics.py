@@ -44,7 +44,30 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.features.spec import SHOT_MECHANICS, classify_mechanic
+from src.features.spec import (
+    FINISH_TYPES,
+    SHOT_MECHANICS,
+    classify_finish,
+    classify_mechanic,
+)
+
+# The vocabulary the mix is estimated over: a shot type is a (creation, finish)
+# pair, because the model encodes them as two independent families and a row
+# that names only one of them is not a shot the model has ever seen.
+#
+# The pair is carried as the string "<creation> <finish>", not a tuple, because
+# the serving path recovers the indicators by feeding this value back through
+# `classify_mechanic`/`classify_finish` rather than setting columns by hand —
+# round-tripping is what guarantees train/serve parity. Both bucket vocabularies
+# are chosen so they classify to themselves, so the concatenation classifies to
+# exactly the pair it names.
+SHOT_TYPES = [f"{m} {f}" for m in SHOT_MECHANICS for f in FINISH_TYPES]
+
+FALLBACK_SHOT_TYPE = "spot_up jumper"
+
+
+def _shot_type(subtype) -> str:
+    return f"{classify_mechanic(subtype)} {classify_finish(subtype)}"
 
 # Attempts-equivalent weight given to the league mix. A player needs roughly
 # this many attempts in a zone before his own mix dominates the estimate.
@@ -74,7 +97,7 @@ def league_zone_mix(engine, through_season: str | None = None) -> pd.DataFrame:
     if raw.empty:
         return pd.DataFrame(columns=["zone", "mechanic", "share"])
 
-    raw["mechanic"] = raw["shot_subtype"].map(classify_mechanic)
+    raw["mechanic"] = raw["shot_subtype"].map(_shot_type)
     grouped = raw.groupby(["zone", "mechanic"], as_index=False)["n"].sum()
     total = grouped.groupby("zone")["n"].transform("sum")
     grouped["share"] = grouped["n"] / total
@@ -114,7 +137,7 @@ def player_zone_mix(engine, player_id: str, season: str,
     if raw.empty:
         return league_by_zone
 
-    raw["mechanic"] = raw["shot_subtype"].map(classify_mechanic)
+    raw["mechanic"] = raw["shot_subtype"].map(_shot_type)
     player = raw.groupby(["zone", "mechanic"], as_index=False)["n"].sum()
 
     out: dict[str, dict[str, float]] = {}
@@ -124,7 +147,7 @@ def player_zone_mix(engine, player_id: str, season: str,
         counts = dict(zip(rows["mechanic"], rows["n"]))
 
         mix = {}
-        for mechanic in SHOT_MECHANICS:
+        for mechanic in SHOT_TYPES:
             observed = float(counts.get(mechanic, 0.0))
             prior_share = float(prior.get(mechanic, 0.0))
             mix[mechanic] = (
@@ -166,8 +189,13 @@ def expand_grid_over_mechanics(grid: pd.DataFrame,
             frames.append(copy)
 
     if not frames:
+        # A player with no play-by-play history at all. The fallback has to name
+        # a real shot type rather than a placeholder: "spot_up jumper" is the
+        # league's single most common one (34% of all attempts), whereas an
+        # invented label would classify to a near-empty corner of the training
+        # distribution and get extrapolated predictions.
         out = grid.copy()
-        out["_mechanic"] = "other"
+        out["_mechanic"] = FALLBACK_SHOT_TYPE
         out["_mech_weight"] = 1.0
         return out
 

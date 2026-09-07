@@ -178,7 +178,7 @@ SHOT_GRID = _generate_court_grid()
 class ShotRecommender:
     """Loads the trained models and scores court locations for a matchup."""
 
-    def __init__(self, model_name: str = "shot-quality-v11",
+    def __init__(self, model_name: str = "shot-quality-v13",
                  attainability_name: str = "attainability-pit",
                  model_dir: str | Path = MODEL_DIR):
         model_dir = Path(model_dir)

@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     # Model names are now descriptive rather than a v1/v2/v3 counter, and each
     # one has a runs/<stamp>__<name>/run.json recording exactly what it scored.
     # The list is ordered newest-first; the first that loads wins.
-    for model_name in ["shot-quality-v11", "shot-quality-v10", "shot-quality-v9", "shot-quality-v8", "shot-quality-v5", "shot-quality-v4", "shot-quality", "v3", "v2", "v1"]:
+    for model_name in ["shot-quality-v13", "shot-quality-v12", "shot-quality-v11", "shot-quality-v10", "shot-quality-v9", "shot-quality-v8", "shot-quality-v5", "shot-quality-v4", "shot-quality", "v3", "v2", "v1"]:
         try:
             recommender = ShotRecommender(model_name=model_name)
             break

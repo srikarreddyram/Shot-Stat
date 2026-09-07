@@ -36,8 +36,8 @@ from src.features.point_in_time import ZONE_SUFFIX, ZONES, ZONE_TO_DEF_CATEGORY
 
 INTERIOR_ZONES = ["Restricted Area", "In The Paint (Non-RA)"]
 
-# Play-by-play shot mechanics, collapsed from the league's ~40 raw labels into
-# eight buckets that describe how the shot was created.
+# Play-by-play shot CREATION, collapsed from the league's 52 raw labels into
+# nine buckets describing how the shot came about — not what it looked like.
 #
 # This is the per-SHOT version of what `player_shot_profile` could only give as
 # a season average. "Pullup Jump shot" and "Step Back Jump shot" are the shooter
@@ -46,33 +46,62 @@ INTERIOR_ZONES = ["Restricted Area", "In The Paint (Non-RA)"]
 # creation profile could say a player takes 60% pull-ups — it could never say
 # THIS shot was one.
 #
-# The bucket NAMES are themselves valid inputs — `classify_mechanic("stepback")`
-# returns "stepback". That round-trip is load-bearing: the recommender scores
-# hypothetical shots by assigning each grid row a mechanic name and passing it
-# through this same function, so the serving path produces the training
-# encoding by construction instead of reimplementing it.
-#
 # Matching is by substring against the lowercased label, most specific first,
-# because the raw labels compose ("Driving Reverse Layup Shot", "Turnaround
-# Fadeaway shot") and a first-match-wins scan over an ordered list is far easier
-# to reason about than an exhaustive enumeration that upstream can extend.
+# because the raw labels compose and a first-match-wins scan over an ordered
+# list is easier to reason about than an exhaustive enumeration upstream can
+# extend.
+#
+# Every raw label decomposes as [creation modifiers] + [finish descriptors]:
+# "Driving Floating Bank Jump Shot" is created by a drive and finished with a
+# banked floater. These rules must match ONLY the creation half — `finish_*`
+# below carries the rest.
+#
+# The previous version could not respect that, because one bucket had to carry
+# both, so it matched on finish words and mislabelled roughly one shot in seven
+# over 2016-17 onward (2,252,349 shots):
+#
+#   "floating"            -> pullup     170,479 shots. A floater is not a
+#                                       pull-up, and "Driving Floating Jump
+#                                       Shot" is a DRIVE, wrong on both axes.
+#   "turnaround"/"fadeaway" -> stepback 107,234 shots. A turnaround fadeaway is
+#                                       a post move; a step-back is a perimeter
+#                                       move off the dribble. Different shots.
+#   "running" (+ jumper)  -> driving     36,977 shots. "Running Jump Shot" is a
+#                                       player relocating, not a drive — which
+#                                       is how a CORNER THREE was rendering as
+#                                       "driving" in the UI.
+#
+# "finger roll", "reverse" and "bank" are likewise finish descriptors and no
+# longer appear here at all.
+#
+# Bucket names round-trip through the classifier (`classify_mechanic("post_up")`
+# returns "post_up") because the recommender assigns a name to a hypothetical
+# grid row and re-classifies it; the name must survive that trip.
 SHOT_MECHANIC_RULES = [
+    # Second-chance possessions first: a putback is a putback however finished.
     ("putback", ["putback", "tip "]),
+    # Created by the passer, not the shooter.
     ("alley_oop", ["alley oop", "alley_oop"]),
     ("cutting", ["cutting"]),
-    # Hook before stepback: a "Turnaround Hook Shot" is mechanically a hook,
-    # and matching "turnaround" first would file every one of them as a
-    # step-back jumper.
-    ("hook", ["hook"]),
-    ("stepback", ["step back", "stepback", "turnaround", "fadeaway"]),
-    ("pullup", ["pullup", "pull-up", "floating"]),
-    ("driving", ["driving", "running", "finger roll", "reverse"]),
-    ("dunk", ["dunk"]),
-    ("layup", ["layup"]),
-    ("jumper", ["jump shot", "jump"]),
+    # Perimeter move off the dribble. Strictly step-backs now.
+    ("stepback", ["step back", "stepback"]),
+    # Turning on a defender — a post or face-up move, distinct from a step-back.
+    ("post_up", ["turnaround", "fadeaway", "post_up"]),
+    # Off the dribble, pulling up. Checked before `driving` and `transition` so
+    # "Running Pull-Up Jump Shot" reads as the pull-up it is.
+    ("pullup", ["pullup", "pull-up"]),
+    ("driving", ["driving"]),
+    # On the move without a drive — transition and relocation.
+    ("transition", ["running", "transition"]),
 ]
 
-SHOT_MECHANICS = [name for name, _ in SHOT_MECHANIC_RULES] + ["other"]
+# The fallback: no creation modifier at all. For the single largest label in the
+# data, a bare "Jump Shot" (756,877 shots), that is exactly a catch-and-shoot
+# spot-up. It is a looser fit for a bare "Hook Shot" or "Dunk Shot", but the
+# finish axis disambiguates those — (spot_up, hook) reads as a post hook.
+SHOT_MECHANIC_FALLBACK = "spot_up"
+
+SHOT_MECHANICS = [name for name, _ in SHOT_MECHANIC_RULES] + [SHOT_MECHANIC_FALLBACK]
 
 # ── Finish type ──────────────────────────────────────────────────────────────
 # What the shot physically WAS, as distinct from how it was created.
@@ -92,7 +121,10 @@ FINISH_RULES = [
     ("dunk", ["dunk"]),
     ("layup", ["layup", "finger roll", "tip "]),
     ("hook", ["hook"]),
-    ("floater", ["floating"]),
+    # "floater" is not an NBA label — the raw feed always says "Floating". It is
+    # accepted so that the bucket NAME round-trips through this classifier, the
+    # property the serving path relies on (see src/features/mechanics.py).
+    ("floater", ["floating", "floater"]),
     ("jumper", ["jump shot", "jump"]),
 ]
 
@@ -164,14 +196,14 @@ def classify_possession_origin(prev_event) -> str:
 
 
 def classify_mechanic(subtype) -> str:
-    """Map a raw play-by-play subType to one of SHOT_MECHANICS."""
+    """Map a raw play-by-play subType to one of SHOT_MECHANICS (creation only)."""
     if not isinstance(subtype, str) or not subtype.strip():
-        return "other"
+        return SHOT_MECHANIC_FALLBACK
     text = subtype.lower()
     for name, needles in SHOT_MECHANIC_RULES:
         if any(needle in text for needle in needles):
             return name
-    return "other"
+    return SHOT_MECHANIC_FALLBACK
 
 # ── Spatial basis ────────────────────────────────────────────────────────────
 # Radial basis functions over the half court, in FEET from the basket.

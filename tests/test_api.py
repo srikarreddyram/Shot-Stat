@@ -20,7 +20,7 @@ from src.features.shrinkage import BetaPrior
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
-MODEL_NAME = "shot-quality-v11"
+MODEL_NAME = "shot-quality-v13"
 
 pytestmark = pytest.mark.skipif(
     not (MODELS_DIR / f"metadata_{MODEL_NAME}.json").exists(),

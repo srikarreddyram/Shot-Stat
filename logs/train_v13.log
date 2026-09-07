@@ -1,0 +1,120 @@
+
+==============================================================
+  FEATURE BUILD
+  Seasons: 2016-17 → 2025-26 (10)
+  Priors fit through: 2024-25
+==============================================================
+  → defender category rates (point-in-time) ...
+    1,212,335 (defender, game, category) rows
+  → shots + context ...
+    2,240,931 shots
+  → defender mixture (possession-weighted) ...
+    1,211,785 (game, shooter, category) aggregates
+  → point-in-time shooting counts ...
+  → league zone priors (empirical Bayes) ...
+    Restricted Area          mean=0.629  k=   63.8  (n=5885 players)
+    In The Paint (Non-RA)    mean=0.416  k=   77.5  (n=4805 players)
+    Mid-Range                mean=0.404  k=  145.5  (n=4413 players)
+    Left Corner 3            mean=0.397  k=  223.0  (n=2242 players)
+    Right Corner 3           mean=0.397  k=  194.9  (n=2016 players)
+    Above the Break 3        mean=0.354  k=  315.5  (n=4632 players)
+  → opponent zone defence (point-in-time) ...
+    40,914 (game, defending team) rows
+  → per-game contest history (point-in-time) ...
+    258,139 (player, game) contest rows
+  → rolling form ...
+  → play-by-play shot context ...
+    2,253,070 rows; covers 99.9% of shots
+  → creation profiles (lagged one season) ...
+    6,942 profiles; 12.3% of shots on a position-bucket fallback
+  → deriving features ...
+
+  ✓ 2,240,931 rows × 158 features
+  ✓ target mean: 0.4657
+
+  Features with missing values (XGBoost handles natively):
+    wingspan_diff                        366,370 ( 16.3%)
+    contest_ssn_very_tight               311,398 ( 13.9%)
+    contest_ssn_tight                    311,398 ( 13.9%)
+    contest_ssn_open                     311,398 ( 13.9%)
+    contest_ssn_wide_open                311,398 ( 13.9%)
+    contest_ssn_sep                      311,398 ( 13.9%)
+    def_freq_zone                        240,097 ( 10.7%)
+    weight_diff                          239,581 ( 10.7%)
+    def_wingspan                         238,323 ( 10.6%)
+    def_fg_pct_overall                   238,272 ( 10.6%)
+    def_pct_plusminus                    238,272 ( 10.6%)
+    def_fg_pct_zone                      238,272 ( 10.6%)
+    def_pct_plusminus_zone               238,272 ( 10.6%)
+    def_matchup_share                    238,272 ( 10.6%)
+    def_matchup_dispersion               238,272 ( 10.6%)
+==============================================================
+
+
+==============================================================
+  SPLIT
+==============================================================
+  fit    1,779,694  (2016-17 → 2023-24)
+  val      232,405  (2024-25) — early stopping only
+  test     228,832  (2025-26) — held out
+  features: 104
+
+==============================================================
+  BASELINES
+==============================================================
+  zone average          log-loss 0.6575
+  zone+distance+season  log-loss 0.6529
+
+==============================================================
+  XGBOOST (single model)
+==============================================================
+  monotone constraints bound: 9
+  best_iteration=894
+
+  raw   log-loss 0.6106  AUC 0.7076  ECE 0.0090
+
+==============================================================
+  CALIBRATION (mode: recent)
+==============================================================
+    holdout decision on 116,203 unseen shots:
+      raw         log-loss 0.6107  ECE 0.0065
+      calibrated  log-loss 0.6113  ECE 0.0115
+      → REJECTED: raw model already better calibrated than the mapping
+
+  raw        log-loss 0.6106  ECE 0.0090
+  calibrated log-loss 0.6106  ECE 0.0090
+
+==============================================================
+  TEST SEASON 2025-26
+==============================================================
+
+  Metric                            Value
+  -------------------------- ------------
+  log_loss                         0.6106
+  brier                            0.2131
+  auc                              0.7076
+  ece                              0.0090
+  accuracy                         0.6530
+  zone_rank_rho                    0.7422
+    share positive                  98.9%   (n=349 players)
+
+  Zone                            n   log-loss      ECE      gap
+  ------------------------ -------- ---------- -------- --------
+  Above the Break 3          70,242     0.6210   0.0108  +0.0078
+  In The Paint (Non-RA)      45,733     0.6489   0.0089  +0.0050
+  Left Corner 3              12,751     0.6471   0.0180  +0.0035
+  Mid-Range                  23,183     0.6543   0.0126  -0.0008
+  Restricted Area            65,061     0.5439   0.0103  +0.0087
+  Right Corner 3             11,862     0.6433   0.0175  +0.0036
+
+  Per-player residuals: mean z = -0.286, sd = 1.358  (target: 0.0, 1.0)
+  |z| > 3: 3.0% of players  (expect ~0.3% if well specified)
+
+  lift over zone average           +7.14%
+  lift over zone+distance+season   +6.48%   ← the honest number
+
+  ✓ model     /Users/tejsr/Projects/NBA_Shot_Predictor/models/xgb_shot-quality-v13.json
+  ✓ metadata  /Users/tejsr/Projects/NBA_Shot_Predictor/models/metadata_shot-quality-v13.json
+  ✓ run       /Users/tejsr/Projects/NBA_Shot_Predictor/runs/20260907-091243__shot-quality-v13/run.json
+==============================================================
+
