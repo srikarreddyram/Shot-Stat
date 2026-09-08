@@ -12,7 +12,10 @@ modelled in the game (covering every NBA player from 2K's history).
 URL pattern:  https://www.2kratings.com/{first-last-name-slug}
   e.g. https://www.2kratings.com/luka-doncic
 
-Rate limit: ~4 seconds between requests to avoid 403 bans.
+Rate limit: ~4 seconds between requests to avoid 403 bans. Requests retry
+through transient failure with exponential backoff (see `_get_with_retry`);
+a genuine 404 falls back to the Wayback Machine rather than retrying, since
+2kratings.com prunes pages for players who have left the current roster set.
 """
 import sys
 import time
@@ -99,10 +102,38 @@ def _parse_weight(text: str) -> float | None:
     return None
 
 
+def _get_with_retry(url: str, attempts: int = 4, timeout: float = 15,
+                    params: dict | None = None) -> requests.Response | None:
+    """
+    GET with exponential backoff through transient network failure.
+
+    Without this, a single read-timeout or connection blip drops a player for
+    the whole run — confirmed directly: a 427-player backfill reported "not
+    found" for several players (Dennis Smith Jr., Juan Toscano-Anderson, Ryan
+    Arcidiacono among them) whose pages scraped successfully moments later on
+    a bare retry, with no code change in between. A real 404 is returned as-is
+    rather than retried — that is a genuine "page not here" signal the caller
+    uses to fall back to the Wayback Machine, not a transient failure.
+    """
+    delay = 2.0
+    for attempt in range(attempts):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=timeout, params=params)
+            if resp.status_code == 200 or resp.status_code == 404:
+                return resp
+        except requests.exceptions.RequestException:
+            pass
+        if attempt < attempts - 1:
+            time.sleep(delay)
+            delay *= 2
+    return None
+
+
 def _wayback_snapshot_url(url: str) -> str | None:
     """
     Look up the closest archived snapshot of `url` via the Wayback Machine's
-    availability API. Returns None if archive.org has never captured it.
+    availability API. Returns None if archive.org has never captured it (or
+    every retry against the availability API itself failed).
 
     2kratings.com prunes a player's page once he drops out of the current
     roster set (confirmed via direct testing: a batch of retired role players
@@ -111,16 +142,18 @@ def _wayback_snapshot_url(url: str) -> str | None:
     in the source, not a parsing bug, and the archive is the correct fix: the
     page used to exist and its content did not change after the player retired.
     """
+    resp = _get_with_retry(
+        "https://archive.org/wayback/available", attempts=3, timeout=10,
+        params={"url": url},
+    )
+    if resp is None or resp.status_code != 200:
+        return None
     try:
-        resp = requests.get(
-            "https://archive.org/wayback/available",
-            params={"url": url}, timeout=10,
-        )
         snapshot = resp.json().get("archived_snapshots", {}).get("closest")
-        if snapshot and snapshot.get("available"):
-            return snapshot["url"]
-    except Exception:
-        pass
+    except ValueError:
+        return None
+    if snapshot and snapshot.get("available"):
+        return snapshot["url"]
     return None
 
 
@@ -140,13 +173,15 @@ def scrape_2k_physicals(player_name: str) -> dict | None:
     url = f"{TWO_K_BASE_URL}/{slug}"
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = _get_with_retry(url)
+        if resp is None:
+            return None
         if resp.status_code != 200:
             archived_url = _wayback_snapshot_url(url)
             if archived_url is None:
                 return None
-            resp = requests.get(archived_url, headers=HEADERS, timeout=15)
-            if resp.status_code != 200:
+            resp = _get_with_retry(archived_url)
+            if resp is None or resp.status_code != 200:
                 return None
 
         soup = BeautifulSoup(resp.content, "lxml")

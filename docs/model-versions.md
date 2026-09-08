@@ -237,42 +237,61 @@ mechanic-share floor. His restricted-area mix is now 32% dunks across five pairs
 
 ### What each feature group is actually worth
 
-Group ablation on v9 (`runs/20260824-191347__ablate-v9/ablations.csv`), retraining with
-one group removed at a time. Positive delta means removing it *hurt*, so the group was
-earning its place. This is the honest alternative to reading XGBoost importances, which
-are close to meaningless when features are correlated — and here they heavily are.
+Group ablation on v13 (`runs/20260908-190925__ablate-v13/ablations.csv`), retraining
+with one group removed at a time on the corrected creation taxonomy. Positive delta
+means removing it *hurt*, so the group was earning its place. This is the honest
+alternative to reading XGBoost importances, which are close to meaningless when
+features are correlated — and here they heavily are. Supersedes an earlier v9-era
+table run before the taxonomy fix, `finish` and `contest` groups, and per-game
+contest ingest all existed.
 
-| group removed | log-loss | Δ vs full | zone-rank ρ |
-|---|---|---|---|
-| context | 0.6304 | **+0.0156** | 0.742 |
-| shot_context | 0.6241 | **+0.0093** | 0.740 |
-| possession_origin | 0.6168 | +0.0020 | 0.743 |
-| opponent_defence | 0.6161 | +0.0013 | 0.745 |
-| interaction | 0.6150 | +0.0001 | 0.739 |
-| creation | 0.6149 | +0.0001 | 0.740 |
-| *(nothing removed)* | 0.6148 | — | 0.740 |
-| shooter_physical | 0.6148 | −0.0001 | 0.739 |
-| shooter_skill | 0.6147 | −0.0001 | **0.727** |
-| defender | 0.6144 | −0.0004 | 0.743 |
+| group removed | log-loss | Δ vs full | AUC | zone-rank ρ |
+|---|---|---|---|---|
+| context | 0.6264 | **+0.0140** | 0.6781 | 0.744 |
+| shot_context | 0.6204 | **+0.0080** | 0.6968 | 0.742 |
+| finish | 0.6177 | **+0.0053** | 0.7020 | 0.743 |
+| possession_origin | 0.6148 | +0.0023 | 0.7038 | 0.741 |
+| shooter_physical | 0.6137 | +0.0012 | 0.7046 | 0.740 |
+| defender | 0.6128 | +0.0004 | 0.7053 | 0.731 |
+| creation | 0.6127 | +0.0002 | 0.7058 | 0.732 |
+| opponent_defence | 0.6126 | +0.0001 | 0.7061 | 0.741 |
+| shooter_skill | 0.6126 | +0.0001 | 0.7056 | 0.738 |
+| *(nothing removed)* | 0.6125 | — | 0.7058 | 0.740 |
+| interaction | 0.6123 | −0.0002 | 0.7060 | 0.735 |
+| contest | 0.6107 | **−0.0018** | 0.7074 | 0.736 |
 
-Three findings worth stating plainly, because they are uncomfortable:
+A caveat before reading the last column: zone-rank ρ is computed over one held-out
+season and ~349 players, and a bootstrap over that same test set puts its standard
+error at **0.013** (see the v11→v13 promotion note above) — larger than every gap in
+this column. Read ρ here as directional, not as a precise per-group number; log-loss,
+computed over 228,832 individual shots, is the column with the statistical power to
+support a real claim.
 
-1. **Game context and per-shot play-by-play carry most of the model.** Everything else
-   is a rounding error by comparison.
-2. **Removing the defender group slightly *improves* log-loss.** The defender features
-   are not paying for themselves on make-prediction, which is part of why the v10 leak
-   fix was worth doing on correctness grounds rather than expecting a large metric win.
-3. **`shooter_skill` looks free to remove by log-loss but is not.** Zone-rank ρ falls
-   from 0.740 to 0.727 — the worst in the table. It barely helps predict whether a
-   given shot goes in, and it is what makes per-player rankings mean anything. A
-   single-metric read would have thrown it out.
+Three findings worth stating plainly:
 
-The `creation` group costing essentially nothing is not a bug either — it is the
-finding. A player's point-in-time zone rate already absorbs the difficulty of the shots
-he takes, so knowing *how* he creates them adds little once you know how well he
-converts. Creation earns its place in the attainability model instead, where it is the
-dominant signal, because "can this player generate this look" is a genuinely different
-question from "will it go in".
+1. **Game context and per-shot play-by-play still carry most of the model.** `context`
+   and `shot_context` dwarf everything else, same as in the original v9 ablation.
+2. **`finish` earns real, measurable value** (+0.0053, third-largest in the table) —
+   the split from `creation` that v12 introduced was a genuine improvement, not just a
+   relabeling.
+3. **`contest` is actively harmful** (−0.0018) and stays off by default (`--contest`
+   to re-enable). The NBA only publishes defender-distance bands per *game*, not per
+   shot, so the feature is a coarse, noisy proxy for a player's role that `creation`
+   and `shooter_skill` already carry more directly.
+
+`creation` and `defender` still cost next to nothing in log-loss — the original
+finding holds: a player's point-in-time zone rate already absorbs the difficulty of
+the shots he takes, so knowing *how* he creates them adds little once you know how
+well he converts. Creation earns its place in the attainability model instead, where
+it is the dominant signal, because "can this player generate this look" is a
+genuinely different question from "will it go in". Both groups show the largest
+zone-rank ρ drops in this run (0.740 → 0.731–0.732), which — read cautiously given
+the noise floor above — is at least consistent with creation and defender quality
+mattering more for *ranking players against each other* than for scoring an
+individual shot; the earlier v9-era finding singled out `shooter_skill` for this
+instead, and the corrected taxonomy's own numbers no longer support that being the
+standout group, so that specific claim is retired rather than carried forward
+unchecked.
 
 ### Held out of the shot-quality model by measurement
 
