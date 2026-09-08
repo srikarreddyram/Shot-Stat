@@ -63,6 +63,21 @@ def _name_to_slug(name: str) -> str:
     return slug
 
 
+def _extract_field(text: str, label: str) -> str | None:
+    """
+    Pull the value following `label:` out of the info block's full text,
+    stopping at the next capitalised label or end of string.
+
+    Extraction runs on the whole block rather than per-<p> tag: on some
+    archived (Wayback) snapshots the site glued adjacent fields into one <p>
+    with no separator recognisable except the next label itself, e.g.
+    "Height:6'2\" (188cm)|Weight:175lbs (79kg)" — a per-tag exact-prefix match
+    silently drops every field after the first in a case like that.
+    """
+    match = re.search(rf"{label}:\s*(.+?)(?=[A-Z][a-zA-Z ]*:|$)", text)
+    return match.group(1).strip() if match else None
+
+
 def _parse_feet_inches(text: str) -> float | None:
     """
     Parse a string like  6'8" (203cm)  into total inches (80.0).
@@ -84,13 +99,42 @@ def _parse_weight(text: str) -> float | None:
     return None
 
 
+def _wayback_snapshot_url(url: str) -> str | None:
+    """
+    Look up the closest archived snapshot of `url` via the Wayback Machine's
+    availability API. Returns None if archive.org has never captured it.
+
+    2kratings.com prunes a player's page once he drops out of the current
+    roster set (confirmed via direct testing: a batch of retired role players
+    — Wesley Matthews, Lou Williams, Evan Fournier — 404 live despite having
+    been scraped successfully as of an April 2024 snapshot). That is link rot
+    in the source, not a parsing bug, and the archive is the correct fix: the
+    page used to exist and its content did not change after the player retired.
+    """
+    try:
+        resp = requests.get(
+            "https://archive.org/wayback/available",
+            params={"url": url}, timeout=10,
+        )
+        snapshot = resp.json().get("archived_snapshots", {}).get("closest")
+        if snapshot and snapshot.get("available"):
+            return snapshot["url"]
+    except Exception:
+        pass
+    return None
+
+
 def scrape_2k_physicals(player_name: str) -> dict | None:
     """
     Scrape height, weight, and wingspan from a player's 2kratings.com page.
 
+    Falls back to the Wayback Machine when the live page 404s — see
+    `_wayback_snapshot_url` for why that happens routinely for retired
+    players and is not a bug to "fix" by touching the live scrape.
+
     Returns:
         {"height": float|None, "weight": float|None, "wingspan": float|None}
-        or None if the page can't be reached / parsed.
+        or None if the page can't be reached / parsed anywhere.
     """
     slug = _name_to_slug(player_name)
     url = f"{TWO_K_BASE_URL}/{slug}"
@@ -98,26 +142,28 @@ def scrape_2k_physicals(player_name: str) -> dict | None:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         if resp.status_code != 200:
-            return None
+            archived_url = _wayback_snapshot_url(url)
+            if archived_url is None:
+                return None
+            resp = requests.get(archived_url, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                return None
 
         soup = BeautifulSoup(resp.content, "lxml")
         info_div = soup.find("div", class_="player-info")
         if not info_div:
             return None
 
-        physicals = {"height": None, "weight": None, "wingspan": None}
+        block_text = info_div.get_text(separator="", strip=True)
+        height_val = _extract_field(block_text, "Height")
+        weight_val = _extract_field(block_text, "Weight")
+        wingspan_val = _extract_field(block_text, "Wingspan")
 
-        for p_tag in info_div.find_all("p"):
-            text = p_tag.get_text(strip=True)
-
-            if text.startswith("Height:"):
-                physicals["height"] = _parse_feet_inches(text)
-            elif text.startswith("Weight:"):
-                physicals["weight"] = _parse_weight(text)
-            elif text.startswith("Wingspan:"):
-                physicals["wingspan"] = _parse_feet_inches(text)
-
-        return physicals
+        return {
+            "height": _parse_feet_inches(height_val) if height_val else None,
+            "weight": _parse_weight(weight_val) if weight_val else None,
+            "wingspan": _parse_feet_inches(wingspan_val) if wingspan_val else None,
+        }
 
     except Exception as e:
         print(f"\n  ✗ 2K scrape error for {player_name} ({slug}): {e}")
