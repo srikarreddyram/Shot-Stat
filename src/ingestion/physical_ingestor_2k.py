@@ -141,9 +141,15 @@ def _wayback_snapshot_url(url: str) -> str | None:
     been scraped successfully as of an April 2024 snapshot). That is link rot
     in the source, not a parsing bug, and the archive is the correct fix: the
     page used to exist and its content did not change after the player retired.
+
+    archive.org's own latency is a second, independent thing this has to
+    survive: a full backfill run reported Juan Toscano-Anderson as unresolved,
+    but a bare retry of this same lookup minutes later took nearly a minute
+    and then succeeded — no code change in between. `_get_with_retry`'s default
+    timeout (15s) is tuned for 2kratings.com; archive.org needs more slack.
     """
     resp = _get_with_retry(
-        "https://archive.org/wayback/available", attempts=3, timeout=10,
+        "https://archive.org/wayback/available", attempts=4, timeout=25,
         params={"url": url},
     )
     if resp is None or resp.status_code != 200:
@@ -180,7 +186,9 @@ def scrape_2k_physicals(player_name: str) -> dict | None:
             archived_url = _wayback_snapshot_url(url)
             if archived_url is None:
                 return None
-            resp = _get_with_retry(archived_url)
+            # web.archive.org itself is the slow host here too (see the
+            # latency note on `_wayback_snapshot_url`), not 2kratings.com.
+            resp = _get_with_retry(archived_url, attempts=4, timeout=25)
             if resp is None or resp.status_code != 200:
                 return None
 
