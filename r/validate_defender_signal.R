@@ -76,18 +76,39 @@ cat("  FULL MODEL — coefficients on the defender features\n")
 cat("================================================================\n")
 full_summary <- summary(full)$coefficients
 defender_terms <- c("def_fg_pct_zone", "def_pct_plusminus_zone", "def_matchup_share")
-print(round(full_summary[defender_terms, , drop = FALSE], 4))
 
-cat("\nOdds ratios (exp(coefficient)) with 95% Wald CIs:\n")
-coefs <- coef(full)[defender_terms]
-ses <- full_summary[defender_terms, "Std. Error"]
-or_table <- data.frame(
-  term = defender_terms,
-  odds_ratio = exp(coefs),
-  ci_low = exp(coefs - 1.96 * ses),
-  ci_high = exp(coefs + 1.96 * ses)
-)
-print(or_table, row.names = FALSE)
+# A term can be aliased (perfectly collinear with the others already in the
+# design) and dropped by glm() entirely — it will not appear as a row in the
+# coefficients table at all. That is a real, reportable finding, not a bug
+# to paper over: it means a LINEAR model cannot separately identify that
+# term's effect from the others, which is a genuinely different statement
+# from "it carries no information" (a tree model can still use it through
+# splits/interactions a GLM's additive form cannot represent).
+estimable <- intersect(defender_terms, rownames(full_summary))
+aliased <- setdiff(defender_terms, estimable)
+
+if (length(estimable) > 0) {
+  print(round(full_summary[estimable, , drop = FALSE], 4))
+}
+if (length(aliased) > 0) {
+  cat(sprintf(
+    "\nNote: %s aliased (perfectly collinear with the zone/distance/other\n      defender terms already in the model) — glm() could not fit an\n      independent linear coefficient for %s. This is a property of the\n      additive linear form, not evidence the feature carries no signal.\n",
+    paste(aliased, collapse = ", "), ifelse(length(aliased) > 1, "them", "it")
+  ))
+}
+
+if (length(estimable) > 0) {
+  cat("\nOdds ratios (exp(coefficient)) with 95% Wald CIs, estimable terms only:\n")
+  coefs <- coef(full)[estimable]
+  ses <- full_summary[estimable, "Std. Error"]
+  or_table <- data.frame(
+    term = estimable,
+    odds_ratio = exp(coefs),
+    ci_low = exp(coefs - 1.96 * ses),
+    ci_high = exp(coefs + 1.96 * ses)
+  )
+  print(or_table, row.names = FALSE)
+}
 
 # ── Likelihood-ratio test: do the defender terms earn their place at all? ──
 lr_test <- anova(reduced, full, test = "Chisq")
@@ -112,14 +133,13 @@ cat("\nWriting calibration diagnostic to r/output/defender_fg_calibration.png ..
 dir.create(file.path(project_root, "r", "output"), showWarnings = FALSE, recursive = TRUE)
 
 complete$def_fg_bin <- cut(complete$def_fg_pct_zone, breaks = 10)
-bin_summary <- aggregate(
-  shot_made ~ def_fg_bin, data = complete,
-  FUN = function(x) c(mean = mean(x), n = length(x))
-)
-bin_means <- sapply(bin_summary$shot_made, function(x) x["mean"])
-bin_ns <- sapply(bin_summary$shot_made, function(x) x["n"])
-bin_mids <- sapply(strsplit(gsub("[()\\[\\]]", "", as.character(bin_summary$def_fg_bin)), ","),
-                    function(x) mean(as.numeric(x)))
+# Bin midpoints come from the mean of the RAW values in each bin, not from
+# parsing cut()'s interval-label text — that text is formatted with
+# R's own rounding and a comma-separated "(a,b]" syntax that breaks a naive
+# string split whenever a bound is negative or in scientific notation.
+bin_mids <- tapply(complete$def_fg_pct_zone, complete$def_fg_bin, mean)
+bin_means <- tapply(complete$shot_made, complete$def_fg_bin, mean)
+bin_ns <- tapply(complete$shot_made, complete$def_fg_bin, length)
 
 png(file.path(project_root, "r", "output", "defender_fg_calibration.png"),
     width = 900, height = 600, res = 120)

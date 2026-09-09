@@ -34,10 +34,18 @@ from src.streaming.config import KAFKA_BOOTSTRAP_SERVERS, TOPIC_SHOT_EVENTS
 from src.streaming.feature_store import load_feature_store
 
 
-def score_event(event: dict, store, feature_cols: list[str],
+def score_event(event: dict, store,
                 recommender: ShotRecommender) -> float | None:
     """
     Look up `event["shot_id"]` in the precomputed feature store and score it.
+
+    Selects columns by `recommender.feature_cols` — the exact ordered list
+    the loaded model was trained on, recorded in its own metadata — not the
+    feature store's full column set. `build_matrix` returns every feature it
+    knows how to build (158, at last count); a specific model like v13 was
+    trained on a smaller, ablation-filtered subset of those (104). Scoring
+    against the store's raw column list instead of the model's own list
+    raises an XGBoost feature-mismatch error the first time the two diverge.
 
     Returns None if the shot isn't in the store (e.g. it was replayed from a
     season outside the store's build range) — the caller logs and skips
@@ -47,7 +55,7 @@ def score_event(event: dict, store, feature_cols: list[str],
     if shot_id not in store.index:
         return None
     row = store.loc[[shot_id]]
-    X = as_model_matrix(row, feature_cols)
+    X = as_model_matrix(row, recommender.feature_cols)
     return float(recommender._predict(X)[0])
 
 
@@ -58,7 +66,7 @@ def run(model_name: str, seasons: list[str] | None, prior_through_season: str | 
 
     print("Loading model + feature store (one-time startup cost) ...")
     recommender = ShotRecommender(model_name=model_name)
-    store, feature_cols = load_feature_store(seasons, prior_through_season)
+    store, _feature_store_cols = load_feature_store(seasons, prior_through_season)
 
     consumer = KafkaConsumer(
         TOPIC_SHOT_EVENTS,
@@ -75,7 +83,7 @@ def run(model_name: str, seasons: list[str] | None, prior_through_season: str | 
             event = message.value
             received_at = time.time()
 
-            prob = score_event(event, store, feature_cols, recommender)
+            prob = score_event(event, store, recommender)
             if prob is None:
                 print(f"  ⚠ {event['shot_id']} not in feature store, skipping")
                 continue

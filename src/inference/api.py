@@ -10,6 +10,7 @@ Endpoints:
 Usage:
     uvicorn src.inference.api:app --reload --port 8000
 """
+import json
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -601,4 +602,159 @@ def get_matchup(attacker_id: str, defender_id: str, season: Optional[str] = None
             "plus_minus": def_overall.get("pct_plusminus"),
         },
         "exploit_zones": exploit_zones,
+    }
+
+
+# ── Live scoring demo (src/streaming) ───────────────────────────────────────
+# Reads `live_shot_scores`, an append-only table the Kafka consumer writes to.
+# Purely additive: no existing route above is touched, and these 404 cleanly
+# (empty lists) if the streaming demo has never been run — the rest of the
+# API has no dependency on it.
+
+@app.get("/live/games")
+def live_games(limit: int = Query(10, ge=1, le=50)):
+    """Distinct games that have at least one live-scored shot, most recent first."""
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    with db_engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT game_id, COUNT(*) AS n_scored, MAX(scored_at) AS last_scored_at
+            FROM live_shot_scores
+            GROUP BY game_id
+            ORDER BY last_scored_at DESC
+            LIMIT :limit
+        """), {"limit": limit}).mappings().all()
+    return {"games": [dict(r) for r in rows]}
+
+
+@app.get("/live/scores")
+def live_scores(game_id: Optional[str] = None, limit: int = Query(50, ge=1, le=500)):
+    """
+    Most recently scored live shots, optionally filtered to one game.
+
+    This is a simulated feed (see docs/streaming.md) — `predicted_make_probability`
+    comes from the same trained model `/recommend` uses, scored in real time
+    as the shot event was consumed off Kafka.
+    """
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+    clause = "WHERE game_id = :game_id" if game_id else ""
+    with db_engine.connect() as conn:
+        rows = conn.execute(text(f"""
+            SELECT shot_id, game_id, player_id, defender_id, zone,
+                   predicted_make_probability, actual_shot_made,
+                   game_date, scored_at, latency_ms
+            FROM live_shot_scores
+            {clause}
+            ORDER BY scored_at DESC
+            LIMIT :limit
+        """), {"game_id": game_id, "limit": limit}).mappings().all()
+    return {"scores": [dict(r) for r in rows]}
+
+
+# ── Shot archetypes (src/analysis/shot_archetypes.py) ───────────────────────
+# PCA + K-Means clusters over the shot-descriptive feature set, joined from
+# `shot_archetypes` (populated by `python -m src.analysis.shot_archetypes
+# --fit`) back onto `shots` for court coordinates. Purely additive.
+
+_archetype_metadata_cache = None
+
+
+def _load_archetype_metadata() -> dict:
+    global _archetype_metadata_cache
+    if _archetype_metadata_cache is None:
+        from src.analysis.shot_archetypes import ARCHETYPE_METADATA
+        if not ARCHETYPE_METADATA.exists():
+            raise HTTPException(
+                status_code=503,
+                detail="Archetype model not fit yet — run "
+                       "'python -m src.analysis.shot_archetypes --fit'",
+            )
+        _archetype_metadata_cache = json.loads(ARCHETYPE_METADATA.read_text())
+    return _archetype_metadata_cache
+
+
+@app.get("/archetypes")
+def list_archetypes():
+    """Every archetype's label, size, FG%, and creation/finish mix."""
+    metadata = _load_archetype_metadata()
+    return {
+        "model_version": metadata["model_version"],
+        "k": metadata["k"],
+        "clusters": metadata["clusters"],
+    }
+
+
+@app.get("/archetypes/court")
+def archetypes_court(points_per_cluster: int = Query(250, ge=10, le=1000),
+                     season: Optional[str] = None):
+    """
+    A plottable sample of real shots per archetype, for a court overlay —
+    same court/coordinate convention the existing heatmap uses (loc_x, loc_y).
+    """
+    metadata = _load_archetype_metadata()
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    from src.analysis.shot_archetypes import MODEL_VERSION
+    season_clause = "AND s.season = :season" if season else ""
+
+    out = {}
+    with db_engine.connect() as conn:
+        for cluster in metadata["clusters"]:
+            cid = cluster["cluster_id"]
+            rows = conn.execute(text(f"""
+                SELECT s.loc_x, s.loc_y, s.zone
+                FROM shot_archetypes a
+                JOIN shots s ON s.shot_id = a.shot_id
+                WHERE a.model_version = :version AND a.cluster_id = :cid
+                {season_clause}
+                ORDER BY RANDOM()
+                LIMIT :limit
+            """), {
+                "version": MODEL_VERSION, "cid": cid,
+                "season": season, "limit": points_per_cluster,
+            }).mappings().all()
+            out[str(cid)] = {
+                "label": cluster["label"],
+                "points": [dict(r) for r in rows],
+            }
+    return {"clusters": out}
+
+
+@app.get("/player/{player_id}/archetype-mix")
+def player_archetype_mix(player_id: str, season: Optional[str] = None):
+    """A player's real shot diet broken down by archetype cluster."""
+    metadata = _load_archetype_metadata()
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not ready")
+
+    from src.analysis.shot_archetypes import MODEL_VERSION
+    season_clause = "AND s.season = :season" if season else ""
+    labels_by_id = {c["cluster_id"]: c["label"] for c in metadata["clusters"]}
+
+    with db_engine.connect() as conn:
+        rows = conn.execute(text(f"""
+            SELECT a.cluster_id, COUNT(*) AS n, AVG(s.shot_made) AS fg_pct
+            FROM shot_archetypes a
+            JOIN shots s ON s.shot_id = a.shot_id
+            WHERE a.model_version = :version AND s.player_id = :player_id
+            {season_clause}
+            GROUP BY a.cluster_id
+        """), {"version": MODEL_VERSION, "player_id": player_id, "season": season}).mappings().all()
+
+    total = sum(r["n"] for r in rows) or 1
+    return {
+        "player_id": player_id,
+        "season": season,
+        "mix": [
+            {
+                "cluster_id": r["cluster_id"],
+                "label": labels_by_id.get(r["cluster_id"], f"archetype {r['cluster_id']}"),
+                "n_shots": r["n"],
+                "share": r["n"] / total,
+                "fg_pct": r["fg_pct"],
+            }
+            for r in sorted(rows, key=lambda r: -r["n"])
+        ],
     }
