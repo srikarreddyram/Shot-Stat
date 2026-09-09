@@ -20,3 +20,8 @@ joblib>=1.3
 fastapi>=0.100
 uvicorn>=0.23
 pydantic>=2.0
+
+# Streaming demo (src/streaming) — a simulated live-scoring path parallel to
+# the batch pipeline. Requires a local Kafka broker (docker compose up -d);
+# nothing else in the project imports this or depends on Kafka being up.
+kafka-python>=2.0
