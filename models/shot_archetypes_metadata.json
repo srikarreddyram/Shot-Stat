@@ -1,0 +1,235 @@
+{
+  "k": 7,
+  "model_version": "pca_kmeans_v1",
+  "n_shots": 2234150,
+  "feature_cols": [
+    "loc_x",
+    "loc_y",
+    "shot_distance",
+    "shot_angle",
+    "is_three",
+    "mech_alley_oop",
+    "mech_cutting",
+    "mech_driving",
+    "mech_post_up",
+    "mech_pullup",
+    "mech_putback",
+    "mech_spot_up",
+    "mech_stepback",
+    "mech_transition",
+    "finish_dunk",
+    "finish_layup",
+    "finish_hook",
+    "finish_floater",
+    "finish_jumper",
+    "finish_other",
+    "expected_contest",
+    "openness_vs_defender"
+  ],
+  "pca_explained_variance": 0.6801891907707384,
+  "clusters": [
+    {
+      "cluster_id": 1,
+      "label": "open above-the-break three spot-up jumper",
+      "n_shots": 790387,
+      "share_of_shots": 0.3537752612850525,
+      "fg_pct": 0.36181010062159424,
+      "dominant_zone": "Above the Break 3",
+      "avg_shot_distance": 23.186426396183137,
+      "avg_expected_contest": 4.400778079250081,
+      "mechanic_mix": {
+        "alley-oop": 0.0,
+        "cut": 0.0,
+        "driving": 0.0,
+        "post-up": 0.0006933312415310475,
+        "pull-up": 0.0,
+        "putback": 0.0,
+        "spot-up": 0.9573171117439938,
+        "step-back": 0.0,
+        "transition": 0.04198955701447519
+      },
+      "finish_mix": {
+        "dunk": 0.0,
+        "layup": 1.771284193692457e-05,
+        "hook": 3.7956089864838366e-06,
+        "floater": 0.00036943927468442673,
+        "jumper": 0.9996090522743921,
+        "shot": 0.0
+      }
+    },
+    {
+      "cluster_id": 2,
+      "label": "contested rim driving layup",
+      "n_shots": 590354,
+      "share_of_shots": 0.26424098650493477,
+      "fg_pct": 0.5581058144774153,
+      "dominant_zone": "Restricted Area",
+      "avg_shot_distance": 1.9376221724592364,
+      "avg_expected_contest": 4.216811214275553,
+      "mechanic_mix": {
+        "alley-oop": 0.0,
+        "cut": 0.10168644575966285,
+        "driving": 0.4518644745356176,
+        "post-up": 0.0,
+        "pull-up": 0.0,
+        "putback": 0.13542044264966444,
+        "spot-up": 0.17792036642421327,
+        "step-back": 0.0,
+        "transition": 0.13310827063084182
+      },
+      "finish_mix": {
+        "dunk": 0.00025577873614814165,
+        "layup": 0.9946455855300379,
+        "hook": 0.00021173736436104438,
+        "floater": 0.0,
+        "jumper": 0.004886898369452905,
+        "shot": 0.0
+      }
+    },
+    {
+      "cluster_id": 3,
+      "label": "open above-the-break three pull-up jumper",
+      "n_shots": 269933,
+      "share_of_shots": 0.12082134144976837,
+      "fg_pct": 0.40803458636031903,
+      "dominant_zone": "Above the Break 3",
+      "avg_shot_distance": 19.8328177732993,
+      "avg_expected_contest": 4.360343905258485,
+      "mechanic_mix": {
+        "alley-oop": 0.0,
+        "cut": 0.0,
+        "driving": 0.0,
+        "post-up": 0.0,
+        "pull-up": 1.0,
+        "putback": 0.0,
+        "spot-up": 0.0,
+        "step-back": 0.0,
+        "transition": 0.0
+      },
+      "finish_mix": {
+        "dunk": 0.0,
+        "layup": 0.0,
+        "hook": 0.0,
+        "floater": 0.0,
+        "jumper": 1.0,
+        "shot": 0.0
+      }
+    },
+    {
+      "cluster_id": 0,
+      "label": "contested short mid-range driving floater",
+      "n_shots": 184977,
+      "share_of_shots": 0.08279524651433431,
+      "fg_pct": 0.45203998334928125,
+      "dominant_zone": "In The Paint (Non-RA)",
+      "avg_shot_distance": 7.552079447715121,
+      "avg_expected_contest": 4.270835921914107,
+      "mechanic_mix": {
+        "alley-oop": 0.0,
+        "cut": 0.0,
+        "driving": 0.7544992080096444,
+        "post-up": 0.0,
+        "pull-up": 0.0,
+        "putback": 0.0,
+        "spot-up": 0.24550079199035557,
+        "step-back": 0.0,
+        "transition": 0.0
+      },
+      "finish_mix": {
+        "dunk": 0.0005352016737215978,
+        "layup": 1.0812155024678744e-05,
+        "hook": 0.0873838369094536,
+        "floater": 0.9120485249517507,
+        "jumper": 2.1624310049357487e-05,
+        "shot": 0.0
+      }
+    },
+    {
+      "cluster_id": 6,
+      "label": "contested short mid-range post-up jumper",
+      "n_shots": 162089,
+      "share_of_shots": 0.07255063446948504,
+      "fg_pct": 0.44665584956412835,
+      "dominant_zone": "In The Paint (Non-RA)",
+      "avg_shot_distance": 9.371530455490502,
+      "avg_expected_contest": 4.059619824098494,
+      "mechanic_mix": {
+        "alley-oop": 0.0,
+        "cut": 0.0,
+        "driving": 0.010494234648865747,
+        "post-up": 0.8133494561629722,
+        "pull-up": 0.0023505604945431215,
+        "putback": 0.0,
+        "spot-up": 0.17379340979338512,
+        "step-back": 0.0,
+        "transition": 1.2338900233822159e-05
+      },
+      "finish_mix": {
+        "dunk": 0.0,
+        "layup": 0.0,
+        "hook": 0.32894891078358185,
+        "floater": 0.0,
+        "jumper": 0.45272658847916886,
+        "shot": 0.2183245007372493
+      }
+    },
+    {
+      "cluster_id": 4,
+      "label": "contested rim alley-oop dunk",
+      "n_shots": 138181,
+      "share_of_shots": 0.061849472953919835,
+      "fg_pct": 0.8731953018142871,
+      "dominant_zone": "Restricted Area",
+      "avg_shot_distance": 0.9716965429400569,
+      "avg_expected_contest": 4.032251375736446,
+      "mechanic_mix": {
+        "alley-oop": 0.23144281775352618,
+        "cut": 0.22488619998407886,
+        "driving": 0.14307321556509217,
+        "post-up": 0.0,
+        "pull-up": 0.0,
+        "putback": 0.09104001273691752,
+        "spot-up": 0.1454396769454556,
+        "step-back": 0.0,
+        "transition": 0.1641180770149297
+      },
+      "finish_mix": {
+        "dunk": 0.9236146792974432,
+        "layup": 0.0763853207025568,
+        "hook": 0.0,
+        "floater": 0.0,
+        "jumper": 0.0,
+        "shot": 0.0
+      }
+    },
+    {
+      "cluster_id": 5,
+      "label": "open above-the-break three step-back jumper",
+      "n_shots": 98229,
+      "share_of_shots": 0.0439670568225052,
+      "fg_pct": 0.39390607661688504,
+      "dominant_zone": "Above the Break 3",
+      "avg_shot_distance": 21.435421311425344,
+      "avg_expected_contest": 4.363554899960624,
+      "mechanic_mix": {
+        "alley-oop": 0.0,
+        "cut": 0.0,
+        "driving": 0.0,
+        "post-up": 0.0,
+        "pull-up": 0.0,
+        "putback": 0.0,
+        "spot-up": 0.0,
+        "step-back": 1.0,
+        "transition": 0.0
+      },
+      "finish_mix": {
+        "dunk": 0.0,
+        "layup": 0.0,
+        "hook": 0.0,
+        "floater": 0.0,
+        "jumper": 1.0,
+        "shot": 0.0
+      }
+    }
+  ]
+}

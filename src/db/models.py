@@ -606,3 +606,26 @@ class LiveShotScore(Base):
     def __repr__(self):
         return (f"<LiveShotScore {self.shot_id} game={self.game_id} "
                 f"p={self.predicted_make_probability:.3f}>")
+
+
+class ShotArchetype(Base):
+    """
+    One row per shot: which PCA+K-Means archetype cluster it was assigned
+    to (src/analysis/shot_archetypes.py). Additive — no existing table
+    changes to support it, and `shots` carries no foreign key toward it, so
+    a shot with no archetype row (e.g. one taken before the model was last
+    fit) is simply absent here rather than null-filled.
+
+    `model_version` ties every row to the fit that produced it, so a re-fit
+    with a different k or feature set does not silently mix cluster ids
+    from two different clusterings — callers filter by the current version
+    rather than assuming there is only ever one.
+    """
+    __tablename__ = "shot_archetypes"
+
+    shot_id = Column(String, primary_key=True)
+    cluster_id = Column(Integer, nullable=False)
+    model_version = Column(String, primary_key=True)
+
+    def __repr__(self):
+        return f"<ShotArchetype {self.shot_id} cluster={self.cluster_id}>"

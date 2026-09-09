@@ -33,8 +33,13 @@ models/*.joblib
 models/*.png
 !models/best_params_*.json
 !models/metadata_*.json
+!models/shot_archetypes_metadata.json
 runs/*/*.png
 runs/*/*.csv
+
+# R validation diagnostic plot — regenerable via r/validate_defender_signal.R,
+# same reasoning as the models/*.png rule above.
+r/output/
 
 # Training/ingest console output. Regenerable, and the run manifest already
 # records everything durable about a run.
