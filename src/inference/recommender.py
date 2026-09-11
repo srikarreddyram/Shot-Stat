@@ -696,6 +696,10 @@ class ShotRecommender:
             cat: stats.get("d_fg_pct")
             for cat, stats in league_defence["by_category"].items()
         }
+        league_zone_freq = {
+            cat: stats.get("freq")
+            for cat, stats in league_defence["by_category"].items()
+        }
 
         grid = pd.DataFrame(SHOT_GRID)
 
@@ -844,8 +848,21 @@ class ShotRecommender:
             raw["def_pct_plusminus_zone"] = [
                 _mix(by_category.get(c, {}).get("pct_plusminus")) for c in categories
             ]
+            # Bug fix: this used to take the named defender's raw freq with no
+            # blending at all — but build.py (lines ~262-281) computes
+            # def_freq_zone at TRAINING time as the SAME possession-weighted
+            # mixture as def_fg_pct_zone and def_pct_plusminus_zone (all three
+            # are aggregated in one loop over "d_fg_pct", "pct_plusminus",
+            # "freq"). Leaving freq unmixed served a different quantity than
+            # the model was trained on: an individual defender's own zone
+            # specialisation rate, rather than the possession-weighted
+            # average across everyone who guarded the shooter that game —
+            # exactly the individual-vs-average mismatch already documented
+            # above for d_fg_pct_zone and def_pct_plusminus (see the comment
+            # on Wembanyama's -0.099 percentile).
             raw["def_freq_zone"] = [
-                by_category.get(c, {}).get("freq") for c in categories
+                _mix(by_category.get(c, {}).get("freq"), league_zone_freq.get(c))
+                for c in categories
             ]
 
         # ── Shared transforms: identical to the training path ─────────────
@@ -1006,16 +1023,17 @@ class ShotRecommender:
             avg_ep=("expected_points", "mean"),
             best_quality=("score", "max"),
         ).reset_index()
-        # Carry the best mechanic through: for each zone, the shot type at that
-        # zone's highest-scoring location. Aggregating a categorical needs an
-        # explicit choice, and "what to do at the best spot" is the one that
-        # matches how a reader will use it.
+        # Carry the best location's distance (and, if the model uses them,
+        # its mechanic) through: for each zone, the specific highest-scoring
+        # location. Aggregating a categorical — or a per-location number like
+        # distance, which the zone spans a whole range of — needs an explicit
+        # choice, and "the shot at the best spot" is the one that matches how
+        # a reader will use the recommendation.
+        best_rows = scored.loc[scored.groupby("zone")["score"].idxmax()]
+        best_cols = ["zone", "shot_distance"]
         if "best_mechanic" in scored.columns:
-            best_rows = scored.loc[scored.groupby("zone")["score"].idxmax()]
-            summary = summary.merge(
-                best_rows[["zone", "best_mechanic", "best_mechanic_prob"]],
-                on="zone", how="left",
-            )
+            best_cols += ["best_mechanic", "best_mechanic_prob"]
+        summary = summary.merge(best_rows[best_cols], on="zone", how="left")
 
         summary["shot_type"] = np.where(
             summary["zone"].map(ZONE_POINTS) == 3,

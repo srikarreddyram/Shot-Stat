@@ -81,6 +81,13 @@ export interface ZoneResult {
    * placeholder on every card, in every session.
    */
   attemptsBehind?: number;
+  /**
+   * Distance (feet) of the specific location this recommendation refers to
+   * — the zone's best-scoring spot (api.py ZoneSummary.shot_distance). A
+   * zone spans a range of distances, so this is one shot's distance, not a
+   * zone average.
+   */
+  shotDistance?: number;
 }
 
 // ── Types mirroring the FastAPI response shapes (src/inference/api.py) ──────
@@ -183,6 +190,9 @@ export interface BackendZoneSummary {
    */
   attempts_behind?: number;
   best_quality?: number;
+  shot_distance?: number;
+  best_mechanic?: string;
+  best_mechanic_prob?: number;
 }
 
 export interface ZoneVolume {

@@ -144,6 +144,13 @@ class ZoneSummary(BaseModel):
     avg_ep: float
     best_quality: float
     shot_type: str
+    # Distance (feet) of the specific location this recommendation refers to
+    # — the zone's best-scoring spot, same convention as best_mechanic below.
+    # A zone spans a range of distances, so "the" distance is this one shot's,
+    # not an average across the whole zone.
+    shot_distance: Optional[float] = None
+    best_mechanic: Optional[str] = None
+    best_mechanic_prob: Optional[float] = None
 
 
 class RecommendResponse(BaseModel):

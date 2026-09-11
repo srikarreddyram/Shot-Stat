@@ -73,6 +73,7 @@ export default function EnginePage({ onBack }: Props) {
             ep: bZone ? bZone.avg_ep : z.baseEP,
             makeProb: bZone ? bZone.avg_make_prob : 0.35,
             attemptsBehind: bZone?.attempts_behind,
+            shotDistance: bZone?.shot_distance,
           };
         }).sort((a, b) => b.ep - a.ep);
         setResults(mappedResults);
@@ -581,7 +582,14 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#C9A84C", letterSpacing: "0.4em" }}>OPTIMAL ZONE</div>
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, color: "#F0F0F0", lineHeight: 1.05, marginTop: 4 }}>{best.zone.label}</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, color: "#F0F0F0", lineHeight: 1.05, marginTop: 4 }}>{best.zone.label}</div>
+              {best.shotDistance != null ? (
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "#64748b" }}>
+                  {best.shotDistance.toFixed(1)} FT
+                </div>
+              ) : null}
+            </div>
           </div>
           <MetricToggle />
         </div>
@@ -611,6 +619,11 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
                 <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
                   <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, color }}>#{i + 1}</span>
                   <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: 15, color: "#F0F0F0" }}>{r.zone.label}</span>
+                  {r.shotDistance != null ? (
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#64748b" }}>
+                      {r.shotDistance.toFixed(1)} FT
+                    </span>
+                  ) : null}
                 </div>
                 <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, color, lineHeight: 1 }}>
                   {showProb ? `${Math.round(r.makeProb * 100)}%` : r.ep.toFixed(2)}
@@ -634,7 +647,7 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
 
       <div style={{ background: "#0e0e16", borderLeft: "3px solid #DC2626", padding: "12px 16px" }}>
         <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#DC2626", letterSpacing: "0.15em" }}>
-          ⚠ AVOID · {worst.zone.label.toUpperCase()} · {showProb ? `${Math.round(worst.makeProb * 100)}% PROB` : `${worst.ep.toFixed(2)} EP`}
+          ⚠ AVOID · {worst.zone.label.toUpperCase()}{worst.shotDistance != null ? ` · ${worst.shotDistance.toFixed(1)} FT` : ""} · {showProb ? `${Math.round(worst.makeProb * 100)}% PROB` : `${worst.ep.toFixed(2)} EP`}
         </div>
       </div>
 
