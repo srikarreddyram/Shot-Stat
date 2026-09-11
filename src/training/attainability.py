@@ -469,6 +469,48 @@ def lookup_diet_history(conn, player_id: str, season: str,
             "career_diet_att": career_total,
             "prior_zone_share": prior_shares.get(zone),
         }
+
+    # Bare-zone aggregates for the two angle-split zones, keyed by the
+    # UNSPLIT name (e.g. "Above the Break 3", not "... (centre)"/"(wing)").
+    #
+    # `attach_sub_zone` — the same function this file uses to build the keys
+    # above — resolves `sub_zone` to the bare zone name whenever loc_x/loc_y
+    # are not supplied (see its own docstring: "rows without coordinates
+    # keep their unsplit zone name"). A caller of explain_attainability
+    # without exact coordinates therefore looks up `out["zones"]["Above the
+    # Break 3"]`, a key that never existed here — every diet-history figure
+    # silently came back None regardless of how much real data the player
+    # had, and the model's missing-value handling then applied whatever
+    # default it learned for that gap, which is not "no effect": querying
+    # Stephen Curry's Above-the-Break-3 attainability without coordinates
+    # returned 2%, driven almost entirely by this None history, while the
+    # visible explanation never mentioned history at all (the summary logic
+    # only narrates it when a share IS known) — so the reason shown to the
+    # user did not match the reason for the number.
+    #
+    # These aggregates are plain ratios, not the shrunk sub-zone estimates
+    # above: the fitted Beta priors are per SUB-ZONE, and there is no prior
+    # fit for the unsplit zone to shrink toward. A real, high-volume rate is
+    # far more informative than another None, even unshrunk.
+    for zone in ANGLE_SPLIT_ZONES:
+        centre, wing = f"{zone} (centre)", f"{zone} (wing)"
+        zone_seen = seen.get(centre, 0) + seen.get(wing, 0)
+        zone_career = career.get(centre, 0) + career.get(wing, 0)
+        # None (not 0.0) when there is no prior season at all — the same
+        # "no prior season" vs "a real, measured zero" distinction the
+        # per-sub-zone entries above make via `prior_shares.get(zone)`
+        # returning None on an empty dict.
+        zone_prior_share = (
+            None if not prior_shares
+            else prior_shares.get(centre, 0.0) + prior_shares.get(wing, 0.0)
+        )
+        out["zones"][zone] = {
+            "diet_to_date": (zone_seen / seen_total) if seen_total > 0 else None,
+            "diet_att_to_date": seen_total,
+            "career_diet": (zone_career / career_total) if career_total > 0 else None,
+            "career_diet_att": career_total,
+            "prior_zone_share": zone_prior_share,
+        }
     return out
 
 

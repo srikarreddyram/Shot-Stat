@@ -66,7 +66,12 @@ from src.features.point_in_time import (
     lookup_zone_creation,
 )
 from src.features.shrinkage import BetaPrior, posterior_interval
-from src.inference.explain import creation_note, explain_attainability
+from src.inference.explain import (
+    build_matchup_narrative,
+    creation_note,
+    explain_attainability,
+    explain_shot_quality,
+)
 from src.training.attainability import (
     attach_sub_zone,
     encode_zone_and_position,
@@ -634,9 +639,12 @@ class ShotRecommender:
         out["sub_zone"] = resolved_zone
         return out
 
-    def recommend(
+    def explain_matchup(
         self,
         player_id: str,
+        zone: str,
+        loc_x: float,
+        loc_y: float,
         season: str | None = None,
         defender_id: str | None = None,
         secondary_defender_id: str | None = None,
@@ -649,23 +657,17 @@ class ShotRecommender:
         is_back_to_back: int = 0,
         opp_def_rating: float = 112.0,
         as_of_date=None,
-        top_n: int = 10,
-        interval_level: float = 0.90,
-    ) -> pd.DataFrame:
+    ) -> dict:
         """
-        Score every grid location and return the top-N by attainability-weighted
-        expected points.
+        The full matchup narrative for one specific point on the floor: make
+        probability broken down by offense vs. defense, expected points as a
+        consequence of it, attainability woven in, and a double-team clause
+        when a secondary defender is named.
 
-        Columns returned:
-            zone, loc_x, loc_y, make_probability, expected_points,
-            ep_low / ep_high      credible interval from the attempts behind it
-            attempts_behind       prior attempts supporting this player's rate
-            attainability         predicted share of shot diet from this zone
-            score                 the ranking quantity
-            ep_vs_own_average     expected points relative to this player's
-                                  own overall average — the number worth
-                                  showing a user, since raw EP mostly restates
-                                  that threes are worth more than twos
+        Works for ANY clicked location, not a fixed subset — it builds the
+        feature row for the exact (zone, loc_x, loc_y) given, the same way
+        `recommend()` builds one for every point on its grid, via the shared
+        `_build_feature_frame`.
         """
         if season is None:
             with self.engine.connect() as conn:
@@ -673,6 +675,116 @@ class ShotRecommender:
                     text("SELECT MAX(season) FROM players")
                 ).fetchone()[0]
 
+        shot_distance = round(float(np.hypot(loc_x, loc_y)) / 10.0, 1)
+        one_point = pd.DataFrame([{
+            "loc_x": float(loc_x), "loc_y": float(loc_y),
+            "shot_distance": shot_distance, "zone": zone,
+            "shot_type": "3PT Field Goal" if ZONE_POINTS.get(zone) == 3 else "2PT Field Goal",
+        }])
+
+        # Expand this ONE location over the player's mechanic mix — same as
+        # recommend() does for the whole grid — so "best mechanic here" is
+        # found rather than assumed, then pick that single row: TreeSHAP
+        # explains one feature vector, not a marginalised mixture of several.
+        raw, features, player, creation, defender = self._build_feature_frame(
+            player_id, season, defender_id, secondary_defender_id,
+            quarter, time_remaining, score_diff, home_away, playoff_flag,
+            rest_days, is_back_to_back, opp_def_rating, as_of_date,
+            grid=one_point, expand_mechanics=self.uses_mechanics,
+        )
+
+        probs = self._predict(as_model_matrix(features, self.feature_cols))
+        best_idx = int(np.argmax(probs))
+        best_feature_row = features.iloc[[best_idx]].reset_index(drop=True)
+
+        sq = explain_shot_quality(self.model, self.feature_cols, best_feature_row)
+
+        points = ZONE_POINTS.get(zone, 2)
+        is_league_avg = bool(defender.get("_is_league_average"))
+
+        attainability_out = None
+        if self.attainability is not None:
+            try:
+                attainability_out = self.explain_attainability(
+                    player_id, zone, season=season, as_of_date=as_of_date,
+                    loc_x=loc_x, loc_y=loc_y,
+                )
+            except ValueError:
+                attainability_out = None
+
+        defender_name = None if is_league_avg else (defender.get("name") or None)
+        secondary_name = None
+        if secondary_defender_id and not is_league_avg:
+            secondary = self._defender_row(secondary_defender_id, season, as_of_date=as_of_date)
+            secondary_name = secondary.get("name") if secondary else None
+
+        narrative = build_matchup_narrative(
+            sq, attainability_out, player.get("name") or player_id, zone, points,
+            defender_name=defender_name, secondary_defender_name=secondary_name,
+            is_league_average_defender=is_league_avg,
+        )
+
+        return {
+            "player_id": player_id,
+            "player_name": player.get("name"),
+            "defender_id": defender_id,
+            "defender_name": defender_name,
+            "secondary_defender_id": secondary_defender_id if secondary_name else None,
+            "secondary_defender_name": secondary_name,
+            "zone": zone,
+            "shot_distance": shot_distance,
+            "points": points,
+            "make_probability": sq["make_probability"],
+            "expected_points": round(sq["make_probability"] * points, 4),
+            "attainability": attainability_out.get("attainability") if attainability_out else None,
+            "shot_quality": sq,
+            "narrative": narrative,
+        }
+
+    def _build_feature_frame(
+        self,
+        player_id: str,
+        season: str,
+        defender_id: str | None,
+        secondary_defender_id: str | None,
+        quarter: int,
+        time_remaining: float,
+        score_diff: int,
+        home_away: int,
+        playoff_flag: int,
+        rest_days: int,
+        is_back_to_back: int,
+        opp_def_rating: float,
+        as_of_date,
+        grid: pd.DataFrame | None = None,
+        expand_mechanics: bool = True,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict]:
+        """
+        Assemble the raw+derived feature frame for one or more candidate
+        shots, with the exact player/defender-blending logic `recommend()`
+        uses for its whole grid.
+
+        Factored out of `recommend()` so a second caller — the shot-quality
+        explanation layer, which needs to score and explain exactly ONE
+        specific (location, mechanic) rather than the whole grid — reuses
+        this logic instead of a second, hand-maintained copy of it. That
+        duplication is exactly how the def_matchup_share/height_diff and
+        def_freq_zone bugs happened: one path got fixed, the other didn't,
+        silently, because nothing forced them to agree.
+
+        `grid` defaults to the full `SHOT_GRID`, mechanic-expanded exactly as
+        `recommend()` always has. A caller that already knows the single
+        (zone, loc_x, loc_y, mechanic) it wants — the explanation path —
+        passes a custom one-row grid and `expand_mechanics=False`, since
+        marginalising a single named mechanic over itself is a no-op it
+        should not have to construct a mixture to skip.
+
+        Returns `(raw, features, player, creation, defender)`. `raw` carries
+        every column `grid` had (zone, loc_x, loc_y, shot_distance, and
+        `_mechanic`/`_mech_weight` when mechanics are used) plus everything
+        assembled here, so a caller needing the grid's own columns after
+        scoring reads them off `raw` rather than a separately-tracked `grid`.
+        """
         player = self._player_row(player_id, season, as_of_date=as_of_date)
         creation = self._creation_row(player_id, season)
         defender = (
@@ -701,13 +813,21 @@ class ShotRecommender:
             for cat, stats in league_defence["by_category"].items()
         }
 
-        grid = pd.DataFrame(SHOT_GRID)
+        if grid is None:
+            grid = pd.DataFrame(SHOT_GRID)
 
         # One row per (location, mechanic), weighted by how often this player
         # actually takes that kind of shot from that zone. Without this the
-        # mechanic indicators would all be zero — a combination that appears in
-        # no training row, since every real shot has exactly one mechanic.
-        if self.uses_mechanics:
+        # mechanic indicators would all be zero — a combination that appears
+        # in no training row, since every real shot has exactly one mechanic.
+        #
+        # Applies to a caller-supplied `grid` too (not just the default
+        # SHOT_GRID) — e.g. the explanation path expands a single clicked
+        # location over mechanics to find which one actually scores best
+        # there, the same way `recommend()` finds it across the whole floor.
+        # A caller that already knows the one mechanic it wants explained
+        # passes `expand_mechanics=False` to skip this.
+        if self.uses_mechanics and expand_mechanics:
             if self._league_mix is None:
                 self._league_mix = league_zone_mix(self.engine)
             mix = player_zone_mix(self.engine, str(player_id), season,
@@ -716,7 +836,7 @@ class ShotRecommender:
 
         # ── Assemble raw columns, exactly as the training builder does ────
         raw = grid.copy()
-        if self.uses_mechanics:
+        if self.uses_mechanics and "_mechanic" in raw.columns:
             # derive_features classifies `shot_subtype` into mech_* indicators.
             # The mechanic names ARE the classifier's own output vocabulary, so
             # round-tripping them through it reproduces the training encoding
@@ -848,18 +968,11 @@ class ShotRecommender:
             raw["def_pct_plusminus_zone"] = [
                 _mix(by_category.get(c, {}).get("pct_plusminus")) for c in categories
             ]
-            # Bug fix: this used to take the named defender's raw freq with no
-            # blending at all — but build.py (lines ~262-281) computes
-            # def_freq_zone at TRAINING time as the SAME possession-weighted
-            # mixture as def_fg_pct_zone and def_pct_plusminus_zone (all three
-            # are aggregated in one loop over "d_fg_pct", "pct_plusminus",
-            # "freq"). Leaving freq unmixed served a different quantity than
-            # the model was trained on: an individual defender's own zone
-            # specialisation rate, rather than the possession-weighted
-            # average across everyone who guarded the shooter that game —
-            # exactly the individual-vs-average mismatch already documented
-            # above for d_fg_pct_zone and def_pct_plusminus (see the comment
-            # on Wembanyama's -0.099 percentile).
+            # def_freq_zone: build.py computes this at TRAINING time as the
+            # SAME possession-weighted mixture as def_fg_pct_zone and
+            # def_pct_plusminus_zone (one shared aggregation loop over
+            # d_fg_pct/pct_plusminus/freq), so it is blended here on the same
+            # terms — not fed as the named defender's raw, unmixed rate.
             raw["def_freq_zone"] = [
                 _mix(by_category.get(c, {}).get("freq"), league_zone_freq.get(c))
                 for c in categories
@@ -873,10 +986,57 @@ class ShotRecommender:
             if col not in features.columns:
                 features[col] = np.nan
 
+        return raw, features, player, creation, defender
+
+    def recommend(
+        self,
+        player_id: str,
+        season: str | None = None,
+        defender_id: str | None = None,
+        secondary_defender_id: str | None = None,
+        quarter: int = 1,
+        time_remaining: float = 600.0,
+        score_diff: int = 0,
+        home_away: int = 1,
+        playoff_flag: int = 0,
+        rest_days: int = 1,
+        is_back_to_back: int = 0,
+        opp_def_rating: float = 112.0,
+        as_of_date=None,
+        top_n: int = 10,
+        interval_level: float = 0.90,
+    ) -> pd.DataFrame:
+        """
+        Score every grid location and return the top-N by attainability-weighted
+        expected points.
+
+        Columns returned:
+            zone, loc_x, loc_y, make_probability, expected_points,
+            ep_low / ep_high      credible interval from the attempts behind it
+            attempts_behind       prior attempts supporting this player's rate
+            attainability         predicted share of shot diet from this zone
+            score                 the ranking quantity
+            ep_vs_own_average     expected points relative to this player's
+                                  own overall average — the number worth
+                                  showing a user, since raw EP mostly restates
+                                  that threes are worth more than twos
+        """
+        if season is None:
+            with self.engine.connect() as conn:
+                season = conn.execute(
+                    text("SELECT MAX(season) FROM players")
+                ).fetchone()[0]
+
+        raw, features, player, creation, defender = self._build_feature_frame(
+            player_id, season, defender_id, secondary_defender_id,
+            quarter, time_remaining, score_diff, home_away, playoff_flag,
+            rest_days, is_back_to_back, opp_def_rating, as_of_date,
+        )
+
         make_prob = self._predict(as_model_matrix(features, self.feature_cols))
 
         # ── Assemble output ──────────────────────────────────────────────
-        out = grid[["zone", "loc_x", "loc_y", "shot_distance"]].copy()
+        out = raw[["zone", "loc_x", "loc_y", "shot_distance"]].copy()
         out["make_probability"] = make_prob
 
         if self.uses_mechanics:
@@ -885,8 +1045,8 @@ class ShotRecommender:
             # player's mechanic mix, and `best_mechanic` names the shot type
             # that scored highest there — which is the actually actionable half
             # of the answer.
-            out["_mechanic"] = grid["_mechanic"].values
-            out["_mech_weight"] = grid["_mech_weight"].values
+            out["_mechanic"] = raw["_mechanic"].values
+            out["_mech_weight"] = raw["_mech_weight"].values
             out = marginalize(
                 out, key_cols=("loc_x", "loc_y", "zone", "shot_distance")
             )

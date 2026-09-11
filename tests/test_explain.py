@@ -7,6 +7,8 @@ it, so these tests assert that the grouping into baseline-plus-player does not
 lose or double-count anything on the way to the UI — a decomposition that
 silently drops a term would read as a confident, wrong explanation.
 """
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -234,6 +236,70 @@ def test_sub_zone_falls_back_to_the_parent_without_coordinates():
 
     out = attach_sub_zone(pd.DataFrame([{"zone": "Above the Break 3"}]))
     assert out["sub_zone"].iloc[0] == "Above the Break 3"
+
+
+def test_diet_history_has_a_bare_zone_entry_for_angle_split_zones():
+    """
+    Regression test for a real bug: `attach_sub_zone` resolves a coordinate-
+    less shot to the bare zone name ("Above the Break 3"), but
+    `lookup_diet_history`'s output used to be keyed ONLY by the split names
+    ("Above the Break 3 (centre)"/"(wing)") for the two angle-split zones.
+    A caller without exact coordinates — a real, reachable path, since
+    loc_x/loc_y are optional query params on /explain/attainability — looked
+    up a key that never existed and got None back, regardless of how much
+    real data the player had.
+
+    Concretely, this returned a 2% attainability for Stephen Curry at
+    Above the Break 3 (his single most common shot, ~55% of his 2024-25
+    attempts) instead of anything close to the real number, because the
+    missing diet-history features let the model fall back to whatever it
+    learned for that gap — and the explanation shown to the user never even
+    mentioned history as the cause, because the summary only narrates it
+    when a share is known.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from src.db.database import register_unaccent
+    from src.db.models import Base, Game, Shot
+    from src.training.attainability import lookup_diet_history
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    register_unaccent(engine)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as session:
+        session.add(Game(game_id="G1", date=date(2024, 11, 1),
+                         home_team="GSW", away_team="LAL"))
+        # 2 centre threes, 1 wing three this season — a real, sizeable share
+        # (3 of 3 shots are Above the Break 3) that a fixed bug reported as
+        # unknown.
+        session.add_all([
+            Shot(shot_id="s1", game_id="G1", player_id="CURRY", season="2024-25",
+                shot_made=1, loc_x=0.0, loc_y=260.0, zone="Above the Break 3"),
+            Shot(shot_id="s2", game_id="G1", player_id="CURRY", season="2024-25",
+                shot_made=0, loc_x=20.0, loc_y=255.0, zone="Above the Break 3"),
+            Shot(shot_id="s3", game_id="G1", player_id="CURRY", season="2024-25",
+                shot_made=1, loc_x=213.0, loc_y=149.0, zone="Above the Break 3"),
+        ])
+        session.commit()
+
+        with engine.connect() as conn:
+            out = lookup_diet_history(conn, "CURRY", "2024-25", sub_zone_priors={})
+
+    assert "Above the Break 3" in out["zones"], (
+        "no bare-zone entry — a coordinate-less lookup for this zone would "
+        "silently get None regardless of real data"
+    )
+    bare = out["zones"]["Above the Break 3"]
+    assert bare["diet_to_date"] == pytest.approx(1.0)
+    assert bare["diet_att_to_date"] == 3
 
 
 def test_history_is_reported_separately_from_traits():
