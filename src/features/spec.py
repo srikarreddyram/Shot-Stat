@@ -13,15 +13,19 @@ point-in-time shooting counts already resolved to rates by
 features. Assembling those differs between paths. Everything downstream of
 them does not.
 
-Deferred: team-level creation support
--------------------------------------
-The largest remaining passing effect is not on the passer's own shot but on
-his teammates' — a shooter standing next to an elite creator gets cleaner
-looks than the same shooter on a team without one. Capturing that needs the
-set of five offensive players on the floor at the moment of the shot, which
-requires reconstructing lineups from play-by-play substitution events. The
-`FEATURE_GROUPS["team_creation"]` slot below is where those columns attach
-once that ingestor exists; nothing else in the pipeline needs to change.
+Team-level lineup context (`team_creation`, `help_defense`)
+-------------------------------------------------------------
+The largest passing effect is not on the passer's own shot but on his
+teammates' — a shooter standing next to an elite creator gets cleaner looks
+than the same shooter on a team without one. That needed the set of five
+offensive (and five defensive) players on the floor at the moment of the
+shot, reconstructed from play-by-play substitution events
+(src/ingestion/lineup_ingestor.py) — not knowable from anything else in this
+pipeline, and only ~80% of shots have it (the source data occasionally drops
+a substitution event; see that module for the real, measured reasons this
+isn't 100%). Experimental as of the model version that first trains with it:
+whether the group earns its keep is a `--ablate` question, same as every
+other group here, not an assumption.
 """
 from __future__ import annotations
 
@@ -343,7 +347,24 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "contest_ssn_open", "contest_ssn_wide_open",
         "contest_car_sep", "contest_ssn_sep", "contest_att",
     ],
-    "team_creation": [],  # reserved — see module docstring
+    # No longer reserved — src/ingestion/lineup_ingestor.py reconstructs the
+    # on-court five from play-by-play substitution events, and
+    # point_in_time.build_lineup_context computes these from it: the OTHER
+    # four offensive teammates' creation/gravity profile, excluding the
+    # shooter (who already has his own creation features) and unrelated to
+    # cast_ast_rate/cast_efg (a whole-SEASON roster aggregate, not who was
+    # literally on the floor for this possession).
+    "team_creation": [
+        "oncourt_off_creation", "oncourt_off_gravity",
+        "oncourt_off_rim_pressure", "oncourt_off_n",
+    ],
+    # The defensive mirror of team_creation: the other four defenders'
+    # point-in-time quality, excluding the primary `defender_id` (already
+    # its own feature group). Kept separate from "team_creation" so an
+    # ablation can tell whether the offense-side or defense-side half of
+    # "who else is on the floor" is doing any work, rather than one number
+    # for both.
+    "help_defense": ["oncourt_def_fg_pct", "oncourt_def_n"],
 }
 
 # Columns that must exist before derive_features runs. Anything else it needs

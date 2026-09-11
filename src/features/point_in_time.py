@@ -1346,3 +1346,91 @@ def lookup_defender_category_rates(
         "freq": 1.0,
     }
     return {"by_category": result}
+
+
+LINEUP_FEATURE_COLS = [
+    "oncourt_off_creation", "oncourt_off_gravity", "oncourt_off_rim_pressure",
+    "oncourt_off_n", "oncourt_def_fg_pct", "oncourt_def_n",
+]
+
+
+def build_lineup_context(engine, through_season: str) -> pd.DataFrame:
+    """
+    Per shot, what the REST of the on-court lineup looks like — not the
+    shooter (already fully described elsewhere) and not the primary
+    defender (`defender_id`, already its own feature group), but the other
+    four offensive teammates and the other four defenders who were also on
+    the floor for that specific shot.
+
+    This is the experiment the "gravity" and "team/roster" questions this
+    session kept circling back to actually need: `playmaking_gravity`
+    already exists but only as a SELF-effect (a player's own passing making
+    HIS OWN shot marginally easier), and the supporting-cast features
+    (cast_ast_rate etc.) are a whole-SEASON roster aggregate, not who was
+    literally on the floor for this possession. `shot_on_court` (see
+    src/ingestion/lineup_ingestor.py) is what makes the real, per-shot
+    version of both questions answerable at all.
+
+    Offense side: the mean self_creation_index / playmaking_gravity /
+    rim_pressure of the other four, from the same lagged-one-season
+    creation profile the shooter's own features already use (so a shot in
+    2023-24 sees teammates' 2022-23 profiles — same availability and
+    leakage reasoning as attach_creation_features).
+
+    Defense side: the mean point-in-time "Overall" FG%-allowed of the
+    other four defenders, from the exact same build_defender_category_rates
+    the primary defender's own features already use — not a second,
+    differently-built defender-quality number.
+
+    Coverage is bounded by shot_on_court's own coverage (see
+    lineup_ingestor.py — real substitution data gaps mean some shots have
+    no reconstructed lineup at all), so these columns are NaN for a real
+    share of rows. XGBoost treats that as an ordinary missing feature, the
+    same way it already does for contest and defender coverage gaps.
+    """
+    from src.features.creation import _previous_season, load_creation_profiles
+
+    onc = pd.read_sql("""
+        SELECT soc.shot_id, soc.player_id, soc.role, soc.team_id,
+               s.season, s.game_id, s.player_id AS shooter_id,
+               s.defender_id AS primary_defender_id
+        FROM shot_on_court soc
+        JOIN shots s ON s.shot_id = soc.shot_id
+    """, engine)
+    if onc.empty:
+        return pd.DataFrame(columns=["shot_id"] + LINEUP_FEATURE_COLS)
+
+    # ── Offense: the other four teammates' creation profile ────────────────
+    offense = onc[(onc["role"] == "offense") & (onc["player_id"] != onc["shooter_id"])].copy()
+    profiles = load_creation_profiles(engine)
+    offense["_lag_season"] = offense["season"].map(_previous_season)
+    lagged = profiles.rename(columns={"season": "_lag_season"})
+    offense = offense.merge(
+        lagged[["player_id", "_lag_season", "self_creation_index",
+               "playmaking_gravity", "rim_pressure"]],
+        on=["player_id", "_lag_season"], how="left",
+    )
+    off_agg = offense.groupby("shot_id").agg(
+        oncourt_off_creation=("self_creation_index", "mean"),
+        oncourt_off_gravity=("playmaking_gravity", "mean"),
+        oncourt_off_rim_pressure=("rim_pressure", "mean"),
+        oncourt_off_n=("player_id", "count"),
+    ).reset_index()
+
+    # ── Defense: the other four defenders' point-in-time quality ───────────
+    defense = onc[
+        (onc["role"] == "defense")
+        & (onc["primary_defender_id"].notna())
+        & (onc["player_id"] != onc["primary_defender_id"])
+    ].copy()
+    rates = build_defender_category_rates(engine, through_season=through_season)
+    overall = rates[rates["defense_category"] == "Overall"][
+        ["defense_player_id", "game_id", "d_fg_pct"]
+    ].rename(columns={"defense_player_id": "player_id"})
+    defense = defense.merge(overall, on=["player_id", "game_id"], how="left")
+    def_agg = defense.groupby("shot_id").agg(
+        oncourt_def_fg_pct=("d_fg_pct", "mean"),
+        oncourt_def_n=("player_id", "count"),
+    ).reset_index()
+
+    return off_agg.merge(def_agg, on="shot_id", how="outer")

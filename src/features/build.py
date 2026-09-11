@@ -36,6 +36,7 @@ from src.features.point_in_time import (
     apply_opponent_defence,
     build_contest_history,
     build_defender_category_rates,
+    build_lineup_context,
     build_opponent_zone_defence,
     build_prior_counts,
     build_rolling_form,
@@ -481,6 +482,16 @@ def build_matrix(
         share = df["creation_is_prior"].mean()
         log(f"    {len(profiles):,} profiles; {share*100:.1f}% of shots on a "
             f"position-bucket fallback")
+
+    log("  → on-court lineup context (team_creation / help_defense) ...")
+    lineup = build_lineup_context(engine, through_season=prior_through_season)
+    if not lineup.empty:
+        df = df.merge(lineup, on="shot_id", how="left")
+        coverage = df["oncourt_off_n"].notna().mean()
+        log(f"    {len(lineup):,} shots with a reconstructed lineup; "
+            f"covers {coverage:.1%} of all shots")
+    else:
+        log("    none ingested yet — skipping")
 
     log("  → deriving features ...")
     league_zone_rates = {z: p.mean for z, p in zone_priors.items()}
