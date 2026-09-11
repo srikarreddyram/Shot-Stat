@@ -873,7 +873,7 @@ def fit_league_creation_priors(engine, through_season: str) -> dict[str, BetaPri
     Fit through the last TRAINING season only, same rule as every other prior
     in this module.
     """
-    from src.training.attainability import attach_sub_zone
+    from src.training.attainability import ANGLE_SPLIT_ZONES, attach_sub_zone
 
     df = pd.read_sql(f"""
         SELECT s.zone, s.loc_x, s.loc_y, s.player_id, s.season, s.shot_made,
@@ -894,7 +894,35 @@ def fit_league_creation_priors(engine, through_season: str) -> dict[str, BetaPri
     priors = fit_priors(
         grouped, ["sub_zone"], makes_col="self_makes", attempts_col="makes"
     )
-    return {z: priors[(z,)] for z in grouped["sub_zone"].unique() if (z,) in priors}
+    out = {z: priors[(z,)] for z in grouped["sub_zone"].unique() if (z,) in priors}
+
+    # Bare-zone aggregate priors for the two angle-split zones, keyed by the
+    # UNSPLIT name — same bug, same fix as lookup_diet_history's missing
+    # bare-zone entries. `lookup_zone_creation` resolves to the bare zone
+    # name whenever it isn't given exact coordinates (attach_sub_zone's
+    # documented behaviour), and `creation_priors` had no such key for
+    # either angle-split zone, only its "(centre)"/"(wing)" splits. The
+    # lookup's own fallback (`.get(zone) or .get(parent)`) cannot rescue
+    # this, because zone == parent in exactly the case that needs rescuing.
+    #
+    # The visible symptom: asking for Jamal Murray's self-created share at
+    # Above the Break 3 came back with no prior at all, so `share` and
+    # `league_self_created_share` were both None and `creation_note`
+    # returned nothing — despite `self_creation_index` correctly rating him
+    # an elite self-creator and his supporting cast (Jokić) showing a 71%
+    # teammate assist rate. The gap read as "we don't know," not as the
+    # (false) "nobody creates this for him" it was mistaken for, but the
+    # missing prior is the same class of silent gap either way.
+    parent_grouped = df.groupby(["zone", "player_id", "season"], as_index=False).agg(
+        self_makes=("self_make", "sum"), makes=("shot_made", "size")
+    )
+    parent_priors = fit_priors(
+        parent_grouped, ["zone"], makes_col="self_makes", attempts_col="makes"
+    )
+    for zone in ANGLE_SPLIT_ZONES:
+        if (zone,) in parent_priors:
+            out[zone] = parent_priors[(zone,)]
+    return out
 
 
 def lookup_zone_creation(conn, player_id: str, zone: str,

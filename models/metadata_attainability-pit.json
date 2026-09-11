@@ -780,6 +780,18 @@
       "strength": 30.57635530191632,
       "n_players": 208,
       "n_attempts": 7030
+    },
+    "Above the Break 3": {
+      "mean": 0.2284271014299078,
+      "strength": 5.0,
+      "n_players": 2279,
+      "n_attempts": 187075
+    },
+    "Mid-Range": {
+      "mean": 0.5807412309728657,
+      "strength": 5.0,
+      "n_players": 1377,
+      "n_attempts": 96704
     }
   },
   "test_season": "2025-26",

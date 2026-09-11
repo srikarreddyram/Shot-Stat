@@ -302,6 +302,71 @@ def test_diet_history_has_a_bare_zone_entry_for_angle_split_zones():
     assert bare["diet_att_to_date"] == 3
 
 
+def test_creation_priors_have_a_bare_zone_entry_for_angle_split_zones():
+    """
+    Regression test for the same class of bug as the diet-history one above,
+    found in a different function: `fit_league_creation_priors` was keyed
+    ONLY by split sub-zone names for the two angle-split zones, so
+    `lookup_zone_creation` — which resolves to the bare zone name whenever
+    it isn't given exact coordinates — found no prior at all for either one.
+    `share` and `league_self_created_share` came back None and
+    `creation_note` produced nothing.
+
+    Concretely: asking for Jamal Murray's self-created share at Above the
+    Break 3 returned nothing, reading as "we don't know how he generates
+    this shot" for a real, established NBA starter with 1,157 makes there —
+    not because the data was thin, but because the prior dict had no key a
+    coordinate-less lookup could ever match.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from src.db.database import register_unaccent
+    from src.db.models import Base, Game, Shot, ShotContext
+    from src.features.point_in_time import fit_league_creation_priors
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    register_unaccent(engine)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as session:
+        session.add(Game(game_id="G1", date=date(2024, 11, 1),
+                         home_team="DEN", away_team="LAL"))
+        # A handful of synthetic players, split across centre/wing, with a
+        # mix of self-created and assisted makes — enough for fit_beta_prior
+        # to fit something real rather than degenerate.
+        for i in range(5):
+            pid = f"P{i}"
+            for j in range(4):
+                shot_id = f"s{i}_{j}"
+                # Alternate centre/wing and self-created/assisted.
+                loc_y = 260.0 if j % 2 == 0 else 149.0
+                loc_x = 0.0 if j % 2 == 0 else 213.0
+                session.add(Shot(
+                    shot_id=shot_id, game_id="G1", player_id=pid, season="2023-24",
+                    shot_made=1, loc_x=loc_x, loc_y=loc_y, zone="Above the Break 3",
+                ))
+                session.add(ShotContext(
+                    shot_id=shot_id, game_id="G1", is_assisted=1 if j < 2 else 0,
+                ))
+        session.commit()
+
+        with engine.connect() as conn:
+            priors = fit_league_creation_priors(conn, through_season="2024-25")
+
+    assert "Above the Break 3" in priors, (
+        "no bare-zone prior — a coordinate-less creation-share lookup for "
+        "this zone would silently get None regardless of real data"
+    )
+    assert 0.0 <= priors["Above the Break 3"].mean <= 1.0
+
+
 def test_history_is_reported_separately_from_traits():
     """
     The player's own prior-season share is not a trait and must not appear in
