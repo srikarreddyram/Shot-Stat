@@ -629,3 +629,39 @@ class ShotArchetype(Base):
 
     def __repr__(self):
         return f"<ShotArchetype {self.shot_id} cluster={self.cluster_id}>"
+
+
+class ShotOnCourt(Base):
+    """
+    One row per (shot, player) for every one of the 10 players on the floor
+    when that shot went up — the on-court lineup, not just the shooter and
+    the primary defender the rest of this project already tracks.
+
+    Reconstructed from PlayByPlayV3's substitution events (src/ingestion/
+    lineup_ingestor.py), not a new data source: the same endpoint
+    pbp_ingestor.py already calls per game carries `actionType ==
+    "Substitution"` rows with the incoming/outgoing player ids, which is
+    enough to replay who was on the floor at any point in the game without
+    an extra API call.
+
+    A tidy long table (one row per player, not five fixed columns) so a
+    query for "the other four teammates" or "the four help defenders" is a
+    plain filter + exclude-the-shooter, with no assumption baked in about
+    which of five hardcoded slots a player occupies.
+    """
+    __tablename__ = "shot_on_court"
+
+    shot_id = Column(String, primary_key=True)
+    player_id = Column(String, primary_key=True)
+    team_id = Column(String, nullable=False)
+    # "offense" (the shooting team) or "defense" (the other team). Derived
+    # from team_id at write time so a reader never has to know which side
+    # shot the ball to filter by role.
+    role = Column(String, nullable=False)
+
+    __table_args__ = (
+        Index("ix_shot_on_court_shot", "shot_id"),
+    )
+
+    def __repr__(self):
+        return f"<ShotOnCourt {self.shot_id} {self.player_id} ({self.role})>"
