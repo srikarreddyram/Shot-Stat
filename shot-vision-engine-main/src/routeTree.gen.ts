@@ -11,6 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ArchetypesRouteImport } from './routes/archetypes'
+import { Route as ModelFeaturesRouteImport } from './routes/model-features'
+import { Route as StatsRouteImport } from './routes/stats'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +24,49 @@ const ArchetypesRoute = ArchetypesRouteImport.update({
   path: '/archetypes',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ModelFeaturesRoute = ModelFeaturesRouteImport.update({
+  id: '/model-features',
+  path: '/model-features',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StatsRoute = StatsRouteImport.update({
+  id: '/stats',
+  path: '/stats',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/archetypes': typeof ArchetypesRoute
+  '/model-features': typeof ModelFeaturesRoute
+  '/stats': typeof StatsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/archetypes': typeof ArchetypesRoute
+  '/model-features': typeof ModelFeaturesRoute
+  '/stats': typeof StatsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/archetypes': typeof ArchetypesRoute
+  '/model-features': typeof ModelFeaturesRoute
+  '/stats': typeof StatsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/archetypes'
+  fullPaths: '/' | '/archetypes' | '/model-features' | '/stats'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/archetypes'
-  id: '__root__' | '/' | '/archetypes'
+  to: '/' | '/archetypes' | '/model-features' | '/stats'
+  id: '__root__' | '/' | '/archetypes' | '/model-features' | '/stats'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ArchetypesRoute: typeof ArchetypesRoute
+  ModelFeaturesRoute: typeof ModelFeaturesRoute
+  StatsRoute: typeof StatsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +85,28 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ArchetypesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/model-features': {
+      id: '/model-features'
+      path: '/model-features'
+      fullPath: '/model-features'
+      preLoaderRoute: typeof ModelFeaturesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/stats': {
+      id: '/stats'
+      path: '/stats'
+      fullPath: '/stats'
+      preLoaderRoute: typeof StatsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ArchetypesRoute: ArchetypesRoute,
+  ModelFeaturesRoute: ModelFeaturesRoute,
+  StatsRoute: StatsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

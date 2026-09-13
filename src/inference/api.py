@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +43,7 @@ async def lifespan(app: FastAPI):
     # Model names are now descriptive rather than a v1/v2/v3 counter, and each
     # one has a runs/<stamp>__<name>/run.json recording exactly what it scored.
     # The list is ordered newest-first; the first that loads wins.
-    for model_name in ["shot-quality-v13", "shot-quality-v12", "shot-quality-v11", "shot-quality-v10", "shot-quality-v9", "shot-quality-v8", "shot-quality-v5", "shot-quality-v4", "shot-quality", "v3", "v2", "v1"]:
+    for model_name in ["shot-quality-v19", "shot-quality-v13", "shot-quality-v12", "shot-quality-v11", "shot-quality-v10", "shot-quality-v9", "shot-quality-v8", "shot-quality-v5", "shot-quality-v4", "shot-quality", "v3", "v2", "v1"]:
         try:
             recommender = ShotRecommender(model_name=model_name)
             break
@@ -376,6 +377,59 @@ def get_headshot(player_id: str):
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
 
 
+def _player_card(conn, player_id: str, season: str, ratings: dict) -> dict | None:
+    """
+    One player's autocomplete/roster-card shape — shared by /players/search
+    and /team/{team_id}/roster so the two endpoints can't quietly drift
+    apart on what fields a client gets back.
+    """
+    player = resolve_player_stats(conn, player_id, season)
+    if player is None:
+        return None
+    defender = resolve_defender_stats(conn, player_id, season)
+    overall_def = (defender or {}).get("def_stats", {}).get("Overall", {})
+    return {
+        "player_id": str(player_id),
+        "name": player["name"],
+        "position": player["position"],
+        "team_id": player.get("team_id"),
+        "height": player["height"],
+        "weight": player["weight"],
+        "career_fg_pct": player["career_fg_pct"],
+        "season_fg_pct": player["season_fg_pct"],
+        "career_3p_pct": player["career_3p_pct"],
+        "def_fg_pct_allowed": overall_def.get("d_fg_pct"),   # opponent FG% allowed (overall) — lower is better defense
+        "def_plus_minus": overall_def.get("pct_plusminus"),  # FG% allowed vs. league normal — negative is better defense
+        "wingspan": player["wingspan"],
+        "ast": player["ast"],
+        "tov": player["tov"],
+        "ft_pct": player["ft_pct"],
+        "rim_pct": player["zone_stats"].get("Restricted Area"),
+        "mid_pct": player["zone_stats"].get("Mid-Range"),
+        "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
+        "stats_source": player["stats_source"],   # "measured" | "prior"
+        "resolved_season": player["resolved_season"],
+        # Computed server-side from measured data (see
+        # src/inference/player_ratings.py). Previously the frontend invented
+        # these from a hardcoded formula that read three columns which are
+        # NULL for every player in the database.
+        #
+        # "rating_source" is surfaced un-prefixed (not "rating_rating_source")
+        # so the frontend can badge a 2K-fallback rating the same way it
+        # already badges "prior" stats — "measured" for a real computed
+        # rating, "2k_fallback" when compute_ratings had nothing at all for
+        # this player and NBA 2K filled the gap (see
+        # player_ratings.two_k_fallback_ratings for why that's a gap-filler
+        # and never a silent override of a real one).
+        **{
+            f"rating_{k}": v
+            for k, v in ratings.get(str(player_id), {}).items()
+            if k != "rating_source"
+        },
+        "rating_source": ratings.get(str(player_id), {}).get("rating_source"),
+    }
+
+
 @app.get("/players/search")
 def search_players(q: str = Query(..., min_length=2), season: Optional[str] = None, limit: int = 10):
     """
@@ -401,43 +455,51 @@ def search_players(q: str = Query(..., min_length=2), season: Optional[str] = No
         # Ratings are percentile ranks over the whole league, so they are
         # computed for the season once (and cached) rather than per player.
         ratings = rating_lookup(db_engine, season)
+        results = [_player_card(conn, pid, season, ratings) for (pid,) in id_rows]
 
-        results = []
-        for (player_id,) in id_rows:
-            player = resolve_player_stats(conn, player_id, season)
-            defender = resolve_defender_stats(conn, player_id, season)
-            overall_def = (defender or {}).get("def_stats", {}).get("Overall", {})
-            results.append({
-                "player_id": str(player_id),
-                "name": player["name"],
-                "position": player["position"],
-                "height": player["height"],
-                "weight": player["weight"],
-                "career_fg_pct": player["career_fg_pct"],
-                "season_fg_pct": player["season_fg_pct"],
-                "career_3p_pct": player["career_3p_pct"],
-                "def_fg_pct_allowed": overall_def.get("d_fg_pct"),   # opponent FG% allowed (overall) — lower is better defense
-                "def_plus_minus": overall_def.get("pct_plusminus"),  # FG% allowed vs. league normal — negative is better defense
-                "wingspan": player["wingspan"],
-                "ast": player["ast"],
-                "tov": player["tov"],
-                "ft_pct": player["ft_pct"],
-                "rim_pct": player["zone_stats"].get("Restricted Area"),
-                "mid_pct": player["zone_stats"].get("Mid-Range"),
-                "headshot_url": f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
-                "stats_source": player["stats_source"],   # "measured" | "prior"
-                "resolved_season": player["resolved_season"],
-                # Computed server-side from measured data (see
-                # src/inference/player_ratings.py). Previously the frontend
-                # invented these from a hardcoded formula that read three
-                # columns which are NULL for every player in the database.
-                **{
-                    f"rating_{k}": v
-                    for k, v in ratings.get(str(player_id), {}).items()
-                },
-            })
+    return [r for r in results if r is not None]
 
-    return results
+
+@app.get("/teams")
+def list_teams():
+    """
+    The 30 NBA franchises — static league data (nba_api.stats.static), not a
+    DB query, so this never depends on ingestion coverage. Powers the
+    team-vs-team picker: choose two teams first, then a player from each
+    roster, instead of free-text searching the whole league.
+    """
+    from nba_api.stats.static import teams as nba_teams_static
+
+    return [
+        {"team_id": str(t["id"]), "abbreviation": t["abbreviation"], "name": t["full_name"]}
+        for t in sorted(nba_teams_static.get_teams(), key=lambda t: t["full_name"])
+    ]
+
+
+@app.get("/team/{team_id}/roster")
+def get_team_roster(team_id: str, season: Optional[str] = None):
+    """
+    Every player rostered to `team_id` this season (players.team_id, kept
+    fresh by src/ingestion/{roster,current_roster}_ingestor.py — see the
+    on-court lineup work in src/features/point_in_time.py for why that
+    column exists at all). Same per-player shape as /players/search, so the
+    team-vs-team picker can reuse the same player card rendering.
+    """
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+
+    season = season or latest_season
+    with db_engine.connect() as conn:
+        id_rows = conn.execute(text("""
+            SELECT player_id FROM players
+            WHERE team_id = :team_id AND season = :season
+            ORDER BY name
+        """), {"team_id": team_id, "season": season}).fetchall()
+
+        ratings = rating_lookup(db_engine, season)
+        results = [_player_card(conn, pid, season, ratings) for (pid,) in id_rows]
+
+    return [r for r in results if r is not None]
 
 
 @app.post("/recommend/heatmap")
@@ -486,6 +548,7 @@ def explain_attainability(
     season: Optional[str] = None,
     loc_x: Optional[float] = Query(None, description="Shot x, NBA chart units. With loc_y, resolves the angle sub-zone (dead-centre vs wing)."),
     loc_y: Optional[float] = Query(None, description="Shot y, NBA chart units."),
+    defender_id: Optional[str] = Query(None, description="Adds `defender`: whether this defender's opponents attack this zone more or less than a typical defender's do. Does not change the attainability estimate itself, which has no defender in it by design."),
 ):
     """
     Why this player can or cannot get a shot in this zone.
@@ -501,7 +564,51 @@ def explain_attainability(
     try:
         return recommender.explain_attainability(
             player_id=player_id, zone=zone, season=season or latest_season,
-            loc_x=loc_x, loc_y=loc_y,
+            loc_x=loc_x, loc_y=loc_y, defender_id=defender_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/explain/matchup/{player_id}")
+def explain_matchup(
+    player_id: str,
+    zone: str = Query(..., description="One of the six court zones, e.g. 'Left Corner 3'"),
+    loc_x: float = Query(..., description="Shot x, NBA chart units."),
+    loc_y: float = Query(..., description="Shot y, NBA chart units."),
+    season: Optional[str] = None,
+    defender_id: Optional[str] = None,
+    secondary_defender_id: Optional[str] = None,
+    quarter: int = 1,
+    time_remaining: float = 600.0,
+    score_diff: int = 0,
+    home_away: int = 1,
+    playoff_flag: int = 0,
+    rest_days: int = 1,
+    is_back_to_back: int = 0,
+    opp_def_rating: float = 112.0,
+):
+    """
+    The full matchup narrative for one specific clicked location: make
+    probability broken down offense vs. defense (including who else is on
+    the floor — teammates' creation/gravity and the help defenders' shot-
+    blocking/disruption, resolved from the most recent real lineup or,
+    failing that, current-roster teammates), expected points, and
+    attainability woven in. See ShotRecommender.explain_matchup and
+    src/inference/explain.build_matchup_narrative.
+    """
+    if recommender is None:
+        raise HTTPException(status_code=503, detail="Model not loaded.")
+
+    try:
+        return recommender.explain_matchup(
+            player_id=player_id, zone=zone, loc_x=loc_x, loc_y=loc_y,
+            season=season or latest_season, defender_id=defender_id,
+            secondary_defender_id=secondary_defender_id, quarter=quarter,
+            time_remaining=time_remaining, score_diff=score_diff,
+            home_away=home_away, playoff_flag=playoff_flag,
+            rest_days=rest_days, is_back_to_back=is_back_to_back,
+            opp_def_rating=opp_def_rating,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -765,3 +872,243 @@ def player_archetype_mix(player_id: str, season: Optional[str] = None):
             for r in sorted(rows, key=lambda r: -r["n"])
         ],
     }
+
+
+# ── Stat engine ────────────────────────────────────────────────────────────
+# Every feature the engine actually reasons with, published as data rather
+# than buried in source. The whole project is a feature-engineering exercise
+# — point-in-time shooting rates, defender mixtures, creation profiles,
+# on-court lineup context — and until this endpoint none of that was visible
+# anywhere except by reading src/features/spec.py.
+
+# Prefix-matched families. derive_features emits these as one-hot dummies via
+# a prefix scan rather than listing them in FEATURE_GROUPS (see
+# spec.all_feature_columns), so they need their own grouping here or they'd
+# all fall through as "ungrouped".
+_PREFIX_GROUPS = {
+    "mech_": "shot_mechanic",
+    "finish_": "finish",
+    "zone_is_": "zone_indicator",
+    "pos_": "position_indicator",
+    "origin_": "possession_origin",
+}
+
+_GROUP_BLURBS = {
+    "shooter_skill": "What this player shoots, from strictly-prior games only — never including the shot being predicted.",
+    "shooter_physical": "Measured physical attributes. Exact data or NULL; never estimated from position.",
+    "creation": "Handle and passing, lagged one full season. Separates shooting skill from shot difficulty.",
+    "defender": "The named defender, blended as a possession-weighted mixture — nobody guards one player for a whole game.",
+    "defender_physical": "Defender size. Off by default: no measurable signal, and a large spurious effect at serving time.",
+    "opponent_defence": "The defending TEAM's zone-level tendencies, distinct from the individual matchup.",
+    "interaction": "Explicit offense-versus-defense terms — the matchup itself rather than either side alone.",
+    "spatial": "Where on the floor the shot is taken from.",
+    "context": "Game state: clock, score, rest, home/away.",
+    "shot_context": "Play-by-play context — what happened immediately before the shot.",
+    "contest": "Per-game defender-distance bands. Off by default: measured the most harmful group in ablation.",
+    "team_creation": "Who else is on the FLOOR with the shooter — teammates' creation, gravity, rim pressure and foul-drawing, mean and peak-threat.",
+    "help_defense": "The other four defenders — zone-matched FG% allowed, plus blocks/steals/deflections and the defensive-gravity composite.",
+    "shot_mechanic": "How the shot was created — the move itself.",
+    "finish": "How the shot was finished: dunk, layup, floater, jumper.",
+    "zone_indicator": "Which of the six court zones the shot is in.",
+    "position_indicator": "The shooter's position bucket.",
+    "possession_origin": "How the possession began — after a rebound, off a turnover, out of a dead ball.",
+    "spatial_basis": "Radial spatial basis. Off by default: measured slightly harmful.",
+}
+
+
+def _humanize(column: str) -> str:
+    """Fallback label for a feature with no hand-written copy."""
+    return column.replace("_", " ").strip().capitalize()
+
+
+@app.get("/stats/features")
+def list_engine_features():
+    """
+    Every feature in the live shot-quality model, grouped, labelled, and
+    ranked by how much the trained model actually leans on it.
+
+    `gain_share` is XGBoost's gain importance normalised to a share of the
+    whole model, so the groups are directly comparable to each other —
+    that is the number that says a feature is doing real work rather than
+    merely being present. `direction` reports a monotone constraint where
+    one is bound: basketball facts the model is not permitted to
+    contradict however the training data happens to wiggle (see
+    src/training/train.py's MONOTONE_CONSTRAINTS).
+    """
+    if recommender is None:
+        raise HTTPException(status_code=503, detail="Model not loaded.")
+
+    from src.features.spec import FEATURE_GROUPS
+    from src.inference.explain import FEATURE_COPY, SQ_FEATURE_COPY
+    from src.training.train import MONOTONE_CONSTRAINTS
+
+    feature_cols = recommender.feature_cols
+    booster = recommender.model.get_booster()
+    booster.feature_names = feature_cols
+    gain = booster.get_score(importance_type="gain")
+    total_gain = sum(gain.values()) or 1.0
+
+    group_of: dict[str, str] = {}
+    for group, columns in FEATURE_GROUPS.items():
+        for column in columns:
+            group_of[column] = group
+
+    grouped: dict[str, list[dict]] = {}
+    for column in feature_cols:
+        group = group_of.get(column)
+        if group is None:
+            for prefix, prefix_group in _PREFIX_GROUPS.items():
+                if column.startswith(prefix):
+                    group = prefix_group
+                    break
+        group = group or "other"
+
+        copy = SQ_FEATURE_COPY.get(column) or FEATURE_COPY.get(column) or {}
+        grouped.setdefault(group, []).append({
+            "name": column,
+            "label": copy.get("label") or _humanize(column),
+            "high": copy.get("high"),
+            "low": copy.get("low"),
+            "gain_share": gain.get(column, 0.0) / total_gain,
+            "direction": (
+                "raises make probability" if MONOTONE_CONSTRAINTS.get(column) == 1
+                else "lowers make probability" if MONOTONE_CONSTRAINTS.get(column) == -1
+                else None
+            ),
+        })
+
+    groups = []
+    for group, features in grouped.items():
+        features.sort(key=lambda f: -f["gain_share"])
+        groups.append({
+            "group": group,
+            "blurb": _GROUP_BLURBS.get(group),
+            "n_features": len(features),
+            "gain_share": sum(f["gain_share"] for f in features),
+            "features": features,
+        })
+    groups.sort(key=lambda g: -g["gain_share"])
+
+    return {
+        "model_name": recommender.metadata.get("model_name", "shot-quality"),
+        "n_features": len(feature_cols),
+        "metrics": recommender.metadata.get("test_metrics", {}),
+        "groups": groups,
+    }
+
+
+# ── Stat Engine: player/team stat browser ──────────────────────────────────
+# Distinct from /stats/features above: that endpoint answers "what does the
+# MODEL use and how much" (model transparency). This answers "what does
+# this PLAYER or TEAM actually do", independent of any model — a SofaScore-
+# style browse-everything page. See src/inference/stat_engine.py.
+
+def _records(df) -> list[dict]:
+    """DataFrame -> JSON-safe list of dicts. NaN is pandas' native missing-
+    value marker but is not valid JSON — a bare NaN reaches a browser's
+    JSON.parse as a syntax error, not a null, so every leaderboard response
+    has to scrub it here rather than trust a client to tolerate it."""
+    return df.replace({np.nan: None}).to_dict(orient="records")
+
+
+@app.get("/stats/players")
+def stat_engine_players(season: Optional[str] = None):
+    """Every rostered player, every stat this project tracks, one wide row
+    each — sortable/filterable client-side. See stat_engine.STAT_GROUPS for
+    what each column means and which section it belongs to."""
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.stat_engine import build_player_stat_table, player_column_metadata
+
+    table = build_player_stat_table(db_engine, season)
+    return {
+        "season": table.iloc[0]["season"] if not table.empty else season,
+        "columns": player_column_metadata(table.columns),
+        "players": _records(table),
+    }
+
+
+@app.get("/stats/player/{player_id}")
+def stat_engine_player(player_id: str, season: Optional[str] = None):
+    """One player's full stat profile, organized into basic-to-advanced
+    sections (stat_engine.GROUP_ORDER)."""
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.stat_engine import player_full_profile
+
+    profile = player_full_profile(db_engine, player_id, season)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"No stats for player {player_id}.")
+    return profile
+
+
+@app.get("/stats/teams")
+def stat_engine_teams(season: Optional[str] = None):
+    """Every team's real stat (def_rating) plus roster-derived aggregates —
+    see stat_engine.build_team_stat_table's docstring for why these are
+    labeled roster_avg_* rather than presented as separately-measured team
+    numbers we don't actually have."""
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.stat_engine import build_team_stat_table, team_column_metadata
+
+    table = build_team_stat_table(db_engine, season)
+    return {
+        "season": table.iloc[0]["season"] if not table.empty else season,
+        "columns": team_column_metadata(table.columns),
+        "teams": _records(table),
+    }
+
+
+@app.get("/stats/team/{team_id}")
+def stat_engine_team(team_id: str, season: Optional[str] = None):
+    """One team's real stat plus its full roster, each player carrying
+    their own off_rating/def_rating_ours for a quick scan."""
+    if db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.stat_engine import team_full_profile
+
+    profile = team_full_profile(db_engine, team_id, season)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"No stats for team {team_id}.")
+    return profile
+
+
+# ── Team logos ──────────────────────────────────────────────────────────────
+# Proxied and cached rather than hot-linked from the page. cdn.nba.com serves
+# these happily to a plain HTTP client but rejects at least some browser
+# requests with ERR_HTTP2_PROTOCOL_ERROR, so an <img> pointed straight at it
+# is not dependable. Going through the API also means the logos keep working
+# with no network once cached, and NBA's marks stay out of the repo.
+TEAM_LOGO_CACHE = Path(__file__).resolve().parents[2] / "data" / "cache" / "team_logos"
+TEAM_LOGO_URL = "https://cdn.nba.com/logos/nba/{team_id}/global/L/logo.svg"
+
+
+@app.get("/team/{team_id}/logo")
+def team_logo(team_id: str):
+    """The team's official logo as SVG, cached on first request."""
+    # team_id is interpolated into an outbound URL and a filesystem path, so
+    # it is constrained to exactly the shape a real NBA team id has. Without
+    # this, a crafted id is both a path-traversal and an SSRF vector.
+    if not team_id.isdigit() or len(team_id) != 10:
+        raise HTTPException(status_code=404, detail="Unknown team id.")
+
+    TEAM_LOGO_CACHE.mkdir(parents=True, exist_ok=True)
+    cached = TEAM_LOGO_CACHE / f"{team_id}.svg"
+
+    if not cached.exists():
+        try:
+            response = requests.get(TEAM_LOGO_URL.format(team_id=team_id), timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail=f"Could not fetch logo: {exc}")
+        if "svg" not in response.headers.get("content-type", ""):
+            raise HTTPException(status_code=502, detail="Logo endpoint did not return SVG.")
+        cached.write_bytes(response.content)
+
+    return FileResponse(
+        cached,
+        media_type="image/svg+xml",
+        # A team logo does not change; let the browser keep it for a day.
+        headers={"Cache-Control": "public, max-age=86400"},
+    )

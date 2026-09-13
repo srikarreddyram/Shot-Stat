@@ -20,7 +20,7 @@ from src.features.shrinkage import BetaPrior
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
-MODEL_NAME = "shot-quality-v13"
+MODEL_NAME = "shot-quality-v19"
 
 pytestmark = pytest.mark.skipif(
     not (MODELS_DIR / f"metadata_{MODEL_NAME}.json").exists(),
@@ -159,3 +159,92 @@ def test_matchup_uses_zone_level_defender_fg_pct(client):
 def test_matchup_unknown_defender_returns_404(client):
     resp = client.get("/matchup/P_TALL/NOT_A_REAL_ID", params={"season": "2023-24"})
     assert resp.status_code == 404
+
+
+def test_explain_matchup_returns_narrative_and_factor_lists(client):
+    """
+    /explain/matchup is the endpoint the frontend uses for the full
+    matchup narrative (offense vs defense make-probability, expected
+    points, attainability woven in). The seeded DB has no shot_on_court
+    data, so the on-court lineup context resolves to nothing — this also
+    checks that absence degrades to missing features rather than an error.
+    """
+    resp = client.get("/explain/matchup/P_TALL", params={
+        "zone": "Restricted Area", "loc_x": 0.0, "loc_y": 40.0,
+        "defender_id": "P_DEF", "season": "2023-24",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["player_id"] == "P_TALL"
+    assert body["defender_id"] == "P_DEF"
+    assert isinstance(body["narrative"], str) and body["narrative"]
+    assert "offense_factors" in body["shot_quality"]
+    assert "defense_factors" in body["shot_quality"]
+
+
+# ── Team logos ──────────────────────────────────────────────────────────────
+# team_id reaches both an outbound URL and a filesystem path, so the shape
+# check on it is a security control, not tidiness: without it a crafted id is
+# a path-traversal (writing/reading outside the cache) and an SSRF (pointing
+# the fetch at an arbitrary host) at the same time.
+
+@pytest.mark.parametrize("bad_id", [
+    "../../../etc/passwd",
+    "..%2F..%2Fsecret",
+    "1610612737/../../evil",
+    "abcdefghij",        # right length, not digits
+    "161061273",         # digits, wrong length
+    "16106127370",       # digits, too long
+    "",
+    "1610612737 ",
+])
+def test_team_logo_rejects_anything_that_is_not_a_team_id(client, bad_id, monkeypatch):
+    """A malformed id must be refused BEFORE any fetch happens."""
+    def explode(*args, **kwargs):
+        raise AssertionError("a request was made for a rejected team id")
+    monkeypatch.setattr(api_mod.requests, "get", explode)
+
+    response = client.get(f"/team/{bad_id}/logo")
+    assert response.status_code == 404
+
+
+def test_team_logo_fetches_once_then_serves_from_cache(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(api_mod, "TEAM_LOGO_CACHE", tmp_path / "logos")
+    calls = []
+
+    class FakeResponse:
+        content = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        headers = {"content-type": "image/svg+xml"}
+        def raise_for_status(self): pass
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        return FakeResponse()
+    monkeypatch.setattr(api_mod.requests, "get", fake_get)
+
+    first = client.get("/team/1610612737/logo")
+    assert first.status_code == 200
+    assert first.headers["content-type"] == "image/svg+xml"
+    assert len(calls) == 1
+    assert "1610612737" in calls[0]
+
+    second = client.get("/team/1610612737/logo")
+    assert second.status_code == 200
+    assert len(calls) == 1  # served from disk, not re-fetched
+
+
+def test_team_logo_reports_upstream_failure_rather_than_caching_garbage(client, tmp_path, monkeypatch):
+    """An HTML error page from the CDN must not be written to the cache and
+    then served forever as if it were a logo."""
+    monkeypatch.setattr(api_mod, "TEAM_LOGO_CACHE", tmp_path / "logos")
+
+    class HtmlResponse:
+        content = b"<html>404 not found</html>"
+        headers = {"content-type": "text/html"}
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(api_mod.requests, "get", lambda url, **kw: HtmlResponse())
+    response = client.get("/team/1610612737/logo")
+    assert response.status_code == 502
+    assert not (tmp_path / "logos" / "1610612737.svg").exists()

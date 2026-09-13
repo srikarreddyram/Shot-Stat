@@ -48,6 +48,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# Ratings blend the target season with up to two prior ones, weighted toward
+# the present — a single season is noisy (Alex Caruso's real defensive impact
+# doesn't actually swing from "elite" to "77" year over year the way one
+# season's shrunk FG%-allowed-vs-normal can), and blending in recent history
+# steadies that without pretending a player's game three years ago still
+# describes him today. Index 0 is the target season itself.
+RATING_SEASON_WEIGHTS = [1.0, 0.6, 0.35]
+
 # How many shot attempts of evidence it takes to move a player off the league
 # mean scoring rate. Deliberately substantial: points-per-attempt is noisy, and
 # the failure mode being corrected is exactly small samples reading as elite.
@@ -87,25 +95,72 @@ def _to_rating(percentile: pd.Series) -> pd.Series:
     return (RATING_FLOOR + percentile * (RATING_CEIL - RATING_FLOOR)).round()
 
 
+def to_rating_band(series: pd.Series) -> pd.Series:
+    """Percentile-rank a raw series onto our own RATING_FLOOR..RATING_CEIL
+    band — shared by the 2K comparison (src/inference/compare_ratings_2k.py)
+    and the 2K fallback below, so a 2K-derived number sits on the same
+    footing as a measured one wherever either is displayed."""
+    return _to_rating(_percentile(series))
+
+
+def _season_window(season: str, n: int) -> list[str]:
+    """`season` plus the `n - 1` seasons before it, most recent first."""
+    from src.features.creation import _previous_season
+
+    out = [season]
+    for _ in range(n - 1):
+        out.append(_previous_season(out[-1]))
+    return out
+
+
 def compute_ratings(engine, season: str) -> pd.DataFrame:
     """
-    Offensive and defensive ratings for every sufficiently active player in a
-    season, plus the components they were built from.
+    Offensive and defensive ratings for every sufficiently active player,
+    blended across `season` and the two before it (RATING_SEASON_WEIGHTS),
+    weighted toward the present.
+
+    A single season is a genuinely noisy basis for these numbers — the
+    defensive component in particular is a shrunk FG%-allowed-vs-normal on
+    a median of ~250 defended attempts, which is why the naive single-season
+    version could put a known-elite, multi-year defender at 77 in a down
+    year. Blending in recent seasons is a real stabilizer for that, not a
+    cosmetic change: it uses more of the evidence actually available about
+    who a player is, weighted so this season still dominates when it has
+    enough of its own data.
     """
+    from sqlalchemy import text
+
+    seasons = _season_window(season, len(RATING_SEASON_WEIGHTS))
+    weight_by_season = dict(zip(seasons, RATING_SEASON_WEIGHTS))
+    params = {f"s{i}": s for i, s in enumerate(seasons)}
+    season_in = ", ".join(f":s{i}" for i in range(len(seasons)))
+
     # ── Scoring: points per shot attempt, shrunk by volume ────────────────
-    scoring = pd.read_sql(f"""
-        SELECT s.player_id,
-               COUNT(*) AS fga,
+    # Weighted SUMS, not an average of per-season rates — a shrinkage formula
+    # needs the underlying volume, and a recency-weighted sum of makes/
+    # attempts across seasons is exactly the "as if this were one season,
+    # but this year's shots count for more" quantity that formula wants.
+    scoring_raw = pd.read_sql(text(f"""
+        SELECT s.player_id, s.season, COUNT(*) AS fga,
                SUM(s.shot_made * CASE WHEN s.shot_type = '3PT Field Goal'
                                       THEN 3 ELSE 2 END) AS points
         FROM shots s
-        WHERE s.season = '{season}'
+        WHERE s.season IN ({season_in})
           AND s.zone IS NOT NULL AND s.zone != 'Backcourt'
-        GROUP BY s.player_id
-    """, engine)
+        GROUP BY s.player_id, s.season
+    """), engine, params=params)
 
-    if scoring.empty:
+    if scoring_raw.empty:
         return pd.DataFrame()
+
+    scoring_raw["w"] = scoring_raw["season"].map(weight_by_season)
+    scoring = scoring_raw.groupby("player_id", as_index=False).apply(
+        lambda g: pd.Series({
+            "fga": (g["fga"] * g["w"]).sum(),
+            "points": (g["points"] * g["w"]).sum(),
+        }),
+        include_groups=False,
+    )
 
     league_ppa = scoring["points"].sum() / scoring["fga"].sum()
     scoring["ppa"] = (
@@ -114,13 +169,44 @@ def compute_ratings(engine, season: str) -> pd.DataFrame:
     )
 
     # ── Tracking: playmaking, usage, creation ────────────────────────────
-    tracking = pd.read_sql(f"""
-        SELECT player_id, gp, min_per_game,
+    # These columns are already per-game AVERAGES (see tracking_ingestor.py),
+    # so blending them is a recency-and-games-played-weighted AVERAGE, not a
+    # sum — otherwise a partial, injury-shortened recent season would
+    # over- or under-count relative to a full one at the same per-game rate.
+    tracking_raw = pd.read_sql(text(f"""
+        SELECT player_id, season, gp, min_per_game,
                ast, potential_ast, ast_points_created, ast_to_pass_pct_adj,
                touches, time_of_poss, avg_drib_per_touch, drives
         FROM player_tracking_stats
-        WHERE season = '{season}'
-    """, engine)
+        WHERE season IN ({season_in})
+    """), engine, params=params)
+
+    tracking_cols = ["gp", "min_per_game", "ast", "potential_ast",
+                      "ast_points_created", "ast_to_pass_pct_adj", "touches",
+                      "time_of_poss", "avg_drib_per_touch", "drives"]
+
+    if tracking_raw.empty:
+        tracking = pd.DataFrame(columns=["player_id"] + tracking_cols)
+    else:
+        tracking_raw["w"] = (
+            tracking_raw["season"].map(weight_by_season)
+            * tracking_raw["gp"].clip(lower=0).fillna(0.0)
+        )
+
+        def _blend_tracking(g: pd.DataFrame) -> pd.Series:
+            out = {}
+            for col in tracking_cols:
+                vals, wts = g[col], g["w"]
+                mask = vals.notna() & (wts > 0)
+                out[col] = (
+                    (vals[mask] * wts[mask]).sum() / wts[mask].sum()
+                    if mask.any() else np.nan
+                )
+            return pd.Series(out)
+
+        tracking = tracking_raw.groupby("player_id", as_index=False).apply(
+            _blend_tracking, include_groups=False
+        )
 
     df = scoring.merge(tracking, on="player_id", how="left")
 
@@ -135,22 +221,22 @@ def compute_ratings(engine, season: str) -> pd.DataFrame:
     df["fga_per36"] = df["fga"] / games / minutes * 36.0
 
     # ── Defence: FG% allowed vs league normal, volume-weighted ───────────
-    defence = pd.read_sql(f"""
-        SELECT player_id,
+    # Blended the same way as scoring: recency-weighted SUMS of the raw
+    # defended-attempts volume, which is what the shrinkage formula below
+    # needs. This is the component most worth blending — a shrunk FG%-
+    # allowed-vs-normal on a median of ~250 defended attempts in ONE season
+    # is genuinely noisy, and it is what put a known multi-year plus
+    # defender at 77 off a single down/thin-sample year.
+    defence_raw = pd.read_sql(text(f"""
+        SELECT player_id, season,
                SUM(d_fga) AS d_fga,
                SUM(pct_plusminus * d_fga) / NULLIF(SUM(d_fga), 0) AS pm
         FROM defender_stats
-        WHERE season = '{season}' AND defense_category != 'Overall'
+        WHERE season IN ({season_in}) AND defense_category != 'Overall'
           AND d_fga IS NOT NULL
-        GROUP BY player_id
-    """, engine)
+        GROUP BY player_id, season
+    """), engine, params=params)
 
-    # Shrink toward zero (league-normal) by how many shots the player actually
-    # defended — the same small-sample problem the offensive side has, and a
-    # worse one here: the median player has only 250 defended attempts, and the
-    # extreme values all come from thin samples (one wing posts -0.194 on 129
-    # attempts, better than any high-volume defender in the league).
-    #
     # A caveat worth stating plainly, because the UI should not imply more than
     # this number supports: FG%-allowed-versus-normal is a weak defensive
     # metric. It credits whoever was nearest the shooter, ignores who was
@@ -158,7 +244,16 @@ def compute_ratings(engine, season: str) -> pd.DataFrame:
     # difficulty of the assignment a player draws. It identifies elite rim
     # protection reasonably well; it does not reliably rank perimeter
     # defenders against each other.
-    if not defence.empty:
+    if not defence_raw.empty:
+        defence_raw["w"] = defence_raw["season"].map(weight_by_season)
+        defence_raw["w_d_fga"] = defence_raw["w"] * defence_raw["d_fga"]
+        defence = defence_raw.groupby("player_id", as_index=False).apply(
+            lambda g: pd.Series({
+                "d_fga": (g["w"] * g["d_fga"]).sum(),
+                "pm": (g["pm"] * g["w_d_fga"]).sum() / g["w_d_fga"].sum(),
+            }),
+            include_groups=False,
+        )
         prior_fga = 400.0
         defence["pm_shrunk"] = (
             defence["pm"] * defence["d_fga"] / (defence["d_fga"] + prior_fga)
@@ -265,12 +360,71 @@ def ratings_for_season(engine, season: str) -> pd.DataFrame:
     return _CACHE[season]
 
 
-def rating_lookup(engine, season: str) -> dict[str, dict]:
-    """`{player_id: {off_rating, def_rating, ...}}` for the API layer."""
-    table = ratings_for_season(engine, season)
+_TWO_K_FALLBACK_CACHE: dict[str, dict] | None = None
+
+
+def two_k_fallback_ratings(engine) -> dict[str, dict]:
+    """
+    `{player_id: {off_rating, def_rating}}` derived from NBA 2K, for players
+    `compute_ratings` has nothing to say about at all — a true rookie with
+    no shot history, or someone whose real recent sample is too thin to
+    clear MIN_SHOTS_FOR_RATING/MIN_MINUTES_FOR_RATING (an injury-limited
+    veteran, a midseason addition).
+
+    This is a deliberately NARROW fallback, not a blanket second opinion:
+    src/inference/compare_ratings_2k.py's comparison (431 players, off ρ=
+    +0.57, def ρ=+0.42 against our own) showed real agreement but also showed
+    our measured numbers reading some obscure defensive role players BETTER
+    than 2K does — replacing measured ratings with 2K's everywhere would
+    trade a real signal for a reputation-weighted one in exactly the cases
+    we already do this well. So: only ever fills a gap, never overrides a
+    measured rating. See rating_lookup below for where that boundary is
+    actually enforced.
+
+    2K's overall/offense_avg/defense_avg are raw attribute scores, not
+    percentile ranks — re-banded with `to_rating_band` across the whole 2K-
+    rated population so a fallback number sits on the same 40-99 scale a
+    measured one would, not just the same numeric range by coincidence.
+    """
+    global _TWO_K_FALLBACK_CACHE
+    if _TWO_K_FALLBACK_CACHE is not None:
+        return _TWO_K_FALLBACK_CACHE
+
+    table = pd.read_sql(
+        "SELECT player_id, overall, offense_avg, defense_avg FROM player_two_k_ratings",
+        engine,
+    )
     if table.empty:
-        return {}
-    return {
+        _TWO_K_FALLBACK_CACHE = {}
+        return _TWO_K_FALLBACK_CACHE
+
+    table["off_rating"] = to_rating_band(table["offense_avg"])
+    table["def_rating"] = to_rating_band(table["defense_avg"])
+
+    _TWO_K_FALLBACK_CACHE = {
+        row["player_id"]: {
+            "off_rating": None if pd.isna(row["off_rating"]) else int(row["off_rating"]),
+            "def_rating": None if pd.isna(row["def_rating"]) else int(row["def_rating"]),
+            "scoring": None, "playmaking": None, "volume": None,
+            "creation": None, "defence": None,
+            "rating_source": "2k_fallback",
+        }
+        for _, row in table.iterrows()
+    }
+    return _TWO_K_FALLBACK_CACHE
+
+
+def rating_lookup(engine, season: str) -> dict[str, dict]:
+    """
+    `{player_id: {off_rating, def_rating, ...}}` for the API layer.
+
+    A measured rating always wins where one exists; NBA 2K only fills in
+    players `compute_ratings` has nothing for at all (see
+    two_k_fallback_ratings above for why this is a gap-filler, not a
+    replacement).
+    """
+    table = ratings_for_season(engine, season)
+    measured = {} if table.empty else {
         row["player_id"]: {
             "off_rating": None if pd.isna(row["off_rating"]) else int(row["off_rating"]),
             "def_rating": None if pd.isna(row["def_rating"]) else int(row["def_rating"]),
@@ -279,9 +433,16 @@ def rating_lookup(engine, season: str) -> dict[str, dict]:
             "volume": None if pd.isna(row["component_volume"]) else int(row["component_volume"]),
             "creation": None if pd.isna(row["component_creation"]) else int(row["component_creation"]),
             "defence": None if pd.isna(row["component_defence"]) else int(row["component_defence"]),
+            "rating_source": "measured",
         }
         for _, row in table.iterrows()
     }
+
+    fallback = two_k_fallback_ratings(engine)
+    # Gaps only: a player already in `measured` keeps their measured entry
+    # untouched, however thin its sample — that's still real data outranking
+    # 2K's reputation-weighted one, per the comparison's own findings.
+    return {**{pid: v for pid, v in fallback.items() if pid not in measured}, **measured}
 
 
 if __name__ == "__main__":

@@ -86,6 +86,7 @@ def ingest_current_rosters(seasons: list[str]):
                     "season": season,
                     "name": row["PLAYER"],
                     "position": _normalize_position(str(row.get("POSITION", ""))),
+                    "team_id": str(team_id),
                 })
 
             with Session() as session:
@@ -96,6 +97,7 @@ def ingest_current_rosters(seasons: list[str]):
                         set_={
                             "name": stmt.excluded.name,
                             "position": stmt.excluded.position,
+                            "team_id": stmt.excluded.team_id,
                         },
                     )
                     session.execute(stmt)

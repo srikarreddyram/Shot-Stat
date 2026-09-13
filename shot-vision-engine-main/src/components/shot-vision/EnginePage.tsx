@@ -1,8 +1,25 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ZONES, heightToFeet, type Player, type ZoneResult, type HeatmapPoint, type MatchupResponse, type HealthStatus, type AttainabilityExplanation } from "@/lib/shot-vision-data";
-import { searchPlayersAPI, getRecommendationHeatmapAPI, getMatchupAPI, checkHealthAPI, getAttainabilityExplanationAPI } from "@/lib/api";
+import { ZONES, heightToFeet, type Player, type ZoneResult, type HeatmapPoint, type MatchupResponse, type HealthStatus, type AttainabilityExplanation, type MatchupExplanation, type ShotQualityFactor, type Team } from "@/lib/shot-vision-data";
+import { searchPlayersAPI, getRecommendationHeatmapAPI, getMatchupAPI, checkHealthAPI, getAttainabilityExplanationAPI, getMatchupExplanationAPI, getTeamsAPI, getTeamRosterAPI } from "@/lib/api";
 
 interface Props { onBack: () => void; }
+
+// Strips diacritics ("Dëmin" -> "Demin") so a client-side name filter
+// matches the way it's typed. /players/search does this server-side via
+// SQL's UNACCENT(); the team-vs-team roster picker filters a list it
+// already has in memory, so it needs its own fold to behave the same way —
+// without this, typing "demin" (no diaeresis) silently finds nothing for
+// Egor Dëmin while the plain search box finds him fine.
+//
+// The pattern is built from character codes rather than written as a
+// regex literal — U+0300-U+036F (combining diacritical marks) — because
+// pasting the literal escape sequence into this file was, in this editing
+// session, silently rewritten by the surrounding tooling into something
+// that no longer matched. This form is inert text until run.
+const DIACRITIC_MARKS = new RegExp(String.fromCharCode(0x5b, 0x5c, 0x75, 0x30, 0x33, 0x30, 0x30, 0x2d, 0x5c, 0x75, 0x30, 0x33, 0x36, 0x66, 0x5d), "g");
+function foldAccents(s: string): string {
+  return s.normalize("NFD").replace(DIACRITIC_MARKS, "");
+}
 
 const HEALTH_POLL_MS = 30000;
 
@@ -36,6 +53,38 @@ export default function EnginePage({ onBack }: Props) {
   // that season's rookies/trades from search and recommendations.
   const [season, setSeason] = useState<string | null>(null);
 
+  // Team-vs-team mode: pick a real offense and defense roster first, then
+  // any attacker/defender pair from within them — "Luka vs Curry", then
+  // just swap the defender to "Butler vs Luka" without re-searching the
+  // league. SEARCH mode (the original flow) stays the default.
+  const [matchupSource, setMatchupSource] = useState<"search" | "team">("search");
+  const [allTeams, setAllTeams] = useState<Team[]>([]);
+  const [offenseTeam, setOffenseTeam] = useState<Team | null>(null);
+  const [defenseTeam, setDefenseTeam] = useState<Team | null>(null);
+  const [offenseRoster, setOffenseRoster] = useState<Player[]>([]);
+  const [defenseRoster, setDefenseRoster] = useState<Player[]>([]);
+
+  useEffect(() => {
+    getTeamsAPI().then(setAllTeams).catch(console.error);
+  }, []);
+
+  // A new team (or a season that just resolved) invalidates whichever
+  // roster it feeds — the roster fetch below reloads it. Clearing the
+  // already-picked player here (rather than letting a stale one linger)
+  // means the picker never shows someone alongside the wrong team's roster.
+  useEffect(() => {
+    if (!offenseTeam || !season) { setOffenseRoster([]); return; }
+    setAttacker(null);
+    getTeamRosterAPI(offenseTeam.teamId, season).then(setOffenseRoster).catch(console.error);
+  }, [offenseTeam, season]);
+
+  useEffect(() => {
+    if (!defenseTeam || !season) { setDefenseRoster([]); return; }
+    setPrimaryDef(null);
+    setSecondaryDef(null);
+    getTeamRosterAPI(defenseTeam.teamId, season).then(setDefenseRoster).catch(console.error);
+  }, [defenseTeam, season]);
+
   const canRun = attacker && primaryDef && !!season && (!doubleTeam || secondaryDef);
 
   useEffect(() => {
@@ -54,17 +103,34 @@ export default function EnginePage({ onBack }: Props) {
     return () => { cancelled = true; clearInterval(iv); };
   }, []);
 
+  // Every run gets a generation number. There is no real HTTP cancellation
+  // here (getRecommendationHeatmapAPI doesn't take an AbortSignal), so a
+  // "killed" request still finishes on the wire — this just makes sure its
+  // answer is thrown away instead of clobbering whatever the user has
+  // changed the inputs to in the meantime. `killRun` is what the input
+  // guard below calls to invalidate the in-flight run.
+  const runIdRef = useRef(0);
+  const loadingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const killRun = () => {
+    if (loadingIntervalRef.current != null) clearInterval(loadingIntervalRef.current);
+    runIdRef.current += 1;
+    setLoading(false);
+  };
+
   const run = () => {
     if (!canRun || !attacker || !primaryDef || !season) return;
+    const myRunId = ++runIdRef.current;
     setLoading(true);
     setResults(null);
     setError(null);
     setLoadingIdx(0);
-    const iv = setInterval(() => setLoadingIdx((i) => (i + 1) % LOADING_LINES.length), 320);
+    loadingIntervalRef.current = setInterval(() => setLoadingIdx((i) => (i + 1) % LOADING_LINES.length), 320);
 
     getRecommendationHeatmapAPI(attacker.id, primaryDef.id, season, quarter, minutes * 60 + seconds, scoreDiff, home ? 1 : 0, doubleTeam ? secondaryDef?.id : null)
       .then((res) => {
-        clearInterval(iv);
+        if (myRunId !== runIdRef.current) return; // superseded or killed — discard
+        clearInterval(loadingIntervalRef.current!);
         const backendZones = res.zone_summary || [];
         const mappedResults: ZoneResult[] = ZONES.map(z => {
           const bZone = backendZones.find((bz) => bz.zone === z.label);
@@ -85,7 +151,8 @@ export default function EnginePage({ onBack }: Props) {
         setLoading(false);
       })
       .catch((err) => {
-        clearInterval(iv);
+        if (myRunId !== runIdRef.current) return; // superseded or killed — discard
+        clearInterval(loadingIntervalRef.current!);
         console.error(err);
         setError(err instanceof Error ? err.message : "Something went wrong reaching the shot engine.");
         setLoading(false);
@@ -104,6 +171,17 @@ export default function EnginePage({ onBack }: Props) {
             a stray element rather than as chrome. */}
         <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
           <HealthIndicator status={health} />
+          {/* Plain <a>, not a router Link: /stats and /archetypes are
+              separate top-level routes, and this component is rendered
+              inside the "/" route's own splash/engine toggle rather than
+              being a route itself. A full navigation is the honest thing
+              here and costs nothing at this size. */}
+          <a href="/stats" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
+            STAT ENGINE
+          </a>
+          <a href="/archetypes" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
+            ARCHETYPES
+          </a>
           <button onClick={onBack} style={{ background: "transparent", border: "none", color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", cursor: "pointer", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
             ← BACK
           </button>
@@ -117,9 +195,77 @@ export default function EnginePage({ onBack }: Props) {
             context around the player-search dropdowns nested in here and the
             defender dropdown stops receiving clicks — a broken control is a
             worse trade than uneven whitespace. */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+        {/* Capture-phase, not bubble: this needs to fire and kill the
+            in-flight run BEFORE the control being interacted with applies
+            its own change, not after — a bubble-phase handler would see the
+            new value already committed. Covers clicks (pills, dropdown
+            options, TeamSelect/PlayerSelect rows — several of those use
+            onMouseDown rather than onClick, hence both) and onChange
+            (the quarter time inputs, the score-diff slider). Killing on a
+            click that lands on inert space inside this column is harmless
+            — it only stops a request that was about to be thrown away by
+            the input change anyway. */}
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: 28 }}
+          onClickCapture={() => { if (loading) killRun(); }}
+          onMouseDownCapture={() => { if (loading) killRun(); }}
+          onChangeCapture={() => { if (loading) killRun(); }}
+        >
+          <InputSection label="MATCHUP SOURCE">
+            <div style={{ display: "flex", gap: 8 }}>
+              <Pill active={matchupSource === "search"} onClick={() => setMatchupSource("search")}>SEARCH</Pill>
+              <Pill active={matchupSource === "team"} onClick={() => setMatchupSource("team")}>TEAM VS TEAM</Pill>
+            </div>
+          </InputSection>
+
+          {matchupSource === "team" && (
+            <>
+              <InputSection label="OFFENSE TEAM">
+                <TeamSelect
+                  teams={allTeams}
+                  selected={offenseTeam}
+                  onSelect={setOffenseTeam}
+                  excludeTeamId={defenseTeam?.teamId}
+                  accent="#C9A84C"
+                />
+              </InputSection>
+              <InputSection label="DEFENSE TEAM">
+                <TeamSelect
+                  teams={allTeams}
+                  selected={defenseTeam}
+                  onSelect={setDefenseTeam}
+                  excludeTeamId={offenseTeam?.teamId}
+                  accent="#DC2626"
+                />
+              </InputSection>
+
+              {(offenseTeam || defenseTeam) && (
+                <button
+                  onClick={() => { setOffenseTeam(defenseTeam); setDefenseTeam(offenseTeam); }}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    color: "#9aa7bd",
+                    borderRadius: 3,
+                    padding: "10px 16px",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 11,
+                    letterSpacing: "0.15em",
+                    cursor: "pointer",
+                    alignSelf: "flex-start",
+                    transition: "color 200ms, border-color 200ms",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "#C9A84C"; e.currentTarget.style.borderColor = "rgba(201,168,76,0.4)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "#9aa7bd"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.14)"; }}
+                >
+                  ⇅ SWAP OFFENSE / DEFENSE
+                </button>
+              )}
+            </>
+          )}
+
           <InputSection label="ATTACKER">
-            <PlayerSelect selected={attacker} onSelect={setAttacker} season={season} accent="#C9A84C" statLabels={["FG%", "3P%", "RIM%"]} statValues={(p) => [p.fg, p.tp, p.rim]} ratingValue={(p) => p.offRtg} excludeIds={[primaryDef?.id, secondaryDef?.id]} />
+            <PlayerSelect selected={attacker} onSelect={setAttacker} season={season} accent="#C9A84C" statLabels={["FG%", "3P%", "RIM%"]} statValues={(p) => [p.fg, p.tp, p.rim]} ratingValue={(p) => p.offRtg} excludeIds={[primaryDef?.id, secondaryDef?.id]} excludeTeamId={primaryDef?.teamId} roster={matchupSource === "team" ? offenseRoster : undefined} />
           </InputSection>
 
           <InputSection label="DEFENSE TYPE">
@@ -130,12 +276,12 @@ export default function EnginePage({ onBack }: Props) {
           </InputSection>
 
           <InputSection label="PRIMARY DEFENDER">
-            <PlayerSelect selected={primaryDef} onSelect={setPrimaryDef} season={season} accent="#DC2626" statLabels={["OPP FG%", "DFG DIFF%", "WINGSPAN"]} statValues={(p) => [`${p.defRtg}%`, p.contest, p.wingspanIn != null ? `${p.wingspanIn}"` : "—"]} ratingValue={(p) => p.defRtgOvr} excludeIds={[attacker?.id, secondaryDef?.id]} />
+            <PlayerSelect selected={primaryDef} onSelect={setPrimaryDef} season={season} accent="#DC2626" statLabels={["OPP FG%", "DFG DIFF%", "WINGSPAN"]} statValues={(p) => [`${p.defRtg}%`, p.contest, p.wingspanIn != null ? `${p.wingspanIn}"` : "—"]} ratingValue={(p) => p.defRtgOvr} excludeIds={[attacker?.id, secondaryDef?.id]} excludeTeamId={attacker?.teamId} roster={matchupSource === "team" ? defenseRoster : undefined} />
           </InputSection>
 
           <div style={{ maxHeight: doubleTeam ? 400 : 0, opacity: doubleTeam ? 1 : 0, overflow: doubleTeam ? "visible" : "hidden", transition: "all 400ms ease" }}>
             <InputSection label="SECONDARY DEFENDER">
-              <PlayerSelect selected={secondaryDef} onSelect={setSecondaryDef} season={season} accent="rgba(220,38,38,0.5)" statLabels={["OPP FG%", "DFG DIFF%", "WINGSPAN"]} statValues={(p) => [`${p.defRtg}%`, p.contest, p.wingspanIn != null ? `${p.wingspanIn}"` : "—"]} ratingValue={(p) => p.defRtgOvr} excludeIds={[attacker?.id, primaryDef?.id]} />
+              <PlayerSelect selected={secondaryDef} onSelect={setSecondaryDef} season={season} accent="rgba(220,38,38,0.5)" statLabels={["OPP FG%", "DFG DIFF%", "WINGSPAN"]} statValues={(p) => [`${p.defRtg}%`, p.contest, p.wingspanIn != null ? `${p.wingspanIn}"` : "—"]} ratingValue={(p) => p.defRtgOvr} excludeIds={[attacker?.id, primaryDef?.id]} excludeTeamId={attacker?.teamId} roster={matchupSource === "team" ? defenseRoster : undefined} />
             </InputSection>
           </div>
 
@@ -278,6 +424,34 @@ function ProjectedBadge({ compact = false }: { compact?: boolean }) {
   );
 }
 
+// A rating sourced from NBA 2K rather than our own measured data — a gap-
+// filler for players our own model has nothing at all for (a true rookie,
+// or too few real minutes to clear the eligibility bar), never a silent
+// override of a real measured rating. See
+// src/inference/player_ratings.two_k_fallback_ratings for the boundary.
+function TwoKBadge({ compact = false }: { compact?: boolean }) {
+  return (
+    <span
+      title="No measured rating yet for this player — this number comes from NBA 2K, not our own model."
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: compact ? "1px 6px" : "2px 8px",
+        borderRadius: 2,
+        border: "1px solid rgba(148,110,230,0.35)",
+        background: "rgba(148,110,230,0.08)",
+        color: "#946EE6",
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: compact ? 8 : 9,
+        letterSpacing: "0.15em",
+        whiteSpace: "nowrap",
+      }}
+    >
+      2K
+    </span>
+  );
+}
+
 function ErrorOutput({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 580, textAlign: "center", gap: 16, padding: "0 24px" }}>
@@ -369,7 +543,80 @@ function Pill({ active, children, onClick, activeColor = "#C9A84C" }: { active: 
   );
 }
 
-function PlayerSelect({ selected, onSelect, season, accent, statLabels, statValues, ratingValue, excludeIds }: {
+// Team-vs-team mode's team picker. Deliberately not a text search like
+// PlayerSelect — there are only 30 franchises, a fixed list small enough to
+// just browse — but built the same way (a bordered input that opens a
+// dropdown, a filled-in card once picked) so the two pickers read as one
+// consistent control language rather than two different widgets bolted
+// together.
+function TeamSelect({ teams, selected, onSelect, excludeTeamId, accent }: {
+  teams: Team[];
+  selected: Team | null;
+  onSelect: (t: Team | null) => void;
+  // The other side's team — a team can't play itself, so it's dropped from
+  // this list entirely rather than shown disabled.
+  excludeTeamId?: string | null;
+  accent: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const visible = teams
+    .filter(t => t.teamId !== excludeTeamId)
+    .filter(t => query.length === 0
+      || foldAccents(t.name.toLowerCase()).includes(foldAccents(query.toLowerCase()))
+      || foldAccents(t.abbreviation.toLowerCase()).includes(foldAccents(query.toLowerCase())));
+
+  if (selected) {
+    return (
+      <div style={{ background: "#16161f", borderLeft: `3px solid ${accent}`, padding: "12px 18px", borderRadius: 3, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 15, fontWeight: 600, color: "#F0F0F0" }}>{selected.name}</div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b", letterSpacing: "0.1em" }}>{selected.abbreviation}</div>
+        </div>
+        <button onClick={() => onSelect(null)} style={{ background: "transparent", border: "none", color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, cursor: "pointer" }}>CHANGE</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        placeholder="Select team..."
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        style={{
+          width: "100%",
+          background: "#111118",
+          border: "1px solid rgba(255,255,255,0.07)",
+          borderRadius: 3,
+          padding: "14px 18px",
+          color: "#F0F0F0",
+          fontFamily: "'Inter', sans-serif",
+          fontSize: 16,
+          outline: "none",
+        }}
+      />
+      {open && visible.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "#16161f", border: "1px solid rgba(201,168,76,0.15)", borderRadius: 3, maxHeight: 280, overflowY: "auto", zIndex: 20 }}>
+          {visible.map((t) => (
+            <div key={t.teamId} onMouseDown={() => { onSelect(t); setQuery(""); setOpen(false); }} style={{ padding: "10px 16px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.03)", transition: "background 150ms" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(201,168,76,0.06)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 14, color: "#F0F0F0" }}>{t.name}</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b" }}>{t.abbreviation}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlayerSelect({ selected, onSelect, season, accent, statLabels, statValues, ratingValue, excludeIds, excludeTeamId, roster }: {
   selected: Player | null;
   onSelect: (p: Player | null) => void;
   season: string | null;
@@ -381,27 +628,48 @@ function PlayerSelect({ selected, onSelect, season, accent, statLabels, statValu
   // primary defender when picking a secondary) — filtered out so a shot
   // can't be scored against a "matchup" that's really one player twice.
   excludeIds?: (string | undefined)[];
+  // The OTHER side's team — a teammate can't guard (or be guarded by)
+  // another teammate, so a player on this team never shows up as a
+  // candidate here. Undefined/null (unrostered, or the other slot is
+  // still empty) applies no filter.
+  excludeTeamId?: string | null;
+  // Team-vs-team mode: a fixed candidate list (one team's roster) instead
+  // of a league-wide search. When set, typing filters this list by name
+  // client-side rather than hitting /players/search — a ~15-player roster
+  // needs no server round-trip to filter.
+  roster?: Player[];
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
-  const [filtered, setFiltered] = useState<Player[]>([]);
+  const [searched, setSearched] = useState<Player[]>([]);
 
   useEffect(() => {
-    if (query.length < 2 || !season) {
-      setFiltered([]);
+    if (roster || query.length < 2 || !season) {
+      setSearched([]);
       return;
     }
     const timer = setTimeout(() => {
-      searchPlayersAPI(query, season).then(res => setFiltered(res)).catch(console.error);
+      searchPlayersAPI(query, season).then(res => setSearched(res)).catch(console.error);
     }, 250);
     return () => clearTimeout(timer);
-  }, [query, season]);
+  }, [query, season, roster]);
+
+  const filtered = roster
+    ? roster.filter(p => query.length === 0 || foldAccents(p.name.toLowerCase()).includes(foldAccents(query.toLowerCase())))
+    : searched;
 
   // Filtered at render time (not inside the fetch) so excluding a player
-  // stays correct even if excludeIds changes without the user retyping —
-  // e.g. picking the attacker after the defender dropdown already has
-  // cached results.
-  const visible = filtered.filter(p => !excludeIds?.includes(p.id)).slice(0, 8);
+  // stays correct even if excludeIds/excludeTeamId changes without the user
+  // retyping — e.g. picking the attacker after the defender dropdown
+  // already has cached results.
+  const withoutExcluded = filtered.filter(p => !excludeIds?.includes(p.id));
+  const visible = withoutExcluded
+    .filter(p => !excludeTeamId || p.teamId !== excludeTeamId)
+    .slice(0, roster ? 20 : 8);
+  // A search can come back non-empty yet show nothing once the team filter
+  // applies — every match is a teammate of the other slot. Silence there
+  // reads as a broken search, not as the rule actually working.
+  const allSameTeam = withoutExcluded.length > 0 && visible.length === 0 && !!excludeTeamId;
 
   if (selected) {
     const vals = statValues(selected);
@@ -416,6 +684,7 @@ function PlayerSelect({ selected, onSelect, season, accent, statLabels, statValu
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: "#F0F0F0", letterSpacing: "0.02em", lineHeight: 1 }}>{selected.name}</div>
               {selected.statsSource === "prior" && <ProjectedBadge />}
+              {selected.ratingSource === "2k_fallback" && <TwoKBadge />}
             </div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#64748b", marginTop: 4 }}>
               {selected.pos} · {heightToFeet(selected.heightIn)} · {selected.weightLbs != null ? `${selected.weightLbs}lb` : "—"}
@@ -439,7 +708,7 @@ function PlayerSelect({ selected, onSelect, season, accent, statLabels, statValu
   return (
     <div style={{ position: "relative" }}>
       <input
-        placeholder="Search player..."
+        placeholder={roster ? "Filter roster..." : "Search player..."}
         value={query}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
@@ -457,6 +726,13 @@ function PlayerSelect({ selected, onSelect, season, accent, statLabels, statValu
         }}
         onFocusCapture={(e) => (e.currentTarget.style.borderColor = "rgba(201,168,76,0.4)")}
       />
+      {open && allSameTeam && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "#16161f", border: "1px solid rgba(220,38,38,0.25)", borderRadius: 3, padding: "10px 16px", zIndex: 20 }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#DC2626" }}>
+            Every match plays for the other side already — teammates can't guard each other.
+          </div>
+        </div>
+      )}
       {open && visible.length > 0 && (
         <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "#16161f", border: "1px solid rgba(201,168,76,0.15)", borderRadius: 3, maxHeight: 280, overflowY: "auto", zIndex: 20 }}>
           {visible.map((p) => (
@@ -470,6 +746,7 @@ function PlayerSelect({ selected, onSelect, season, accent, statLabels, statValu
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 14, color: "#F0F0F0" }}>{p.name}</div>
                     {p.statsSource === "prior" && <ProjectedBadge compact />}
+                    {p.ratingSource === "2k_fallback" && <TwoKBadge compact />}
                   </div>
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b" }}>{p.pos} · {heightToFeet(p.heightIn)}</div>
                 </div>
@@ -513,6 +790,51 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
   const [showProb, setShowProb] = useState(false);
   const best = results[0];
   const worst = results[results.length - 1];
+
+  // Lifted out of CourtCanvas so the ranked zone cards below can open the
+  // exact same shot-detail panel a court click does — both are just two
+  // different ways of picking an index into `heatmapPoints`.
+  const [selected, setSelected] = useState<number | null>(null);
+  useEffect(() => { setSelected(null); }, [heatmapPoints]);
+
+  // The single best-scoring point within a zone — the ranked card's "#1
+  // Restricted Area 1.19" is a zone-level aggregate, not any one shot, so
+  // opening it needs a specific representative location to show.
+  const selectZone = (zoneLabel: string) => {
+    let bestIdx = -1;
+    let bestEp = -Infinity;
+    heatmapPoints.forEach((pt, i) => {
+      if (pt.zone === zoneLabel && pt.expected_points > bestEp) {
+        bestEp = pt.expected_points;
+        bestIdx = i;
+      }
+    });
+    if (bestIdx >= 0) setSelected(bestIdx);
+  };
+
+  // Season-average attacker-vs-defender numbers per zone (exploit_zones) —
+  // fetched once here and shared by both MatchupEdge below and the ranked
+  // zone cards above it, which previously showed a bare EP number with
+  // nothing about WHY that zone ranked where it did. This used to be
+  // MatchupEdge's own private fetch; lifting it up avoids a second request
+  // for numbers the ranked cards need too.
+  const [matchupData, setMatchupData] = useState<MatchupResponse | null>(null);
+  const [matchupLoading, setMatchupLoading] = useState(true);
+  const [matchupError, setMatchupError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMatchupLoading(true);
+    setMatchupError(null);
+    getMatchupAPI(attacker.id, defender.id, season)
+      .then((res) => { if (!cancelled) setMatchupData(res); })
+      .catch((err) => { if (!cancelled) setMatchupError(err instanceof Error ? err.message : "Failed to load matchup data."); })
+      .finally(() => { if (!cancelled) setMatchupLoading(false); });
+    return () => { cancelled = true; };
+  }, [attacker.id, defender.id, season]);
+
+  const exploitZoneFor = (zoneLabel: string) =>
+    matchupData?.exploit_zones.find((z) => z.zone === zoneLabel) ?? null;
 
   const MetricToggle = () => (
     <div style={{ display: "flex", background: "#111118", borderRadius: 20, padding: 4, width: "fit-content", border: "1px solid rgba(255,255,255,0.05)" }}>
@@ -576,7 +898,7 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
           </span>
         </div>
       )}
-      <CourtCanvas bestKey={best.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} attacker={attacker} defender={defender} season={season} />
+      <CourtCanvas bestKey={best.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} attacker={attacker} defender={defender} season={season} selected={selected} setSelected={setSelected} />
 
       <div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -614,7 +936,23 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
           const isTop = i === 0;
           const color = i === 0 ? "#16A34A" : i === 1 ? "#C9A84C" : "#B8860B";
           return (
-            <div key={r.zone.key} style={{ background: "#111118", border: isTop ? "1px solid rgba(201,168,76,0.25)" : "1px solid rgba(255,255,255,0.05)", padding: "12px 16px", borderRadius: 3, boxShadow: isTop ? "0 0 32px rgba(201,168,76,0.08)" : "none" }}>
+            <div
+              key={r.zone.key}
+              role="button"
+              tabIndex={0}
+              onClick={() => selectZone(r.zone.label)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectZone(r.zone.label); } }}
+              aria-label={`Inspect the best ${r.zone.label} shot`}
+              style={{
+                background: "#111118",
+                border: isTop ? "1px solid rgba(201,168,76,0.25)" : "1px solid rgba(255,255,255,0.05)",
+                padding: "12px 16px", borderRadius: 3,
+                boxShadow: isTop ? "0 0 32px rgba(201,168,76,0.08)" : "none",
+                cursor: "pointer", transition: "opacity 160ms ease",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.8"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
+            >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
                   <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, color }}>#{i + 1}</span>
@@ -632,14 +970,39 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
               <div style={{ height: 3, background: "#1a1a2a", borderRadius: 2, marginTop: 8 }}>
                 <div style={{ height: "100%", width: `${Math.min(100, showProb ? r.makeProb * 100 : (r.ep / 1.5) * 100)}%`, background: color, borderRadius: 2, transition: "width 700ms ease" }} />
               </div>
+              {/* The attacker-vs-defender season-average behind WHY this zone
+                  ranked where it did — the same numbers MATCHUP EDGE's
+                  exploit-zones panel shows, not a second, differently-built
+                  comparison. A bare EP number said nothing about whether the
+                  rank came from the attacker being great here or the
+                  defender being exploitable here; this does. */}
+              {(() => {
+                const ez = exploitZoneFor(r.zone.label);
+                if (!ez || ez.attacker_fg_pct == null || ez.defender_fg_pct_allowed == null) return null;
+                const gap = ez.matchup_advantage ?? (ez.attacker_fg_pct - ez.defender_fg_pct_allowed);
+                const favorsAttacker = gap >= 0;
+                return (
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#94A3B8", marginTop: 6 }}>
+                    {Math.round(ez.attacker_fg_pct * 100)}% vs {Math.round(ez.defender_fg_pct_allowed * 100)}% allowed
+                    <span style={{ color: favorsAttacker ? "#16A34A" : "#DC2626", marginLeft: 6 }}>
+                      {favorsAttacker ? "+" : ""}{(gap * 100).toFixed(1)}pp {favorsAttacker ? "attacker" : "defender"}
+                    </span>
+                  </div>
+                );
+              })()}
               {/* Evidence behind the estimate. Rendered only when there is
                   some — an empty caption row is quieter than a placeholder
                   telling the reader what the app does not know. */}
-              {r.attemptsBehind && r.attemptsBehind > 0 ? (
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#475569", letterSpacing: "0.1em", marginTop: 6 }}>
-                  {Math.round(r.attemptsBehind).toLocaleString()} SIMILAR SHOTS BEHIND THIS
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 6 }}>
+                {r.attemptsBehind && r.attemptsBehind > 0 ? (
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#475569", letterSpacing: "0.1em" }}>
+                    {Math.round(r.attemptsBehind).toLocaleString()} SIMILAR SHOTS BEHIND THIS
+                  </div>
+                ) : <span />}
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#C9A84C", letterSpacing: "0.1em" }}>
+                  TAP TO INSPECT ▸
                 </div>
-              ) : null}
+              </div>
             </div>
           );
         })}
@@ -651,7 +1014,7 @@ function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDe
         </div>
       </div>
 
-      <MatchupEdge attacker={attacker} defender={defender} season={season} />
+      <MatchupEdge attacker={attacker} defender={defender} data={matchupData} loading={matchupLoading} error={matchupError} />
     </div>
   );
 }
@@ -909,13 +1272,14 @@ function drawMatchupBadge(
   ctx.restore();
 }
 
-function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defender, season }: { bestKey: string; results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; showProb: boolean; attacker: Player; defender: Player; season: string }) {
+function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defender, season, selected, setSelected }: { bestKey: string; results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; showProb: boolean; attacker: Player; defender: Player; season: string; selected: number | null; setSelected: (i: number | null) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Click-to-inspect. Every grid point already carries its shot type,
   // distance and model outputs; before this they were only ever aggregated
   // into the heat field, so a specific shot could be seen but not read.
-  const [selected, setSelected] = useState<number | null>(null);
+  // Lifted up to ResultsOutput (see there) so the ranked zone cards can
+  // open the same panel a direct court click does.
 
   // Both players, on the floor. Without them the top of the court is a large
   // empty stretch of boards, and the chart carries no reminder of whose
@@ -1338,6 +1702,15 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defe
   const ring = (bestZone && centroids[bestZone.label]) ?? ringFallback[bestKey];
   const sel = selected !== null ? plotted[selected] : null;
 
+  // The ranked zone cards below the court can also set `selected`, but this
+  // panel renders right after the canvas — scrolled well above where a
+  // click on the #2 or #3 card happened. Without this, picking one of
+  // those looked like nothing happened.
+  const detailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (selected !== null) detailRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [selected]);
+
   return (
     <>
     <div style={{ position: "relative", width: "100%", borderRadius: 3, overflow: "hidden", border: "1px solid rgba(255,255,255,0.05)" }}>
@@ -1386,6 +1759,7 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defe
       )}
     </div>
     {sel && (
+      <div ref={detailRef}>
       <ShotDetail
         point={sel.pt}
         attacker={attacker}
@@ -1394,6 +1768,7 @@ function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defe
         season={season}
         onClose={() => setSelected(null)}
       />
+      </div>
     )}
     </>
   );
@@ -1419,27 +1794,56 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
     setWhyOpen(false);
     setWhy(null);
     setWhyError(null);
-  }, [point.zone, point.loc_x, point.loc_y, attacker.id, season]);
+  }, [point.zone, point.loc_x, point.loc_y, attacker.id, defender.id, season]);
 
   useEffect(() => {
     if (!whyOpen || why || whyError) return;
     let cancelled = false;
-    getAttainabilityExplanationAPI(attacker.id, point.zone, season, point.loc_x, point.loc_y)
+    // Passing the named defender adds the attacker/defender comparison
+    // attainability's own model doesn't make on its own — see
+    // AttainabilityDefenderTendency.
+    getAttainabilityExplanationAPI(attacker.id, point.zone, season, point.loc_x, point.loc_y, defender.id)
       .then((res) => { if (!cancelled) setWhy(res); })
       .catch((e) => { if (!cancelled) setWhyError(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [whyOpen, why, whyError, attacker.id, point.zone, point.loc_x, point.loc_y, season]);
+  }, [whyOpen, why, whyError, attacker.id, defender.id, point.zone, point.loc_x, point.loc_y, season]);
+
+  // The make-probability breakdown — offense vs defense, including who else
+  // is on the floor (team_creation/help_defense). Same on-demand pattern as
+  // the attainability breakdown above: a real TreeSHAP decomposition, not a
+  // cheap lookup.
+  const [matchupWhyOpen, setMatchupWhyOpen] = useState(false);
+  const [matchupWhy, setMatchupWhy] = useState<MatchupExplanation | null>(null);
+  const [matchupWhyError, setMatchupWhyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMatchupWhyOpen(false);
+    setMatchupWhy(null);
+    setMatchupWhyError(null);
+  }, [point.zone, point.loc_x, point.loc_y, attacker.id, defender.id, season]);
+
+  useEffect(() => {
+    if (!matchupWhyOpen || matchupWhy || matchupWhyError) return;
+    let cancelled = false;
+    getMatchupExplanationAPI(attacker.id, point.zone, point.loc_x, point.loc_y, season, defender.id)
+      .then((res) => { if (!cancelled) setMatchupWhy(res); })
+      .catch((e) => { if (!cancelled) setMatchupWhyError(e instanceof Error ? e.message : "Could not load"); });
+    return () => { cancelled = true; };
+  }, [matchupWhyOpen, matchupWhy, matchupWhyError, attacker.id, defender.id, point.zone, point.loc_x, point.loc_y, season]);
 
   const band =
     point.ep_low != null && point.ep_high != null
       ? `${point.ep_low.toFixed(2)}–${point.ep_high.toFixed(2)}`
       : null;
 
-  const rows: Array<{ label: string; value: string; accent?: string; note?: string; expandable?: boolean }> = [
+  const rows: Array<{ label: string; value: string; accent?: string; note?: string; expandable?: boolean; expandKey?: "attainability" | "matchup" }> = [
     {
       label: "MAKE PROB",
       value: `${(point.make_probability * 100).toFixed(1)}%`,
       accent: showProb ? "#C9A84C" : undefined,
+      note: "tap for why",
+      expandable: true,
+      expandKey: "matchup",
     },
     {
       label: "EXPECTED PTS",
@@ -1467,6 +1871,7 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
       value: formatAttainability(point.attainability),
       note: "tap for why",
       expandable: true,
+      expandKey: "attainability",
     });
   }
   if (point.attempts_behind != null) {
@@ -1533,6 +1938,7 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
         borderTop: "1px solid rgba(255,255,255,0.07)",
       }}>
         {rows.map((r) => {
+          const isOpen = r.expandKey === "matchup" ? matchupWhyOpen : whyOpen;
           const body = (
             <>
               <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
@@ -1548,7 +1954,7 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
                 {r.value}
                 {r.expandable && (
                   <span style={{ fontSize: 9, color: "#C9A84C", marginLeft: 5 }}>
-                    {whyOpen ? "▾" : "▸"}
+                    {isOpen ? "▾" : "▸"}
                   </span>
                 )}
               </div>
@@ -1582,8 +1988,11 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
           return (
             <button
               key={r.label}
-              onClick={() => setWhyOpen((v) => !v)}
-              aria-expanded={whyOpen}
+              onClick={() => {
+                if (r.expandKey === "matchup") setMatchupWhyOpen((v) => !v);
+                else setWhyOpen((v) => !v);
+              }}
+              aria-expanded={isOpen}
               aria-label={`${r.label} ${r.value}. Show why.`}
               style={{
                 background: "transparent",
@@ -1604,6 +2013,9 @@ function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { 
       </div>
       {whyOpen && (
         <AttainabilityWhy explanation={why} error={whyError} />
+      )}
+      {matchupWhyOpen && (
+        <MatchupWhy explanation={matchupWhy} error={matchupWhyError} />
       )}
     </div>
   );
@@ -1752,8 +2164,140 @@ function AttainabilityWhy({ explanation, error }: { explanation: AttainabilityEx
         </div>
       )}
 
+      {explanation.defender?.note && (
+        <div style={{
+          marginTop: 12,
+          paddingTop: 10,
+          borderTop: "1px solid rgba(255,255,255,0.07)",
+        }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
+            THIS MATCHUP SPECIFICALLY
+          </div>
+          {explanation.defender.defender_freq != null && explanation.defender.league_freq != null && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 5px" }}>
+              <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden", display: "flex" }}>
+                <div style={{
+                  width: `${Math.min(100, explanation.defender.defender_freq * 100)}%`,
+                  background: "#DC2626",
+                }} />
+              </div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#94A3B8", whiteSpace: "nowrap" }}>
+                {Math.round(explanation.defender.defender_freq * 100)}% HIS EXPOSURE
+                <span style={{ color: "#4a5568" }}>
+                  {" / LG "}{Math.round(explanation.defender.league_freq * 100)}%
+                </span>
+              </div>
+            </div>
+          )}
+          <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#CBD5E1", lineHeight: 1.5 }}>
+            {explanation.defender.note}
+          </div>
+        </div>
+      )}
+
       <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#4a5568", marginTop: 10, lineHeight: 1.5 }}>
         CONTRIBUTIONS ARE EXACT (TREESHAP) AND SUM TO THE ESTIMATE. PERCENTILES ARE LEAGUE-WIDE.
+      </div>
+    </div>
+  );
+}
+
+// The make-probability breakdown, opened from the shot detail panel.
+//
+// Splits the estimate by side of the matchup: the shooter's own profile —
+// now including who else is on the floor with him, teammates' creation/
+// gravity/rim-pressure/foul-drawing (team_creation) — versus the defense,
+// the named defender's own numbers plus the four help defenders' shot-
+// blocking/steals/deflections/disruption (help_defense). Both sides were
+// computed all along; only the offense side (and the help-defense half of
+// the defense side) was never actually shown before this panel existed.
+//
+// Unlike AttainabilityWhy's factors, `percentile`/`detail` are almost
+// always null here — the shot-quality model carries no league percentile
+// grid to compare against — so each line states the labeled value and its
+// exact TreeSHAP contribution rather than a "high/low" trait clause.
+function MatchupWhy({ explanation, error }: { explanation: MatchupExplanation | null; error: string | null }) {
+  const wrap: React.CSSProperties = {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTop: "1px solid rgba(201,168,76,0.2)",
+  };
+
+  if (error) {
+    return (
+      <div style={{ ...wrap, fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#DC2626" }}>
+        {error}
+      </div>
+    );
+  }
+  if (!explanation) {
+    return (
+      <div style={{ ...wrap, fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#64748b", letterSpacing: "0.18em" }}>
+        LOADING…
+      </div>
+    );
+  }
+
+  return (
+    <div style={wrap}>
+      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#CBD5E1", lineHeight: 1.5 }}>
+        {explanation.narrative}
+      </div>
+
+      <FactorSection title="OFFENSE — HIS PROFILE & TEAMMATES" factors={explanation.shot_quality.offense_factors} />
+      <FactorSection
+        title={explanation.defender_name ? `DEFENSE — ${explanation.defender_name.toUpperCase()} & HELP` : "DEFENSE"}
+        factors={explanation.shot_quality.defense_factors}
+      />
+
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#4a5568", marginTop: 10, lineHeight: 1.5 }}>
+        CONTRIBUTIONS ARE EXACT (TREESHAP) AND SUM TO THE ESTIMATE.
+      </div>
+    </div>
+  );
+}
+
+// One ranked list of factor bars — shared by the offense/defense sections
+// of MatchupWhy. Bar width is relative to the largest factor IN THIS
+// SECTION, same reasoning as AttainabilityWhy's factor bars: the ranking
+// stays legible whether the spread within a side is wide or narrow.
+function FactorSection({ title, factors }: { title: string; factors: ShotQualityFactor[] }) {
+  if (factors.length === 0) return null;
+  const max = Math.max(...factors.map((f) => Math.abs(f.impact)), 1e-9);
+  const decimals = max * 100 < 1 ? 2 : 1;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#64748b", letterSpacing: "0.18em" }}>
+        {title}
+      </div>
+      <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 8 }}>
+        {factors.map((f) => {
+          const lowers = f.direction === "lowers";
+          const width = `${Math.max(4, (Math.abs(f.impact) / max) * 100)}%`;
+          return (
+            <div key={f.feature}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 11, color: "#E2E8F0", minWidth: 0 }}>
+                  {f.label}
+                  <span style={{ color: "#64748b" }}>{" — "}{f.display_value}</span>
+                </div>
+                <div style={{
+                  fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+                  color: lowers ? "#DC2626" : "#16A34A", whiteSpace: "nowrap",
+                }}>
+                  {lowers ? "−" : "+"}{(Math.abs(f.impact) * 100).toFixed(decimals)}pp
+                </div>
+              </div>
+              <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2, marginTop: 4 }}>
+                <div style={{
+                  width, height: "100%", borderRadius: 2,
+                  background: lowers ? "#DC2626" : "#16A34A", opacity: 0.75,
+                }} />
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -1841,24 +2385,14 @@ function Disclosure({ label, children, tone = "#C9A84C", dense = false }: { labe
   );
 }
 
-function MatchupEdge({ attacker, defender, season }: { attacker: Player; defender: Player; season: string }) {
-  const [data, setData] = useState<MatchupResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    // Use the same season the run() call scores against so this stays
-    // consistent with the zone results shown above it.
-    getMatchupAPI(attacker.id, defender.id, season)
-      .then((res) => { if (!cancelled) setData(res); })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load matchup data."); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [attacker.id, defender.id, season]);
-
+function MatchupEdge({ attacker, defender, data, loading, error }: {
+  attacker: Player; defender: Player;
+  // Fetched once by ResultsOutput (the common parent) and shared with the
+  // ranked zone cards above, which now show the same attacker-vs-defender
+  // exploit-zone numbers instead of a bare EP figure — this used to be its
+  // own independent fetch here, duplicating the request.
+  data: MatchupResponse | null; loading: boolean; error: string | null;
+}) {
   const physicalRows = data
     ? (["height", "wingspan", "weight"] as const).map((key) => {
         const stat = data.physical_comparison[key];

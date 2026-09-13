@@ -1,4 +1,4 @@
-import { Player, HeatmapResponse, MatchupResponse, HealthStatus, AttainabilityExplanation } from "./shot-vision-data";
+import { Player, HeatmapResponse, MatchupResponse, HealthStatus, AttainabilityExplanation, MatchupExplanation, Team } from "./shot-vision-data";
 
 // Ratings are computed by the backend (src/inference/player_ratings.py) as
 // percentile ranks over the whole league, from measured data.
@@ -67,6 +67,8 @@ function mapBackendPlayer(backendPlayer: any): Player {
     headshotUrl: headshotUrl(backendPlayer.player_id),
     statsSource: backendPlayer.stats_source,
     resolvedSeason: backendPlayer.resolved_season,
+    teamId: backendPlayer.team_id ?? null,
+    ratingSource: backendPlayer.rating_source ?? null,
   };
 }
 
@@ -111,6 +113,24 @@ export async function searchPlayersAPI(query: string, season: string): Promise<P
   return data.map(mapBackendPlayer);
 }
 
+// The 30 NBA franchises — static league data, cheap to fetch once and reuse
+// across the whole session. Powers the team-vs-team picker.
+export async function getTeamsAPI(): Promise<Team[]> {
+  const res = await fetch(`${API_BASE}/teams`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to fetch teams"));
+  const data = await res.json();
+  return data.map((t: any) => ({ teamId: t.team_id, abbreviation: t.abbreviation, name: t.name }));
+}
+
+// Every player rostered to one team this season — same card shape as
+// searchPlayersAPI, so a team-vs-team picker can reuse mapBackendPlayer.
+export async function getTeamRosterAPI(teamId: string, season: string): Promise<Player[]> {
+  const res = await fetch(`${API_BASE}/team/${teamId}/roster?season=${season}`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to fetch team roster"));
+  const data = await res.json();
+  return data.map(mapBackendPlayer);
+}
+
 export async function getPlayerAPI(id: string, season: string): Promise<Player> {
   const res = await fetch(`${API_BASE}/player/${id}?season=${season}`);
   if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to fetch player"));
@@ -130,13 +150,45 @@ export async function getAttainabilityExplanationAPI(
   // dead-centre and a wing half, which have materially different attainability.
   // Omitting them collapses back to the blended parent zone.
   locX?: number,
-  locY?: number
+  locY?: number,
+  // Adds `defender` to the response: whether THIS defender's opponents
+  // attack this zone more or less than a typical defender's do. Doesn't
+  // change the attainability estimate itself — that has no defender in it
+  // by design (a season-long shot-diet frequency, not a single matchup).
+  defenderId?: string | null
 ): Promise<AttainabilityExplanation> {
   const loc = locX != null && locY != null ? `&loc_x=${locX}&loc_y=${locY}` : "";
+  const def = defenderId ? `&defender_id=${defenderId}` : "";
   const res = await fetch(
-    `${API_BASE}/explain/attainability/${playerId}?zone=${encodeURIComponent(zone)}&season=${season}${loc}`
+    `${API_BASE}/explain/attainability/${playerId}?zone=${encodeURIComponent(zone)}&season=${season}${loc}${def}`
   );
   if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to explain attainability"));
+  return res.json();
+}
+
+// The full make-probability narrative for one specific clicked shot: offense
+// vs defense, expected points, attainability woven in, and now who else is
+// on the floor (teammates' creation/gravity, help defenders' shot-blocking/
+// disruption) — see src/inference/recommender.ShotRecommender.explain_matchup.
+// Fetched on demand, same reasoning as getAttainabilityExplanationAPI: this
+// is a real TreeSHAP decomposition, not a cheap lookup, and most shots a
+// user hovers are never clicked open.
+export async function getMatchupExplanationAPI(
+  playerId: string,
+  zone: string,
+  locX: number,
+  locY: number,
+  season: string,
+  defenderId?: string | null,
+  secondaryDefenderId?: string | null
+): Promise<MatchupExplanation> {
+  const params = new URLSearchParams({
+    zone, loc_x: String(locX), loc_y: String(locY), season,
+  });
+  if (defenderId) params.set("defender_id", defenderId);
+  if (secondaryDefenderId) params.set("secondary_defender_id", secondaryDefenderId);
+  const res = await fetch(`${API_BASE}/explain/matchup/${playerId}?${params.toString()}`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to explain matchup"));
   return res.json();
 }
 

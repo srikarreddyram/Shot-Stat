@@ -36,6 +36,23 @@ export interface Player {
   // shown are a labeled position-based projection, not measured data.
   statsSource?: "measured" | "prior";
   resolvedSeason?: string | null;
+  // NBA team id, this season (players.team_id) — null for a player with no
+  // roster row on record. Used to stop an attacker and defender from being
+  // picked off the same team; also what scopes the team-vs-team picker's
+  // two roster lists.
+  teamId?: string | null;
+  // "measured" = offRtg/defRtgOvr came from our own computed ratings.
+  // "2k_fallback" = compute_ratings had nothing for this player at all (a
+  // true rookie, too few real minutes) and NBA 2K filled the gap — never a
+  // silent override of a measured rating, only ever a gap-filler. See
+  // src/inference/player_ratings.py's two_k_fallback_ratings.
+  ratingSource?: "measured" | "2k_fallback" | null;
+}
+
+export interface Team {
+  teamId: string;
+  abbreviation: string;
+  name: string;
 }
 
 // PLAYERS mock removed - now fetched from API
@@ -158,6 +175,26 @@ export interface AttainabilityCreation {
   note: string | null;
 }
 
+/**
+ * The comparison attainability's own model can't make — it has no defender
+ * in it by design (a season-long shot-diet frequency, not one matchup).
+ * This is a real, already-measured fact layered on top: does THIS
+ * defender's opponents attack this zone/category more or less than a
+ * typical defender's do. Only present when a defender_id was passed to
+ * GET /explain/attainability.
+ */
+export interface AttainabilityDefenderTendency {
+  defender_id: string;
+  defender_name: string | null;
+  category: string;
+  /** Share of this defender's OWN defended attempts that fall in this category. */
+  defender_freq: number | null;
+  /** The same share, averaged across the league. */
+  league_freq: number | null;
+  /** Reader-facing sentence, or null when there's not enough data to say. */
+  note: string | null;
+}
+
 export interface AttainabilityExplanation {
   player_id: string;
   player_name?: string;
@@ -173,6 +210,76 @@ export interface AttainabilityExplanation {
   factors: AttainabilityFactor[];
   summary: string;
   creation?: AttainabilityCreation;
+  defender?: AttainabilityDefenderTendency | null;
+}
+
+/**
+ * One trait behind a shot-quality (make-probability) estimate, from
+ * GET /explain/matchup. Unlike AttainabilityFactor, `percentile` and
+ * `detail` are almost always null — the shot-quality model carries no
+ * league percentile grid, so there's no honest "high/low" claim to make,
+ * only the labeled value and its exact contribution.
+ */
+export interface ShotQualityFactor {
+  feature: string;
+  label: string;
+  value: number | null;
+  display_value: string;
+  percentile: number | null;
+  /**
+   * Marginal effect in PROBABILITY: how far make_probability moves when
+   * this feature's contribution is removed. NOT the same number as the
+   * model's raw TreeSHAP contribution — those are additive in log-odds for
+   * this binary:logistic model, so summing them directly and calling the
+   * result a probability is exactly the bug this field's shape avoids.
+   */
+  impact: number;
+  /** The raw TreeSHAP contribution in log-odds, for reference. */
+  log_odds_contribution?: number;
+  direction: "raises" | "lowers";
+  detail: string | null;
+}
+
+export interface ShotQualityBreakdown {
+  make_probability: number;
+  offense_only_probability: number;
+  /** make_probability - offense_only_probability: how much the named defender moves it. */
+  defender_swing: number;
+  /**
+   * The shooter's own profile AND who else is on the floor with him —
+   * teammates' creation/gravity/rim-pressure/foul-drawing (team_creation),
+   * resolved from the most recent real lineup or current-roster teammates
+   * when that's unavailable. See src/features/point_in_time.py's
+   * lookup_lineup_context.
+   */
+  offense_factors: ShotQualityFactor[];
+  /**
+   * The named defender's own numbers AND the other four defenders on the
+   * floor — shot-blocking, steals, deflections, and the composite
+   * "defensive gravity" (help_defense). A dominant shot-blocker suppresses
+   * whether a shot is even attempted, not just whether it goes in once
+   * taken, which nothing else in this breakdown captures.
+   */
+  defense_factors: ShotQualityFactor[];
+}
+
+/** The full matchup narrative, from GET /explain/matchup. */
+export interface MatchupExplanation {
+  player_id: string;
+  player_name?: string;
+  defender_id: string | null;
+  defender_name: string | null;
+  secondary_defender_id?: string | null;
+  secondary_defender_name?: string | null;
+  zone: string;
+  shot_distance: number;
+  points: number;
+  make_probability: number;
+  expected_points: number;
+  attainability: number | null;
+  shot_quality: ShotQualityBreakdown;
+  /** One paragraph combining all of the above into prose. */
+  narrative: string;
 }
 
 export interface BackendZoneSummary {

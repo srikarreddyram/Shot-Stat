@@ -111,6 +111,25 @@ MONOTONE_CONSTRAINTS = {
     "def_pct_plusminus_zone": 1,
     "matchup_advantage": 1,
     "expected_contest": 1,      # more daylight → likelier make
+    # Same statistic as def_fg_pct_zone/overall above — FG%-allowed at the
+    # shot's own zone — just measured on the OTHER four defenders instead of
+    # the primary one. Same fact, same direction: a help unit that allows
+    # more here means less resistance on this shot, never less. Left
+    # unconstrained until now purely by omission, not by any doubt about the
+    # direction — that gap made the model rediscover from noisy, ~80%-covered
+    # data a direction it was already handed for free on the primary defender.
+    "oncourt_def_fg_pct": 1,
+    "oncourt_def_fg_pct_min": 1,
+    # A more disruptive help-defense presence on the floor (more blocks,
+    # steals, deflections, or the composite built from them) should never
+    # make the model predict a HIGHER make probability — same "we already
+    # know the direction" reasoning as the FG%-allowed constraints above,
+    # just negative since more disruption means less likely to score rather
+    # than more.
+    "oncourt_def_blk_max": -1,
+    "oncourt_def_stl_max": -1,
+    "oncourt_def_deflections_max": -1,
+    "oncourt_def_gravity_max": -1,
 }
 
 
@@ -159,6 +178,8 @@ def train(
     use_defender_physicals: bool = False,
     use_spatial_basis: bool = False,
     use_contest: bool = False,
+    use_team_creation: bool = True,
+    use_help_defense: bool = True,
     params: dict | None = None,
     calibration_folds: int = 3,
     calibration_mode: str = "recent",
@@ -176,6 +197,7 @@ def train(
         use_creation=use_creation, use_defender=use_defender,
         use_defender_physicals=use_defender_physicals,
         use_spatial_basis=use_spatial_basis,
+        use_team_creation=use_team_creation, use_help_defense=use_help_defense,
         hierarchical_split=hierarchical_split,
         xgb_params={k: v for k, v in params.items() if k != "monotone_constraints"},
         calibration_folds=calibration_folds,
@@ -215,6 +237,18 @@ def train(
         # which are unreliable when features are correlated.
         creation_cols = set(FEATURE_GROUPS["creation"])
         feature_cols = [c for c in feature_cols if c not in creation_cols]
+
+    if not use_team_creation:
+        # Ablation: the offense-side "who else is on the floor" group —
+        # teammates' creation/gravity/rim-pressure, mean AND peak-threat.
+        team_creation_cols = set(FEATURE_GROUPS["team_creation"])
+        feature_cols = [c for c in feature_cols if c not in team_creation_cols]
+
+    if not use_help_defense:
+        # Ablation: the defense-side mirror of team_creation — the other
+        # four defenders' zone-matched FG%-allowed, mean and toughest-single.
+        help_defense_cols = set(FEATURE_GROUPS["help_defense"])
+        feature_cols = [c for c in feature_cols if c not in help_defense_cols]
 
     df = df.sort_values(["game_date", "game_id", "shot_id"]).reset_index(drop=True)
 
@@ -588,6 +622,12 @@ if __name__ == "__main__":
     parser.add_argument("--contest", action="store_true",
                         help="Include per-game defender-distance bands (off by "
                              "default — the most harmful group in ablation)")
+    parser.add_argument("--no-team-creation", action="store_true",
+                        help="Ablate the offense-side on-court lineup group "
+                             "(teammates' creation/gravity/rim-pressure)")
+    parser.add_argument("--no-help-defense", action="store_true",
+                        help="Ablate the defense-side on-court lineup group "
+                             "(other four defenders' zone-matched FG%%-allowed)")
     parser.add_argument("--split", action="store_true",
                         help="Train separate interior/perimeter models (old behaviour)")
     parser.add_argument("--calibration", default="recent",
@@ -612,6 +652,8 @@ if __name__ == "__main__":
         use_defender_physicals=args.defender_physicals,
         use_spatial_basis=args.spatial_basis,
         use_contest=args.contest,
+        use_team_creation=not args.no_team_creation,
+        use_help_defense=not args.no_help_defense,
         params=tuned,
         calibration_folds=args.folds,
         calibration_mode=args.calibration,

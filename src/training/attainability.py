@@ -93,6 +93,31 @@ POSITION_BUCKETS = ["G", "F", "C"]
 # at 96% assisted there is no self-created population inside them to separate.
 ANGLE_SPLIT_ZONES = ("Above the Break 3", "Mid-Range")
 
+
+def with_bare_zone_entries(zone_means: pd.Series) -> pd.Series:
+    """
+    Add a bare-zone entry for each of ANGLE_SPLIT_ZONES, summing its two
+    sub-zone entries — same fix pattern as lookup_diet_history and
+    fit_league_creation_priors elsewhere in this file, applied to
+    league_zone_shares.
+
+    `zone_means` is keyed ONLY by sub-zone ("Above the Break 3 (centre)"/
+    "(wing)") for the two angle-split zones, so a caller holding the bare
+    zone name — anyone who hasn't resolved a specific court location, which
+    is the common case for a zone-level attainability display — gets a
+    silent None on exactly the two zones with the most volume. A player's
+    bare-zone share is the SUM of his two sub-zone shares (they partition
+    the same attempts), so the league mean of the sum equals the sum of the
+    league means, by linearity.
+    """
+    zone_means = zone_means.copy()
+    for zone in ANGLE_SPLIT_ZONES:
+        parts = [f"{zone} (centre)", f"{zone} (wing)"]
+        present = [p for p in parts if p in zone_means.index]
+        if present:
+            zone_means[zone] = zone_means[present].sum()
+    return zone_means
+
 # Degrees off dead centre dividing "centre" from "wing". Chosen at the elbow of
 # the measured self-creation gradient, where it drops from ~25% to ~19%.
 SUB_ZONE_ANGLE_BOUNDARY = 30.0
@@ -836,6 +861,7 @@ def train(seasons: list[str] | None = None, name: str = "attainability",
     # nothing about individual players' shot diets and the whole exercise is
     # just a lookup table of zone frequencies.
     zone_means = fit_df.groupby("sub_zone")["zone_share"].mean()
+    zone_means = with_bare_zone_entries(zone_means)
     base_preds = test_df["sub_zone"].map(zone_means).values
     base_mae = float(np.mean(np.abs(base_preds - actual)))
 

@@ -53,6 +53,7 @@ class Player(Base):
     shots_fetched_reg = Column(Boolean, default=False)
     shots_fetched_ply = Column(Boolean, default=False)
     position = Column(String, nullable=True)        # PG, SG, SF, PF, C
+    team_id = Column(String, nullable=True)          # NBA team id, this season
 
     # Offensive stats
     career_fg_pct = Column(Float, nullable=True)
@@ -170,6 +171,11 @@ class Shot(Base):
         return f"<Shot {self.shot_id} {result} by {self.player_id}>"
 
 
+#: The season type every consumer should filter to unless it explicitly wants
+#: playoff defence. Defined once here so the string is not retyped per query.
+REGULAR_SEASON = "Regular Season"
+
+
 class DefenderStats(Base):
     """
     Season-level defensive metrics per player per defense category.
@@ -185,13 +191,22 @@ class DefenderStats(Base):
         - Less Than 10Ft
         - Greater Than 15Ft
 
-    Populated by defender_stats_ingestor.py.
+    Populated by defender_stats_ingestor.py, which ingests BOTH regular season
+    and playoffs. season_type is therefore part of the primary key: without it
+    the playoff pass overwrote the regular-season row for every player whose
+    team made the postseason, replacing a full season with a handful of games
+    (Gobert's 2024-25 read 15 games and 223 shots defended — Minnesota's
+    playoff run — instead of his 72-game regular season). Roughly 45% of
+    rotation players were affected, and the corrupted rows fed the model's
+    defender features. Consumers that want a full season must filter
+    season_type explicitly; `REGULAR_SEASON` below is the default everywhere.
     """
     __tablename__ = "defender_stats"
 
     player_id = Column(String, primary_key=True)
     season = Column(String, primary_key=True)           # e.g. "2023-24"
     defense_category = Column(String, primary_key=True)  # e.g. "Overall"
+    season_type = Column(String, primary_key=True, default="Regular Season")
 
     gp = Column(Integer, nullable=True)              # games played
     freq = Column(Float, nullable=True)              # frequency of defensive assignments
@@ -276,6 +291,14 @@ class Matchup(Base):
     __table_args__ = (
         Index("ix_matchups_game", "game_id"),
         Index("ix_matchups_offense", "game_id", "offense_player_id"),
+        # point_in_time.lookup_defender_category_rates filters by
+        # defense_player_id on every /recommend, /matchup, and (as of the
+        # on-court lineup work) /explain/matchup call — up to 5 times per
+        # request for the latter, once per help defender. There was no
+        # index for that filter at all: measured at ~3.2s PER CALL on the
+        # live 2.2M-shot / matchups table, a full scan every time. This is
+        # what made /explain/matchup take 22s end to end.
+        Index("ix_matchups_defense", "defense_player_id", "game_id"),
     )
 
     def __repr__(self):
@@ -661,7 +684,97 @@ class ShotOnCourt(Base):
 
     __table_args__ = (
         Index("ix_shot_on_court_shot", "shot_id"),
+        # The serving path (point_in_time._resolve_recent_lineup_ids) looks a
+        # player up by (player_id, role) to find the last lineup he shared the
+        # floor with. Without this index that is a full scan of ~17.5M rows —
+        # measured at 4.25s PER CALL, twice per /explain/matchup request,
+        # which was enough on its own to push that endpoint past a timeout.
+        Index("ix_shot_on_court_player_role", "player_id", "role"),
     )
 
     def __repr__(self):
         return f"<ShotOnCourt {self.shot_id} {self.player_id} ({self.role})>"
+
+
+class PlayerDefensiveActivity(Base):
+    """
+    Season-level defensive activity — how much a player disrupts a possession
+    that isn't already captured by FG%-allowed: blocks, steals, deflections.
+
+    One row per (player_id, season). `stl`/`blk`/`gp`/`min_per_game` come from
+    LeagueDashPlayerStats (Base, PerGame); `deflections` comes from the
+    separate LeagueHustleStatsPlayer endpoint (PerGame) — hustle stats have
+    tracked deflections league-wide since 2016-17, matching this project's
+    training window with no gap to backfill around.
+
+    Why this exists: def_fg_pct_zone and friends only describe a shot that
+    was ALREADY TAKEN — they say nothing about whether a shot was attempted
+    at all. A dominant rim protector suppresses opponents' willingness to
+    even attack the paint, not just their odds of finishing there once they
+    do (the case that motivated this table: opponents visibly stop
+    attempting layups with a shot-blocker of Victor Wembanyama's caliber
+    patrolling the restricted area, whether or not he is the shot's primary
+    defender). That's a floor-presence effect, so these columns feed the
+    on-court lineup context (src/features/point_in_time.build_lineup_context)
+    rather than the primary-defender feature group.
+
+    Populated by src/ingestion/defensive_activity_ingestor.py.
+    """
+    __tablename__ = "player_defensive_activity"
+
+    player_id = Column(String, primary_key=True)
+    season = Column(String, primary_key=True)  # e.g. "2023-24"
+
+    gp = Column(Integer, nullable=True)
+    min_per_game = Column(Float, nullable=True)
+
+    stl = Column(Float, nullable=True)          # per game
+    blk = Column(Float, nullable=True)          # per game
+    deflections = Column(Float, nullable=True)  # per game
+
+    __table_args__ = (
+        Index("ix_defensive_activity_player_season", "player_id", "season"),
+    )
+
+    def __repr__(self):
+        return f"<PlayerDefensiveActivity {self.player_id} {self.season} blk:{self.blk}>"
+
+
+class PlayerTwoKRating(Base):
+    """
+    NBA 2K video-game ratings, scraped from 2kratings.com — a second,
+    independent opinion of a player's quality to check our own computed
+    ratings (src/inference/player_ratings.py) against, and a fallback for
+    exactly the case that motivated this table: a player our own model has
+    little or no fresh evidence for (just traded, a rookie, an
+    injury-shortened recent season) still has a real, current 2K rating,
+    because 2K's ratings team updates it independent of games actually
+    played for this team.
+
+    One row per player_id — NOT per season. 2K re-rates players continuously
+    within a game's yearly cycle (`edition`, e.g. "NBA 2K27") rather than
+    keeping a queryable historical archive the way our own box-score-derived
+    tables do, so this is always "their current read," refreshed by re-
+    running the ingestor rather than accumulating a season-keyed history.
+
+    `offense_avg`/`defense_avg` are our own simple rollups (plain mean of a
+    fixed attribute subset — see two_k_ratings_ingestor.py) computed at
+    ingestion time so they sit on roughly the same footing as our
+    off_rating/def_rating for a direct comparison; `raw_attributes` keeps
+    every individual attribute 2K publishes (shooting splits, defense,
+    playmaking, physicals, ...) as JSON, in case a future comparison wants
+    a specific one rather than the rollup.
+    """
+    __tablename__ = "player_two_k_ratings"
+
+    player_id = Column(String, primary_key=True)
+
+    edition = Column(String, nullable=True)         # e.g. "NBA 2K27 Rating"
+    overall = Column(Integer, nullable=True)
+    offense_avg = Column(Float, nullable=True)
+    defense_avg = Column(Float, nullable=True)
+    raw_attributes = Column(String, nullable=True)  # JSON: {attribute_name: value}
+    fetched_at = Column(Date, nullable=True)
+
+    def __repr__(self):
+        return f"<PlayerTwoKRating {self.player_id} overall:{self.overall}>"

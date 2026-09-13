@@ -357,6 +357,11 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     "team_creation": [
         "oncourt_off_creation", "oncourt_off_gravity",
         "oncourt_off_rim_pressure", "oncourt_off_n",
+        # Peak-threat versions — see point_in_time.build_lineup_context for
+        # why the mean alone dilutes a single elite teammate's effect to a
+        # quarter strength.
+        "oncourt_off_creation_max", "oncourt_off_gravity_max",
+        "oncourt_off_rim_pressure_max", "oncourt_off_foul_rate_max",
     ],
     # The defensive mirror of team_creation: the other four defenders'
     # point-in-time quality, excluding the primary `defender_id` (already
@@ -364,7 +369,15 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     # ablation can tell whether the offense-side or defense-side half of
     # "who else is on the floor" is doing any work, rather than one number
     # for both.
-    "help_defense": ["oncourt_def_fg_pct", "oncourt_def_n"],
+    "help_defense": [
+        "oncourt_def_fg_pct", "oncourt_def_n", "oncourt_def_fg_pct_min",
+        # Peak-threat defensive activity (blocks/steals/deflections and the
+        # composite built from them) — a floor-presence deterrent effect on
+        # WHETHER a shot is attempted, distinct from d_fg_pct's "how well was
+        # a shot that was taken contested". See defensive_activity.py.
+        "oncourt_def_blk_max", "oncourt_def_stl_max",
+        "oncourt_def_deflections_max", "oncourt_def_gravity_max",
+    ],
 }
 
 # Columns that must exist before derive_features runs. Anything else it needs

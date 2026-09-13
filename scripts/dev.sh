@@ -106,8 +106,39 @@ ENVEOF
 cleanup() {
   echo ""
   echo "Shutting down."
-  reap
-  rm -f "$ENVFILE"
+
+  # Were we superseded? A second `dev.sh` started while this one was still
+  # alive would, in ITS OWN startup reap(), kill OUR backend/frontend
+  # process groups and then overwrite $PIDFILE with ITS OWN fresh entries.
+  # We (the superseded run) would then see our children gone, exit our wait
+  # loop normally, and land here — and if we called reap() unconditionally,
+  # we'd read the SECOND run's entries and kill ITS live, wanted processes
+  # too, thinking they're leftovers. That cross-instance kill is almost
+  # certainly why servers kept dying across unrelated dev.sh invocations
+  # tonight: not a single bad shutdown, but each one taking out the next.
+  #
+  # The tell: our own (pid, port) lines are gone from $PIDFILE, replaced by
+  # someone else's. If that's happened, back off entirely — don't reap,
+  # don't touch the env file, just exit. The newer run owns cleanup now.
+  superseded=0
+  if [ -f "$PIDFILE" ]; then
+    grep -qF "$(printf '%s\t' "$API_PID")" "$PIDFILE" 2>/dev/null || superseded=1
+  fi
+
+  if [ "$superseded" = "1" ]; then
+    echo "  superseded by a newer run — leaving its processes and config alone"
+  else
+    reap
+    # Only remove the env file if it still describes THIS run. Even here,
+    # without the supersession race, this stays the safe check: deleting
+    # unconditionally could otherwise still race a run that started in the
+    # instant between our check above and this line.
+    if [ -f "$ENVFILE" ] && grep -q ":$API_PORT\$" "$ENVFILE" 2>/dev/null; then
+      rm -f "$ENVFILE"
+    elif [ -f "$ENVFILE" ]; then
+      echo "  $ENVFILE now belongs to a newer run — leaving it in place"
+    fi
+  fi
 }
 trap cleanup EXIT INT TERM
 

@@ -110,6 +110,7 @@ def ingest_defender_stats(seasons: list[str]):
                         "player_id": str(row["CLOSE_DEF_PERSON_ID"]),
                         "season": season,
                         "defense_category": category,
+                        "season_type": season_type,
                         "gp": _safe_int(row.get("GP")),
                         "freq": _safe_float(row.get("FREQ")),
                         "d_fgm": _safe_int(row.get(cm["fgm"])),
@@ -124,7 +125,10 @@ def ingest_defender_stats(seasons: list[str]):
                         for r in rows_to_upsert:
                             stmt = sqlite_upsert(DefenderStats.__table__).values(**r)
                             stmt = stmt.on_conflict_do_update(
-                                index_elements=["player_id", "season", "defense_category"],
+                                # season_type is part of the key: without it the
+                                # playoff pass overwrites the regular-season row
+                                # for every player whose team made the postseason.
+                                index_elements=["player_id", "season", "defense_category", "season_type"],
                                 set_={
                                     "gp": stmt.excluded.gp,
                                     "freq": stmt.excluded.freq,

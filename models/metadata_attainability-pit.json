@@ -77,7 +77,9 @@
     "Mid-Range (centre)": 0.04644232240927361,
     "Mid-Range (wing)": 0.1022412920683243,
     "Restricted Area": 0.33176733496751637,
-    "Right Corner 3": 0.0477013490274122
+    "Right Corner 3": 0.0477013490274122,
+    "Above the Break 3": 0.25770386932640915,
+    "Mid-Range": 0.14868361447759793
   },
   "feature_reference": {
     "height": {

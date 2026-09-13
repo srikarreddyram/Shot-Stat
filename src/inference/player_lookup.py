@@ -46,14 +46,14 @@ def _identity_row(conn, player_id: str, season: str) -> dict | None:
     """Name/position/physicals for the exact season, falling back to the
     player's most recent row of any season if the exact one is missing."""
     row = conn.execute(text("""
-        SELECT name, height, weight, wingspan, position
+        SELECT name, height, weight, wingspan, position, team_id
         FROM players WHERE player_id = :pid AND season = :season
     """), {"pid": player_id, "season": season}).fetchone()
     if row is not None:
         return dict(row._mapping)
 
     row = conn.execute(text("""
-        SELECT name, height, weight, wingspan, position
+        SELECT name, height, weight, wingspan, position, team_id
         FROM players WHERE player_id = :pid
         ORDER BY season DESC LIMIT 1
     """), {"pid": player_id}).fetchone()

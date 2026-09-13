@@ -60,6 +60,7 @@ from src.features.point_in_time import (
     apply_hierarchy,
     league_average_defender,
     lookup_defender_category_rates,
+    lookup_lineup_context,
     lookup_prior_counts,
     lookup_recent_form,
     lookup_supporting_cast,
@@ -69,6 +70,7 @@ from src.features.shrinkage import BetaPrior, posterior_interval
 from src.inference.explain import (
     build_matchup_narrative,
     creation_note,
+    defender_zone_tendency_note,
     explain_attainability,
     explain_shot_quality,
 )
@@ -183,7 +185,7 @@ SHOT_GRID = _generate_court_grid()
 class ShotRecommender:
     """Loads the trained models and scores court locations for a matchup."""
 
-    def __init__(self, model_name: str = "shot-quality-v13",
+    def __init__(self, model_name: str = "shot-quality-v19",
                  attainability_name: str = "attainability-pit",
                  model_dir: str | Path = MODEL_DIR):
         model_dir = Path(model_dir)
@@ -301,7 +303,7 @@ class ShotRecommender:
         """
         with self.engine.connect() as conn:
             attrs = conn.execute(text("""
-                SELECT name, height, weight, wingspan, position
+                SELECT name, height, weight, wingspan, position, team_id
                 FROM players WHERE player_id = :pid AND season <= :season
                 ORDER BY season DESC LIMIT 1
             """), {"pid": str(player_id), "season": season}).fetchone()
@@ -319,6 +321,7 @@ class ShotRecommender:
             "weight": attrs[2],
             "wingspan": attrs[3],
             "position": attrs[4],
+            "team_id": attrs[5],
             "season": season,
         }
         row.update({k: v for k, v in counts.items() if not k.startswith("_")})
@@ -347,6 +350,20 @@ class ShotRecommender:
             return {}
         latest = rows.sort_values("season").iloc[-1]
         return {c: latest[c] for c in CREATION_FEATURE_COLS if c in latest.index}
+
+    def _defensive_activity_profiles(self) -> pd.DataFrame:
+        """
+        The full, league-wide defensive-activity table (blocks/steals/
+        deflections/defensive_gravity), loaded once and cached — same
+        pattern as `_creation_row`'s `_creation_cache`. Used by
+        `lookup_lineup_context`, which filters it down to whichever four
+        stand-in help defenders it resolves per request.
+        """
+        from src.features.defensive_activity import load_defensive_activity_profiles
+
+        if not hasattr(self, "_defensive_activity_cache"):
+            self._defensive_activity_cache = load_defensive_activity_profiles(self.engine)
+        return self._defensive_activity_cache
 
     def _defender_row(self, defender_id: str, season: str, as_of_date=None) -> dict:
         """
@@ -587,13 +604,26 @@ class ShotRecommender:
     def explain_attainability(self, player_id: str, zone: str,
                               season: str | None = None,
                               as_of_date=None, top_n: int = 4,
-                              loc_x=None, loc_y=None) -> dict:
+                              loc_x=None, loc_y=None,
+                              defender_id: str | None = None) -> dict:
         """
         Why this player can or cannot get a shot in this zone.
 
         Returns the decomposition described in `src/inference/explain.py`:
         the zone's baseline share for any player, this player's deviation from
         it, and the ranked traits responsible.
+
+        `defender_id` is optional and changes nothing about the MODEL's own
+        estimate — attainability is deliberately built with no defender in
+        it at all (a season-long shot-diet frequency question, not a single
+        matchup — see creation.py's module docstring for why). What it adds
+        is `out["defender"]`: whether THIS named defender's opponents attack
+        this zone/category more or less than a typical defender's do, a
+        real, already-measured fact (the same `freq` def_freq_zone is built
+        from) that the attainability number alone never surfaces. This is
+        the comparison attainability was missing — not a redesign of the
+        model, but the explanation finally saying something about both
+        sides of the matchup instead of just the shooter's isolated habit.
         """
         if self.attainability is None:
             raise ValueError("No attainability model loaded")
@@ -632,6 +662,28 @@ class ShotRecommender:
                 season=season, as_of_date=as_of_date,
             )
         out["creation"]["note"] = creation_note(out["creation"])
+
+        out["defender"] = None
+        if defender_id:
+            category = ZONE_TO_DEF_CATEGORY.get(zone)
+            defender = self._defender_row(defender_id, season, as_of_date=as_of_date)
+            if defender and category:
+                with self.engine.connect() as conn:
+                    league = league_average_defender(conn, season)
+                defender_freq = defender.get("_by_category", {}).get(category, {}).get("freq")
+                league_freq = league.get("by_category", {}).get(category, {}).get("freq")
+                out["defender"] = {
+                    "defender_id": defender_id,
+                    "defender_name": defender.get("name"),
+                    "category": category,
+                    "defender_freq": defender_freq,
+                    "league_freq": league_freq,
+                    "note": defender_zone_tendency_note(
+                        player.get("name") or player_id, out["attainability"],
+                        defender.get("name") or defender_id, defender_freq, league_freq,
+                        zone,
+                    ),
+                }
 
         out["player_id"] = player_id
         out["player_name"] = player.get("name")
@@ -708,6 +760,7 @@ class ShotRecommender:
                 attainability_out = self.explain_attainability(
                     player_id, zone, season=season, as_of_date=as_of_date,
                     loc_x=loc_x, loc_y=loc_y,
+                    defender_id=None if is_league_avg else defender_id,
                 )
             except ValueError:
                 attainability_out = None
@@ -804,6 +857,16 @@ class ShotRecommender:
         # half of the mixture blend below.
         with self.engine.connect() as conn:
             league_defence = league_average_defender(conn, season)
+            # Stand-in "rest of the lineup" — there is no real on-court group
+            # for a hypothetical query, so this resolves the most recently
+            # ACTUAL shared lineup (real shot_on_court data) or, failing
+            # that, current-roster teammates ranked by last season's
+            # minutes. See lookup_lineup_context's docstring.
+            lineup_ctx = lookup_lineup_context(
+                conn, self._creation_cache, self._defensive_activity_profiles(),
+                self.category_priors, player_id, defender_id, season,
+                as_of_date=as_of_date,
+            )
         league_zone_fg = {
             cat: stats.get("d_fg_pct")
             for cat, stats in league_defence["by_category"].items()
@@ -871,6 +934,16 @@ class ShotRecommender:
         for key in CREATION_FEATURE_COLS:
             raw[key] = creation.get(key, np.nan)
         raw["creation_is_prior"] = int(not creation)
+
+        # On-court lineup context — the stand-in "rest of the lineup"
+        # resolved above. Offense-side and defensive-activity keys are
+        # zone-independent (constant across the whole grid); the zone-
+        # matched FG%-allowed keys are handled below, alongside the primary
+        # defender's own def_fg_pct_zone, since both need each row's zone.
+        for key, value in lineup_ctx.items():
+            if key not in ("oncourt_def_fg_pct_by_category",
+                          "oncourt_def_fg_pct_min_by_category"):
+                raw[key] = value
 
         if not defender:
             # No defender named means "against a typical defender", which is
@@ -977,6 +1050,19 @@ class ShotRecommender:
                 _mix(by_category.get(c, {}).get("freq"), league_zone_freq.get(c))
                 for c in categories
             ]
+
+            # Help defenders' zone-matched FG%-allowed — NOT mixed with a
+            # league average the way the primary defender's own def_fg_pct_
+            # zone is above: that blend exists because a possession-weighted
+            # "share" of ONE named primary defender is never really 100% of
+            # the matchup, so the model needs the rest diluted toward
+            # league-normal. The four help defenders resolved by
+            # lookup_lineup_context ARE already "the rest of the lineup" —
+            # diluting them again would double-count the same correction.
+            fg_by_cat = lineup_ctx["oncourt_def_fg_pct_by_category"]
+            fg_min_by_cat = lineup_ctx["oncourt_def_fg_pct_min_by_category"]
+            raw["oncourt_def_fg_pct"] = [fg_by_cat.get(c) for c in categories]
+            raw["oncourt_def_fg_pct_min"] = [fg_min_by_cat.get(c) for c in categories]
 
         # ── Shared transforms: identical to the training path ─────────────
         raw = apply_hierarchy(raw, self.zone_priors)

@@ -206,6 +206,67 @@ def creation_note(creation: dict) -> str | None:
 MIN_CREATION_MAKES = 20
 
 
+# A defender's own zone-category frequency has to clear the league average
+# by this many percentage points before it's worth calling out as a real
+# tendency rather than noise around "about average". Matches the spirit of
+# NEGLIGIBLE_EFFECT elsewhere in this file: small differences get a neutral
+# reading, not a confident-sounding verdict built on nothing.
+NEGLIGIBLE_FREQ_GAP = 0.05
+
+
+def defender_zone_tendency_note(
+    attacker_name: str, attacker_share: float,
+    defender_name: str, defender_freq: float | None, league_freq: float | None,
+    zone_label: str,
+) -> str | None:
+    """
+    The comparison attainability could never make on its own: not just "how
+    often does {attacker} shoot from here" but "does {defender} specifically
+    make this shot easier or harder to even get to".
+
+    Attainability is built entirely from the SHOOTER's own tendencies — by
+    design it has no defender in it at all (see creation.py's module
+    docstring). That's the right call for the MODEL, whose job is a
+    season-long shot-diet frequency, not a single matchup. But the
+    EXPLANATION shown for one named matchup can and should say more: whether
+    THIS defender's opponents attack this zone/category more or less than a
+    typical defender's do, which is a real, already-measured fact
+    (build_defender_category_rates' `freq`, point-in-time and leak-free —
+    the same number def_freq_zone is built from) that the attainability
+    number alone never surfaces.
+
+    Returns None when the defender's frequency data is too sparse to say
+    anything (no category match, or freq missing entirely) — an absent
+    verdict, not a confident one built on nothing.
+    """
+    if defender_freq is None or league_freq is None:
+        return None
+
+    gap = defender_freq - league_freq
+    d_pct, l_pct, a_pct = round(defender_freq * 100), round(league_freq * 100), round(attacker_share * 100)
+    zone_lower = zone_label.lower()
+
+    if abs(gap) < NEGLIGIBLE_FREQ_GAP:
+        return (
+            f"{defender_name} faces this zone about as often as a typical defender "
+            f"({d_pct}% of what he defends, vs a league {l_pct}%) — his specific "
+            f"tendencies don't move {attacker_name}'s {a_pct}% habit here one way or the other."
+        )
+    if gap > 0:
+        return (
+            f"{defender_name}'s opponents attack the {zone_lower} MORE than a typical "
+            f"defender sees ({d_pct}% of what he defends, vs a league {l_pct}%) — combined "
+            f"with {attacker_name}'s own {a_pct}% habit here, this is a live combination, "
+            f"not just a number from his season-long diet."
+        )
+    return (
+        f"{defender_name}'s opponents attack the {zone_lower} LESS than a typical "
+        f"defender sees ({d_pct}% of what he defends, vs a league {l_pct}%) — {attacker_name} "
+        f"gets there {a_pct}% of the time against an average defender, but this specific "
+        f"matchup has historically pushed shooters away from this look."
+    )
+
+
 def _percentile(value: float | None, reference: dict) -> float | None:
     """
     Approximate league percentile for `value`, interpolated from the stored
@@ -530,8 +591,9 @@ def _summarize(predicted: float, baseline: float, zone: str,
 # of this codebase for different reasons. mech_* and finish_* are not members
 # of ANY FEATURE_GROUPS entry at all; derive_features adds them by a prefix
 # scan (`all_feature_columns`), so they are picked up here the same way.
-_OFFENSE_GROUPS = ("shooter_physical", "shooter_skill", "creation", "possession_origin")
-_DEFENSE_GROUPS = ("defender", "defender_physical", "opponent_defence")
+_OFFENSE_GROUPS = ("shooter_physical", "shooter_skill", "creation",
+                   "possession_origin", "team_creation")
+_DEFENSE_GROUPS = ("defender", "defender_physical", "opponent_defence", "help_defense")
 _MATCHUP_GROUPS = ("interaction",)
 _CONTEXT_GROUPS = ("spatial", "context", "shot_context")
 
@@ -611,7 +673,62 @@ SQ_FEATURE_COPY: dict[str, dict[str, str]] = {
     "opp_zone_def_rate": {"label": "Opponent's zone defense", "fmt": "pct",
                           "high": "team defends this zone well",
                           "low": "team is exploitable in this zone"},
+
+    # On-court lineup context (src/features/point_in_time.build_lineup_
+    # context / lookup_lineup_context) — who else is on the floor, not the
+    # shooter or the primary defender. "_max" entries are the single peak
+    # threat among the other four on that side, not their average — see
+    # that module's docstring for why averaging dilutes a lone star.
+    "oncourt_off_creation": {"label": "Teammates' self-creation (avg)", "fmt": "num",
+                             "high": "surrounded by shot-creators",
+                             "low": "surrounded by non-creators"},
+    "oncourt_off_creation_max": {"label": "Best teammate creator on the floor", "fmt": "num",
+                                 "high": "has an elite self-creator alongside him",
+                                 "low": "no real shot-creator alongside him"},
+    "oncourt_off_gravity": {"label": "Teammates' playmaking gravity (avg)", "fmt": "num",
+                            "high": "teammates draw real defensive attention",
+                            "low": "teammates don't draw much attention"},
+    "oncourt_off_gravity_max": {"label": "Best playmaker on the floor", "fmt": "num",
+                                "high": "plays alongside an elite table-setter",
+                                "low": "no real playmaking threat alongside him"},
+    "oncourt_off_rim_pressure": {"label": "Teammates' rim pressure (avg)", "fmt": "num",
+                                 "high": "teammates collapse the defense off drives",
+                                 "low": "teammates don't pressure the rim"},
+    "oncourt_off_rim_pressure_max": {"label": "Best downhill threat on the floor", "fmt": "num",
+                                     "high": "has a real driving threat alongside him",
+                                     "low": "no downhill pressure alongside him"},
+    "oncourt_off_foul_rate_max": {"label": "Best foul-drawer on the floor", "fmt": "pct",
+                                  "high": "a teammate draws heavy contact, forcing early help",
+                                  "low": "no real foul-drawing threat alongside him"},
+    "oncourt_def_fg_pct": {"label": "Help defenders' FG% allowed here (avg)", "fmt": "pct",
+                           "high": "help defense is soft here",
+                           "low": "help defense is stout here"},
+    "oncourt_def_fg_pct_min": {"label": "Toughest help defender here", "fmt": "pct",
+                               "high": "even the best help defender is beatable here",
+                               "low": "a lockdown help defender patrols this shot"},
+    "oncourt_def_blk_max": {"label": "Best shot-blocker on the floor", "fmt": "num",
+                            "high": "an elite rim protector is patrolling the paint",
+                            "low": "no real rim protection on the floor"},
+    "oncourt_def_stl_max": {"label": "Most disruptive defender (steals)", "fmt": "num",
+                            "high": "a high-steal defender is on the floor",
+                            "low": "no real ball-pressure on the floor"},
+    "oncourt_def_deflections_max": {"label": "Most disruptive defender (deflections)",
+                                    "fmt": "num",
+                                    "high": "a hand-in-every-lane defender is on the floor",
+                                    "low": "no real disruption on the floor"},
+    "oncourt_def_gravity_max": {"label": "Best defensive disruptor on the floor", "fmt": "num",
+                                "high": "an elite disruptor changes what's attempted",
+                                "low": "no real defensive deterrent on the floor"},
 }
+
+
+def _sigmoid(margin: float) -> float:
+    """
+    Log-odds -> probability. XGBoost's `binary:logistic` TreeSHAP
+    contributions are additive in log-odds, so every sum of them has to come
+    through here before it can be called a probability.
+    """
+    return float(1.0 / (1.0 + np.exp(-margin)))
 
 
 def _sq_percentile(value, reference: dict) -> float | None:
@@ -636,9 +753,22 @@ def explain_shot_quality(
     same assembly logic `recommend()` uses, so the explanation always
     describes the number that was actually served.
 
-    Returns a decomposition additive by construction (TreeSHAP): bias +
-    offense_effect + defense_effect + matchup_effect + context_effect sums
-    to the predicted probability.
+    TreeSHAP contributions for a `binary:logistic` model are additive in
+    LOG-ODDS, not in probability: they sum to the margin, which has to go
+    through a sigmoid to become the number the model actually predicts.
+    Treating that sum as a probability directly — which this function did
+    until it was caught — silently reports the margin as if it were a rate.
+    It looks merely wrong when the margin lands inside [0, 1] (a rim shot
+    read 0.48 when the model said 0.62) and absurd when it doesn't (Stephen
+    Curry above the break clipped to 0%, because his margin was -0.30).
+
+    So: group effects are summed in log-odds, and every number reported to a
+    caller is converted to probability. Per-feature `impact` is a MARGINAL
+    effect — how far the probability moves when that one feature's
+    contribution is taken out — which is interpretable in percentage points
+    but, unlike the log-odds contributions underneath it, does NOT sum
+    exactly to the total. That is a property of a logistic model, not a bug
+    to reconcile away.
     """
     X = feature_row[feature_cols].astype(float)
     booster = model.get_booster()
@@ -654,12 +784,13 @@ def explain_shot_quality(
     for col, contribution in per_feature.items():
         effects[sides[col]] += contribution
 
-    predicted = float(np.clip(bias + sum(effects.values()), 0.0, 1.0))
+    margin = bias + sum(effects.values())
+    predicted = _sigmoid(margin)
     # What this shooter would be projected at from here against a LEAGUE
     # AVERAGE defender: bias + context + offense, with the defense/matchup
     # terms (which describe the NAMED defender specifically) held out. This
     # is the number the defender's presence is measured against.
-    offense_only = float(np.clip(bias + effects["context"] + effects["offense"], 0.0, 1.0))
+    offense_only = _sigmoid(bias + effects["context"] + effects["offense"])
 
     reference = reference or {}
 
@@ -685,13 +816,19 @@ def explain_shot_quality(
             trait = None
             if pct is not None:
                 trait = copy["high"] if pct >= 50 else copy["low"]
+            # Marginal effect in PROBABILITY, not the raw log-odds
+            # contribution: how far the estimate moves when this one
+            # feature's contribution is removed. The UI prints these as
+            # percentage points, which the log-odds number is not.
+            impact = predicted - _sigmoid(margin - contribution)
             items.append({
                 "feature": col,
                 "label": copy["label"],
                 "value": value,
                 "display_value": _format_value(value, copy["fmt"]),
                 "percentile": pct,
-                "impact": round(contribution, 5),
+                "impact": round(impact, 5),
+                "log_odds_contribution": round(contribution, 5),
                 "direction": "raises" if contribution > 0 else "lowers",
                 "detail": trait,
             })
@@ -700,11 +837,14 @@ def explain_shot_quality(
 
     return {
         "make_probability": round(predicted, 4),
+        # Log-odds, explicitly named as such. These are the quantities that
+        # really are additive (they sum with `bias` to the margin); the
+        # probabilities above are what that margin becomes after a sigmoid.
         "bias": round(bias, 5),
-        "offense_effect": round(effects["offense"], 5),
-        "defense_effect": round(effects["defense"], 5),
-        "matchup_effect": round(effects["matchup"], 5),
-        "context_effect": round(effects["context"], 5),
+        "offense_effect_log_odds": round(effects["offense"], 5),
+        "defense_effect_log_odds": round(effects["defense"], 5),
+        "matchup_effect_log_odds": round(effects["matchup"], 5),
+        "context_effect_log_odds": round(effects["context"], 5),
         "offense_only_probability": round(offense_only, 4),
         "defender_swing": round(predicted - offense_only, 4),
         "offense_factors": _factors_for("offense"),
@@ -775,6 +915,16 @@ def build_matchup_narrative(
                 f"moves {direction} {swing_pp} points to {make_pct}{drivers}."
             )
 
+    # ── 1b. Why the baseline is what it is — the shooter's own profile plus
+    # who else is on the floor with him (team_creation), the offense-side
+    # half of the matchup the narrative previously never spoke about at
+    # all: only the defender's swing (1, above) was ever quoted in prose,
+    # leaving a real playmaking teammate's gravity invisible even when it
+    # was a top-ranked SHAP contributor to the exact same prediction.
+    offense_drivers = _driver_clause(sq["offense_factors"])
+    if offense_drivers:
+        sentences.append(f"That baseline reflects his own scoring profile{offense_drivers}.")
+
     # ── 2. Double-team clause ───────────────────────────────────────────
     if secondary_defender_name:
         sentences.append(
@@ -799,5 +949,13 @@ def build_matchup_narrative(
             f"How often {attacker_name} actually gets a look like this: {att_pct} "
             f"of his shot diet. {att_summary}"
         )
+        # The comparison attainability's own model can't make: not just how
+        # often the attacker shoots here, but whether THIS defender's
+        # opponents attack this zone more or less than a typical defender's
+        # do. Only present when a real (non-league-average) defender was
+        # named — see ShotRecommender.explain_attainability.
+        defender_tendency = (attainability.get("defender") or {}).get("note")
+        if defender_tendency:
+            sentences.append(defender_tendency)
 
     return " ".join(sentences)

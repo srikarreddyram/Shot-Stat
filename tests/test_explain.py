@@ -14,7 +14,10 @@ import pandas as pd
 import pytest
 import xgboost as xgb
 
-from src.inference.explain import _percentile, explain_attainability
+from src.inference.explain import (
+    _percentile, defender_zone_tendency_note, explain_attainability,
+    explain_shot_quality,
+)
 from src.training.attainability import (
     POSITION_BUCKETS, SUB_ZONE_SUFFIX, SUB_ZONES, encode_zone_and_position,
 )
@@ -502,3 +505,176 @@ def test_summary_never_quotes_a_factor_whose_value_is_unknown():
 
     # Nothing quotable at all is silence, not a sentence naming an unknown.
     assert _driver_clause([unknown]) == ""
+
+
+def test_league_zone_shares_has_a_bare_zone_entry_for_angle_split_zones():
+    """
+    Regression test for the same class of bug as the diet-history and
+    creation-priors ones above, found in a THIRD function:
+    `fit_attainability`'s `league_zone_shares` was keyed ONLY by split
+    sub-zone names for the two angle-split zones, so `explain_attainability`
+    — which is called with the bare zone name whenever the caller hasn't
+    resolved exact court coordinates, the common case for a zone-level
+    attainability display — got a silent `None` for `league_zone_share` on
+    exactly the two highest-volume zones (Above the Break 3, Mid-Range).
+    The attainability number itself was still fine; only the "compared to a
+    league-average X%" figure alongside it silently disappeared.
+    """
+    from src.training.attainability import with_bare_zone_entries
+
+    zone_means = pd.Series({
+        "Above the Break 3 (centre)": 0.10,
+        "Above the Break 3 (wing)": 0.18,
+        "Mid-Range (centre)": 0.05,
+        "Mid-Range (wing)": 0.07,
+        "Restricted Area": 0.30,
+    })
+    out = with_bare_zone_entries(zone_means)
+
+    assert out["Above the Break 3"] == pytest.approx(0.28)
+    assert out["Mid-Range"] == pytest.approx(0.12)
+    # Untouched zones (no split, already a real key) pass through unchanged.
+    assert out["Restricted Area"] == pytest.approx(0.30)
+    # The original sub-zone entries still exist — a caller with exact
+    # coordinates can still ask for the more precise number.
+    assert out["Above the Break 3 (wing)"] == pytest.approx(0.18)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Shot-quality (make-probability) explanation
+#
+# Regression coverage for a real bug: explain_shot_quality summed TreeSHAP
+# contributions and reported the raw sum as `make_probability` directly.
+# For a `binary:logistic` model those contributions are additive in
+# LOG-ODDS, not probability — the sum has to go through a sigmoid first.
+# Nothing here caught that before: explain_shot_quality had zero test
+# coverage prior to this file. The bug was invisible whenever the true
+# probability happened to be near 0.5 (margin near zero, so skipping the
+# sigmoid barely mattered) and produced nonsense otherwise — a real query
+# (Stephen Curry, above the break three) reported 0% when the model's own
+# predict_proba said 43%, because the summed margin was -0.30 and got
+# clipped straight to zero instead of passed through a sigmoid.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture()
+def toy_classifier():
+    """
+    A small binary:logistic classifier fit so its own decision boundary is
+    non-trivial (not everything clustered near p=0.5) — the bug this guards
+    against is invisible near p=0.5, where skipping the sigmoid changes
+    little, and only obvious away from it.
+    """
+    rng = np.random.default_rng(0)
+    n = 600
+    rows = []
+    for _ in range(n):
+        zone_rate = float(rng.uniform(0.2, 0.7))
+        def_fg_pct_zone = float(rng.uniform(0.2, 0.7))
+        matchup_advantage = zone_rate - def_fg_pct_zone
+        score_diff = float(rng.integers(-15, 15))
+        made = rng.uniform(0, 1) < np.clip(0.5 + 1.2 * matchup_advantage, 0.02, 0.98)
+        rows.append({
+            "zone_rate": zone_rate,
+            "def_fg_pct_zone": def_fg_pct_zone,
+            "matchup_advantage": matchup_advantage,
+            "score_diff": score_diff,
+            "made": int(made),
+        })
+    df = pd.DataFrame(rows)
+    cols = ["zone_rate", "def_fg_pct_zone", "matchup_advantage", "score_diff"]
+
+    model = xgb.XGBClassifier(n_estimators=60, max_depth=4, random_state=0)
+    model.fit(df[cols], df["made"])
+    return model, cols
+
+
+def test_make_probability_matches_predict_proba_not_the_raw_shap_sum(toy_classifier):
+    model, cols = toy_classifier
+    # A row chosen to sit well away from p=0.5, on the low side — exactly
+    # the regime where summing log-odds contributions as if they were
+    # probabilities clips to 0 instead of reporting the real number.
+    row = pd.DataFrame([{
+        "zone_rate": 0.25, "def_fg_pct_zone": 0.68,
+        "matchup_advantage": -0.43, "score_diff": 3,
+    }])
+
+    truth = float(model.predict_proba(row[cols])[0, 1])
+    out = explain_shot_quality(model, cols, row)
+
+    assert out["make_probability"] == pytest.approx(truth, abs=1e-4)
+    # The failure mode this guards against: reporting the un-sigmoided
+    # log-odds sum clipped into [0, 1] instead of the real probability.
+    assert out["make_probability"] != pytest.approx(0.0, abs=1e-6)
+
+
+def test_offense_only_probability_is_a_valid_probability(toy_classifier):
+    model, cols = toy_classifier
+    row = pd.DataFrame([{
+        "zone_rate": 0.65, "def_fg_pct_zone": 0.22,
+        "matchup_advantage": 0.43, "score_diff": -8,
+    }])
+    out = explain_shot_quality(model, cols, row)
+    assert 0.0 <= out["offense_only_probability"] <= 1.0
+    assert 0.0 <= out["make_probability"] <= 1.0
+
+
+def test_per_feature_impact_is_a_probability_delta_not_a_log_odds_contribution(toy_classifier):
+    """
+    A factor's `impact` is printed in the UI as percentage points of make
+    probability (e.g. "+4.2pp"). It must live on that scale — the log-odds
+    contribution underneath it can be arbitrarily larger or smaller than
+    the probability move it actually corresponds to once the model is away
+    from p=0.5.
+    """
+    model, cols = toy_classifier
+    row = pd.DataFrame([{
+        "zone_rate": 0.25, "def_fg_pct_zone": 0.68,
+        "matchup_advantage": -0.43, "score_diff": 3,
+    }])
+    out = explain_shot_quality(model, cols, row, top_n=10)
+    all_factors = out["offense_factors"] + out["defense_factors"]
+    assert all_factors  # the toy model's features must actually show up
+    for f in all_factors:
+        assert -1.0 <= f["impact"] <= 1.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# defender_zone_tendency_note — the attacker/defender comparison
+# attainability was missing entirely: the model itself has no defender in
+# it by design (a season-long shot-diet frequency, not a single matchup),
+# but a named-matchup explanation can and should say whether THIS defender's
+# opponents attack a zone more or less than a typical defender's do.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_defender_tendency_note_is_none_without_frequency_data():
+    assert defender_zone_tendency_note("Luka", 0.3, "Wemby", None, 0.25, "Restricted Area") is None
+    assert defender_zone_tendency_note("Luka", 0.3, "Wemby", 0.25, None, "Restricted Area") is None
+
+
+def test_defender_tendency_note_flags_above_average_exposure():
+    note = defender_zone_tendency_note(
+        "Luka", 0.30, "Wemby", defender_freq=0.45, league_freq=0.25,
+        zone_label="Restricted Area",
+    )
+    assert note is not None
+    assert "MORE" in note
+    assert "Wemby" in note and "Luka" in note
+    assert "45%" in note and "25%" in note and "30%" in note
+
+
+def test_defender_tendency_note_flags_below_average_exposure():
+    note = defender_zone_tendency_note(
+        "Luka", 0.30, "Wemby", defender_freq=0.10, league_freq=0.25,
+        zone_label="Restricted Area",
+    )
+    assert note is not None
+    assert "LESS" in note
+
+
+def test_defender_tendency_note_is_neutral_within_the_negligible_band():
+    note = defender_zone_tendency_note(
+        "Luka", 0.30, "Wemby", defender_freq=0.26, league_freq=0.25,
+        zone_label="Restricted Area",
+    )
+    assert note is not None
+    assert "MORE" not in note and "LESS" not in note
