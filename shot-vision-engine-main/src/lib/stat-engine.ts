@@ -7,19 +7,31 @@
 // labels, formats and grouping come from the server; this file only ever
 // interprets values, never names them.
 
+/** Which side of the ball a group belongs on. "info" (bio, ratings) sits in
+ *  a persistent header rather than inside either tab — sent by the API
+ *  (stat_engine.GROUP_SIDE / career_stats.GROUP_SIDE) so the split is
+ *  defined once, not guessed independently by every view that needs it. */
+export type Side = "offense" | "defense" | "info";
+
 export type Column = {
   key: string;
   label: string;
   fmt: string;
   group?: string;
   group_label?: string;
+  side?: Side;
   derived?: boolean;
+  /** Column counting the attempts behind a rate, and the minimum needed to be
+   *  ranked. Sent by the API (stat_engine.QUALIFIERS) so the threshold lives
+   *  in one place rather than being guessed per view. */
+  qualify_key?: string;
+  qualify_min?: number;
 };
 
 export type Row = Record<string, string | number | null>;
 
 export type Stat = { key: string; label: string; fmt: string; value: string | number | null };
-export type Section = { group: string; label: string; stats: Stat[] };
+export type Section = { group: string; label: string; side: Side; stats: Stat[] };
 
 export type PlayerProfile = {
   player_id: string;
@@ -28,6 +40,42 @@ export type PlayerProfile = {
   season: string;
   sections: Section[];
 };
+
+/** One point in a career trend line: what the stat WAS in that season, not a
+ *  running average up to that point. */
+export type SeasonPoint = { season: string; value: number };
+
+export type CareerStat = {
+  key: string;
+  label: string;
+  group: string;
+  fmt: string;
+  kind: string;
+  current: number | null;
+  previous: number | null;
+  career_avg: number | null;
+  career_total: number | null;
+  first_season: string | null;
+  last_season: string | null;
+  seasons: number;
+  series: SeasonPoint[];
+};
+
+export type CareerSection = { group: string; label: string; side: Side; stats: CareerStat[] };
+
+export type CareerPanelData = {
+  player_id: string;
+  season: string;
+  previous_season: string;
+  first_season: string | null;
+  last_season: string | null;
+  seasons_covered: number;
+  sections: CareerSection[];
+};
+
+export function sideOf<T extends { side?: Side }>(entries: T[], side: Side): T[] {
+  return entries.filter((e) => e.side === side);
+}
 
 export type RosterEntry = {
   player_id: string;
@@ -70,7 +118,9 @@ export function formatStat(value: string | number | null | undefined, fmt: strin
     const inches = Math.round(n);
     return `${Math.floor(inches / 12)}'${inches % 12}"`;
   }
-  if (fmt === "count") return n.toFixed(0);
+  // Career totals run to five figures ("15614 shots defended"), which is
+  // unreadable without separators; small counts are unaffected.
+  if (fmt === "count") return Math.round(n).toLocaleString("en-US");
   return Math.abs(n) >= 10 ? n.toFixed(1) : n.toFixed(2);
 }
 
@@ -87,11 +137,17 @@ export function numericValue(value: unknown): number | null {
 // defender in the league, not the worst — inverting those would rank the
 // league upside down. Same for every roster_avg_ of them. Only genuinely
 // "fewer is better" raw measurements belong in this set.
+const DEF_SLUGS = ["rim", "paint", "two_pt", "mid_long", "perimeter"];
+
 export const LOWER_IS_BETTER = new Set([
   "def_fg_pct_allowed", "roster_avg_def_fg_pct_allowed",
   "def_plus_minus",
   "def_rating", // team points allowed per 100 possessions
   "tov",
+  // Every per-category defensive rate: allowing a LOWER percentage, and
+  // holding shooters further below league normal, is better defence.
+  ...DEF_SLUGS.map((s) => `def_${s}_fg_pct`),
+  ...DEF_SLUGS.map((s) => `def_${s}_pm`),
 ]);
 
 // Stats with no meaningful better/worse direction at all. Being tall is not
@@ -156,13 +212,40 @@ export function rankOf(
   return { rank: better + 1, outOf: sorted.length };
 }
 
-/** Ascending-sorted values for every column named, computed once. */
-export function buildDistributions(rows: Row[], keys: string[]): Map<string, number[]> {
+/**
+ * Ascending-sorted values per column, computed once.
+ *
+ * When a column carries a qualifier, only rows meeting it enter the
+ * distribution. A rate built on two attempts is not a worse or better
+ * measurement than one built on six hundred — it is not a measurement of the
+ * same thing at all, and letting it into the distribution puts whoever
+ * defended one shot at #1.
+ */
+export function buildDistributions(
+  rows: Row[],
+  keys: string[],
+  columns: Column[] = []
+): Map<string, number[]> {
+  const byKey = new Map(columns.map((c) => [c.key, c]));
   const map = new Map<string, number[]>();
   for (const key of keys) {
-    if (!map.has(key)) map.set(key, numericColumn(rows, key));
+    if (map.has(key)) continue;
+    const column = byKey.get(key);
+    const eligible = qualifies(column) ? rows.filter((r) => meetsQualifier(r, column!)) : rows;
+    map.set(key, numericColumn(eligible, key));
   }
   return map;
+}
+
+function qualifies(column: Column | undefined): boolean {
+  return !!(column?.qualify_key && column.qualify_min != null);
+}
+
+/** Does this row have enough volume behind the stat to be ranked on it? */
+export function meetsQualifier(row: Row, column: Column): boolean {
+  if (!qualifies(column)) return true;
+  const volume = numericValue(row[column.qualify_key!]);
+  return volume != null && volume >= column.qualify_min!;
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
@@ -216,15 +299,42 @@ export function sortRows(rows: Row[], key: string, dir: "asc" | "desc"): Row[] {
 // number looked authoritative and meant nothing. An unweighted mean of
 // percentiles over a short, named list of measured stats is a summary the
 // reader can check, and every component stat is shown in full underneath.
-export type RadarAxis = { key: string; label: string; stats: string[] };
+export type RadarAxis = { key: string; label: string; blurb: string; stats: string[] };
 
+// Axis names must say what they measure, not a word that sounds right.
+// "Creation" was read — correctly, by anyone who follows basketball — as
+// "creating shots, including for team-mates", and it then looked absurd that
+// the league's best passer scored 39 on it. The underlying number was fine:
+// self_creation_index is pull-up share, self-created dribble share, dribbles
+// per touch and drives per minute (src/features/creation.py's _COMPOSITES),
+// with no passing term at all. Creating FOR others is the playmaking axis,
+// where that player is 99th percentile. So the axis is now named for what it
+// actually is, and every axis carries a blurb naming its inputs.
 export const RADAR_AXES: RadarAxis[] = [
-  { key: "shooting", label: "Shooting", stats: ["season_fg_pct", "career_3p_pct", "ft_pct"] },
-  { key: "rim", label: "Rim pressure", stats: ["rim_pressure", "drives_per_min", "zone_fga_rim"] },
-  { key: "creation", label: "Creation", stats: ["self_creation_index", "avg_drib_per_touch"] },
-  { key: "playmaking", label: "Playmaking", stats: ["playmaking_gravity", "ast"] },
-  { key: "activity", label: "Defensive activity", stats: ["stl_per_min", "blk_per_min", "deflections_per_min"] },
-  { key: "impact", label: "Defensive impact", stats: ["def_fg_pct_allowed", "def_plus_minus"] },
+  // Zone percentages, not blended FG%. A blended rate confounds shooting
+  // SKILL with shot DIET: a player whose diet is pull-up threes converts a
+  // lower share of his attempts than one who lives at the rim, however good
+  // he is. Comparing like-for-like within each zone removes that. FT% is the
+  // one shot with no defender and no diet effect, so it stays as a clean
+  // stroke reading.
+  { key: "shooting", label: "Shooting", blurb: "Accuracy WITHIN each zone — rim, mid-range, above-the-break three, free throws. Compared like-for-like, so a hard shot diet is not punished",
+    stats: ["zone_fg_pct_rim", "zone_fg_pct_midrange", "zone_fg_pct_above_break3", "ft_pct"] },
+  // drives_per_min is deliberately absent: it is already 45% of
+  // rim_pressure, and listing it again here counted it roughly twice.
+  { key: "rim", label: "Rim pressure", blurb: "Getting to the basket and finishing there — drives, drive efficiency, fouls drawn, rim volume",
+    stats: ["rim_pressure", "zone_fga_rim"] },
+  // Likewise avg_drib_per_touch is 20% of self_creation_index. The composite
+  // already blends pull-up share, self-created dribble share, dribbles per
+  // touch and drives; it does not need one of its own ingredients re-added
+  // as half the axis.
+  { key: "creation", label: "Self-creation", blurb: "Generating your OWN shot off the dribble — pull-ups, self-created dribbles, drives. No passing in this one",
+    stats: ["self_creation_index"] },
+  { key: "playmaking", label: "Playmaking", blurb: "Creating shots for team-mates — assists, potential assists, points created",
+    stats: ["playmaking_gravity", "ast"] },
+  { key: "activity", label: "Defensive activity", blurb: "Blocks, steals and deflections per minute",
+    stats: ["stl_per_min", "blk_per_min", "deflections_per_min"] },
+  { key: "impact", label: "Defensive impact", blurb: "FG% you allow, and how far below league normal you hold the shooters you guard",
+    stats: ["def_fg_pct_allowed", "def_plus_minus"] },
 ];
 
 /**
@@ -236,12 +346,18 @@ export const RADAR_AXES: RadarAxis[] = [
 export function axisScore(
   row: Row,
   axis: RadarAxis,
-  distributions: Map<string, number[]>
+  distributions: Map<string, number[]>,
+  columns: Column[] = []
 ): number | null {
+  const byKey = new Map(columns.map((c) => [c.key, c]));
   const parts: number[] = [];
   for (const key of axis.stats) {
     const value = numericValue(row[key]);
     if (value == null) continue;
+    // A component built on four attempts is not evidence about this player's
+    // shooting; it is skipped rather than allowed to swing the axis.
+    const column = byKey.get(key);
+    if (column && !meetsQualifier(row, column)) continue;
     const pct = percentileOf(value, distributions.get(key) ?? [], key);
     if (pct != null) parts.push(pct);
   }
@@ -255,3 +371,39 @@ export const RADAR_STAT_KEYS = Array.from(new Set(RADAR_AXES.flatMap((a) => a.st
 // A fixed per-slot palette for comparison. Distinct hues rather than a
 // lightness ramp: the players being compared are categories, not magnitudes.
 export const COMPARE_COLORS = ["#C9A84C", "#4C9ED9", "#5CB85C"];
+
+// ── Archetypes ────────────────────────────────────────────────────────────
+// "Urban NBA" vocabulary (3&D Wing, Pick-and-Roll Hub, Rim Protector,
+// Chucker, ...) computed server-side from measured stats — see
+// src/inference/archetypes.py's module docstring for the full reasoning.
+// Every label ships with the trait percentiles behind it, so a client can
+// always answer "why" rather than presenting the name as a bare verdict.
+
+export type ArchetypeCatalogueEntry = { key: string; label: string; category: string; blurb: string };
+
+export type SecondaryArchetype = { key: string; label: string; category: string; blurb: string; score: number };
+
+export type PlayerArchetype = {
+  player_id: string;
+  archetype_key: string | null;
+  archetype_label: string | null;
+  archetype_score: number | null;
+  archetype_secondary: SecondaryArchetype[];
+};
+
+export type ArchetypesResponse = {
+  season: string | null;
+  catalogue: ArchetypeCatalogueEntry[];
+  players: PlayerArchetype[];
+};
+
+export type TraitScore = { key: string; label: string; percentile: number | null; stats: string[] };
+
+export type ArchetypeDetail = {
+  player_id: string;
+  primary: { key: string; label: string; category: string | null; blurb: string | null; score: number } | null;
+  secondary: SecondaryArchetype[];
+  qualified: { key: string; label: string; category: string; blurb: string; score: number }[];
+  traits: TraitScore[];
+  eligible: boolean;
+};

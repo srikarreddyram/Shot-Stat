@@ -43,7 +43,7 @@ export function ComparePlayers({ columns, rows, teamNames, onOpenPlayer }: {
     .filter((p): p is { slot: number; row: Row } => p != null && p.row != null);
 
   const distributions = useMemo(
-    () => buildDistributions(rows, [...columns.map((c) => c.key), ...RADAR_STAT_KEYS]),
+    () => buildDistributions(rows, [...columns.map((c) => c.key), ...RADAR_STAT_KEYS], columns),
     [rows, columns]
   );
 
@@ -79,7 +79,7 @@ export function ComparePlayers({ columns, rows, teamNames, onOpenPlayer }: {
         </Card>
       ) : (
         <>
-          <RadarPanel picked={picked} distributions={distributions} />
+          <RadarPanel picked={picked} distributions={distributions} columns={columns} />
           <HeadToHead
             picked={picked}
             columns={columns}
@@ -95,13 +95,14 @@ export function ComparePlayers({ columns, rows, teamNames, onOpenPlayer }: {
 
 // ── Radar ───────────────────────────────────────────────────────────────────
 
-function RadarPanel({ picked, distributions }: {
+function RadarPanel({ picked, distributions, columns }: {
   picked: { slot: number; row: Row }[];
   distributions: Map<string, number[]>;
+  columns: Column[];
 }) {
   const scored = RADAR_AXES.map((axis) => ({
     axis,
-    values: picked.map((p) => axisScore(p.row, axis, distributions)),
+    values: picked.map((p) => axisScore(p.row, axis, distributions, columns)),
   }));
   const comparable = scored.filter((s) => s.values.every((v) => v != null));
   const dropped = scored.filter((s) => !s.values.every((v) => v != null));
@@ -110,8 +111,12 @@ function RadarPanel({ picked, distributions }: {
     <Card style={{ padding: "18px 22px 20px", marginBottom: 16 }}>
       <SectionLabel>Profile shape</SectionLabel>
       <div style={{ fontSize: 11.5, color: C.faint, margin: "8px 0 10px", lineHeight: 1.55, maxWidth: 720 }}>
-        Each axis is the average league percentile of the measured stats behind it — a summary of
-        the rows below, not a rating. Further out is better on every axis.
+        Each axis is the average league percentile of the measured stats named under it — a
+        summary of the rows below, not a rating. Further out is better on every axis. Note that
+        <strong style={{ color: C.dim, fontWeight: 600 }}> self-creation</strong> and
+        <strong style={{ color: C.dim, fontWeight: 600 }}> playmaking</strong> are different
+        things here: the first is generating your own shot, the second is generating one for
+        somebody else. A pass-first big can sit low on the first and top the second.
       </div>
 
       {comparable.length < 3 ? (
@@ -135,7 +140,14 @@ function RadarPanel({ picked, distributions }: {
               const best = Math.max(...(c.values as number[]));
               return (
                 <div key={c.axis.key} style={{ padding: "9px 0", borderBottom: `1px solid ${C.rule}` }}>
-                  <div style={{ fontSize: 12, color: C.dim, marginBottom: 6 }}>{c.axis.label}</div>
+                  <div style={{ fontSize: 12, color: C.dim }}>{c.axis.label}</div>
+                  {/* Naming the inputs inline, because an axis label alone is
+                      a black box — and a reader who assumes the wrong inputs
+                      concludes the chart is broken rather than that they
+                      misread it. */}
+                  <div style={{ fontSize: 10, color: C.muted, margin: "2px 0 7px", lineHeight: 1.45 }}>
+                    {c.axis.blurb}
+                  </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     {picked.map((p, i) => {
                       const v = c.values[i] as number;
@@ -172,11 +184,11 @@ function RadarPanel({ picked, distributions }: {
 // Wider than it is tall on purpose: the left and right axis labels sit
 // outside the shape and need horizontal room, or they clip at the viewBox
 // edge ("Rim pressure" becoming "Rim pre").
-const RADAR_W = 440;
-const RADAR_H = 320;
-const RADAR_R = 104;
+export const RADAR_W = 440;
+export const RADAR_H = 320;
+export const RADAR_R = 104;
 
-function RadarChart({ axes, series }: {
+export function RadarChart({ axes, series }: {
   axes: string[];
   series: { color: string; values: number[] }[];
 }) {

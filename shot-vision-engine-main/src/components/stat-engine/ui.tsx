@@ -1,4 +1,5 @@
 import { ReactNode } from "react";
+import { formatStat, SeasonPoint } from "../../lib/stat-engine";
 
 // Shared visual language for the Stat Engine. The tokens here are taken from
 // EnginePage.tsx rather than invented, so /stats reads as the same product as
@@ -420,6 +421,77 @@ export function teamLogoUrl(teamId: string | null | undefined): string | null {
   return `${LOGO_API_BASE}/team/${encodeURIComponent(String(teamId))}/logo`;
 }
 
+/** The league's own wordmark — same caching proxy as team logos (see
+ *  /league/logo in src/inference/api.py), used to brand app chrome rather
+ *  than any single team. */
+export function leagueLogoUrl(): string {
+  return `${LOGO_API_BASE}/league/logo`;
+}
+
+// A red/white/blue palette echoing the league's own wordmark colours,
+// layered in as a SECOND accent alongside this app's established gold —
+// gold stays the primary "brand" colour (buttons, ratings, highlights);
+// these show up as structural/ambient touches (dividers, glows, home/away)
+// so the UI reads as "NBA" rather than as a single unbranded gold app.
+export const NBA_RED = "#C8102E";
+export const NBA_BLUE = "#1D428A";
+
+/** A persistent red/blue frame down both edges of the viewport — the one
+ *  piece of NBA branding every page in the app shares, team-themed pages
+ *  included, so the app reads as "one NBA product" rather than a themed
+ *  page here and an unbranded one there. Fixed position, so it stays put
+ *  through scrolling; pointer-events none, so it never steals a click. */
+export function NBAEdgeBezel() {
+  return (
+    <>
+      <div aria-hidden="true" style={{ position: "fixed", left: 0, top: 0, bottom: 0, width: 4, background: NBA_RED, opacity: 0.55, zIndex: 40, pointerEvents: "none" }} />
+      <div aria-hidden="true" style={{ position: "fixed", right: 0, top: 0, bottom: 0, width: 4, background: NBA_BLUE, opacity: 0.55, zIndex: 40, pointerEvents: "none" }} />
+    </>
+  );
+}
+
+/** The default page wash for anywhere with no specific team to theme
+ *  against — red top-left, blue top-right. Any page with a real team in
+ *  play (a team profile, a player's team) should use that team's own
+ *  TeamPageTint instead; this is what fills the gap everywhere else so the
+ *  app is never left plain gold-on-black. */
+export function NBADefaultWash() {
+  return (
+    <div aria-hidden="true" style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0 }}>
+      <div style={{ position: "absolute", inset: 0, background: `radial-gradient(65% 55% at 8% 0%, ${NBA_RED}2E 0%, transparent 62%)` }} />
+      <div style={{ position: "absolute", inset: 0, background: `radial-gradient(65% 55% at 92% 0%, ${NBA_BLUE}38 0%, transparent 62%)` }} />
+    </div>
+  );
+}
+
+/** The league wordmark plus a full-strength red/white/blue stripe, sized to
+ *  sit next to a page's own title in its header. One consistent brand unit
+ *  reused by every page's header rather than each re-implementing it. */
+export function LeagueBrandMark({ height = 30 }: { height?: number }) {
+  return (
+    <img
+      src={leagueLogoUrl()}
+      alt=""
+      aria-hidden="true"
+      onError={(e) => { e.currentTarget.style.display = "none"; }}
+      style={{ height, width: "auto" }}
+    />
+  );
+}
+
+/** `bottom` is a raw CSS offset (default flush with the header's own bottom
+ *  edge); pass a negative value to hang the stripe just below a header that
+ *  already has its own bottom border, so the two don't overlap. */
+export function NBAHeaderStripe({ bottom = 0 }: { bottom?: number | string }) {
+  return (
+    <div aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, bottom, height: 5, display: "flex" }}>
+      <div style={{ flex: 1, background: NBA_RED }} />
+      <div style={{ flex: 1, background: "#F0F0F0" }} />
+      <div style={{ flex: 1, background: NBA_BLUE }} />
+    </div>
+  );
+}
+
 /** A team's colour wash plus its logo, sat behind a profile hero.
  *  Decorative only: aria-hidden, non-interactive, and it renders correctly
  *  with no logo at all if the CDN does not answer. */
@@ -440,7 +512,7 @@ export function TeamBackdrop({ teamId, abbrev, height = 320 }: {
     >
       <div style={{
         position: "absolute", inset: 0,
-        background: `radial-gradient(130% 150% at 88% 0%, ${color}2E 0%, ${color}0A 42%, transparent 72%)`,
+        background: `radial-gradient(130% 150% at 88% 0%, ${color}45 0%, ${color}16 42%, transparent 72%)`,
       }} />
       {src && (
         <img
@@ -457,7 +529,8 @@ export function TeamBackdrop({ teamId, abbrev, height = 320 }: {
           style={{
             position: "absolute", right: -height * 0.22, top: "50%",
             transform: "translateY(-50%)", height, width: "auto",
-            opacity: 0.075, filter: "saturate(1.4)",
+            maxWidth: "none", maxHeight: "none",
+            opacity: 0.16, filter: "saturate(1.4)",
           }}
         />
       )}
@@ -474,8 +547,161 @@ export function TeamPageTint({ abbrev }: { abbrev: string | null | undefined }) 
       aria-hidden="true"
       style={{
         position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0,
-        background: `radial-gradient(80% 55% at 50% 0%, ${color}1C 0%, transparent 68%)`,
+        background: `radial-gradient(80% 55% at 50% 0%, ${color}38 0%, transparent 68%)`,
       }}
     />
+  );
+}
+
+/** Player headshot, served by our own API (see /player/{id}/headshot), which
+ *  fetches from NBA's CDN once and caches it — same reasoning as the team
+ *  logo above.
+ *
+ *  "small" is a ~15 KB 260x190; "large" is a ~200 KB 1040x760. A table of 582
+ *  rows must use "small", or the page pulls well over a hundred megabytes. */
+export function playerHeadshotUrl(playerId: string | null | undefined, size: "small" | "large" = "small"): string | null {
+  if (!playerId) return null;
+  return `${LOGO_API_BASE}/player/${encodeURIComponent(String(playerId))}/headshot?size=${size}`;
+}
+
+export function PlayerAvatar({ playerId, teamAbbrev, size = 28, variant = "small" }: {
+  playerId: string | null | undefined;
+  teamAbbrev?: string | null;
+  size?: number;
+  variant?: "small" | "large";
+}) {
+  const src = playerHeadshotUrl(playerId, variant);
+  const ring = teamAbbrev ? teamColor(teamAbbrev) : C.edgeStrong;
+  return (
+    <span
+      style={{
+        display: "inline-block", width: size, height: size, borderRadius: "50%",
+        // The headshots are cut-outs on a transparent ground, so they need a
+        // filled circle behind them or they read as floating heads.
+        background: `linear-gradient(160deg, ${ring}33, ${C.raised})`,
+        border: `1px solid ${ring}55`,
+        overflow: "hidden", flexShrink: 0, position: "relative",
+      }}
+    >
+      {src && (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          // A missing photo must leave the tinted circle, not a broken glyph.
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
+          style={{
+            // The source is a 4:3 crop with the head high in the frame;
+            // scaling up and nudging down centres the face in a circle.
+            //
+            // maxWidth/maxHeight: "none" is load-bearing, not decoration. A
+            // global reset (Tailwind preflight's img{max-width:100%}) caps
+            // this element's WIDTH at the parent's 100% while leaving HEIGHT
+            // free to reach the full 132% — an asymmetric clamp that turns a
+            // square 132%x132% crop box into a narrow, too-tall one. The
+            // marginLeft below was computed assuming a symmetric box, so
+            // every headshot rendered visibly shifted (too much of the right
+            // side of the face showing, background visible on the left).
+            // Confirmed live: computed width capped at 84px against an
+            // uncapped height of 110.875px in an 86px box, both meant to be
+            // 113.5px. Overriding the cap here restores the symmetric box
+            // the centering math actually assumes.
+            maxWidth: "none", maxHeight: "none",
+            width: "132%", height: "132%", objectFit: "cover",
+            objectPosition: "50% 12%", marginLeft: "-16%", marginTop: "-6%",
+            display: "block",
+          }}
+        />
+      )}
+    </span>
+  );
+}
+
+// ── Career trend chart ───────────────────────────────────────────────────────
+// A season-by-season line, not a sparkline: labelled axes, a dot per real
+// season (never interpolated across a gap — an SVG polyline drawn straight
+// through a missing season would imply a value that was never measured), and
+// the actual season labels along the bottom so "when" is never ambiguous.
+
+
+const TREND_W = 460;
+const TREND_H = 150;
+const TREND_PAD = { top: 14, right: 14, bottom: 22, left: 8 };
+
+export function TrendChart({ points, fmt, color = C.gold, label }: {
+  points: SeasonPoint[];
+  fmt: string;
+  color?: string;
+  label?: string;
+}) {
+  if (points.length === 0) {
+    return (
+      <div style={{ height: TREND_H, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 11 }}>
+        No seasons measured
+      </div>
+    );
+  }
+
+  const values = points.map((p) => p.value);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  // A dead-flat series (every season identical) needs an artificial span or
+  // every point lands on the same horizontal line at 50% — still correct,
+  // just given a hair of headroom so the line doesn't hug the chart edges.
+  const span = hi - lo || Math.abs(hi || 1) * 0.1 || 1;
+  const padSpan = span * 0.18;
+  const yMin = lo - padSpan, yMax = hi + padSpan;
+
+  const innerW = TREND_W - TREND_PAD.left - TREND_PAD.right;
+  const innerH = TREND_H - TREND_PAD.top - TREND_PAD.bottom;
+  const x = (i: number) => TREND_PAD.left + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
+  const y = (v: number) => TREND_PAD.top + innerH - ((v - yMin) / (yMax - yMin)) * innerH;
+
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
+  const area = `${path} L ${x(points.length - 1).toFixed(1)} ${(TREND_PAD.top + innerH).toFixed(1)} `
+    + `L ${x(0).toFixed(1)} ${(TREND_PAD.top + innerH).toFixed(1)} Z`;
+
+  // Thinning season labels when there are many, so they never overlap —
+  // every point still gets a dot, just not every point gets a printed label.
+  const labelEvery = Math.max(1, Math.ceil(points.length / 6));
+
+  return (
+    <div>
+      {label && <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 6 }}>{label}</div>}
+      <svg viewBox={`0 0 ${TREND_W} ${TREND_H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+        <defs>
+          <linearGradient id={`trend-fill-${color.replace("#", "")}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {/* Zero-ish baseline only when zero actually sits inside the visible
+            range — drawing it outside that range would just be a stray line
+            at the chart's edge. */}
+        {yMin < 0 && yMax > 0 && (
+          <line x1={TREND_PAD.left} x2={TREND_W - TREND_PAD.right} y1={y(0)} y2={y(0)}
+                stroke="rgba(255,255,255,0.12)" strokeDasharray="3 3" />
+        )}
+        <path d={area} fill={`url(#trend-fill-${color.replace("#", "")})`} />
+        <path d={path} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        {points.map((p, i) => (
+          <circle key={p.season} cx={x(i)} cy={y(p.value)} r={i === points.length - 1 ? 3.5 : 2.5}
+                  fill={i === points.length - 1 ? color : C.bg} stroke={color} strokeWidth={1.5} />
+        ))}
+        {points.map((p, i) => (
+          (i % labelEvery === 0 || i === points.length - 1) && (
+            <text key={p.season} x={x(i)} y={TREND_H - 6} textAnchor="middle"
+                  fill={C.muted} style={{ fontFamily: F.mono, fontSize: 8.5 }}>
+              {p.season.slice(2, 5)}
+            </text>
+          )
+        ))}
+        {/* The current (rightmost) value, printed at its own point. */}
+        <text x={x(points.length - 1)} y={y(points[points.length - 1].value) - 9} textAnchor="middle"
+              fill={color} style={{ fontFamily: F.mono, fontSize: 10.5, fontWeight: 700 }}>
+          {formatStat(points[points.length - 1].value, fmt)}
+        </text>
+      </svg>
+    </div>
   );
 }

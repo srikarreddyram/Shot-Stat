@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { NBAEdgeBezel, NBADefaultWash, LeagueBrandMark } from "../components/stat-engine/ui";
 
 // Model Features — every feature the live shot-quality model reasons with,
 // published as data rather than buried in src/features/spec.py. This
@@ -106,10 +107,15 @@ function ModelFeaturesPage() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#0B0B0F", color: "#F0F0F0", fontFamily: "'Inter', sans-serif", padding: "32px 24px" }}>
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+      <NBAEdgeBezel />
+      <NBADefaultWash />
+      <div style={{ maxWidth: 900, margin: "0 auto", position: "relative" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
-          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, letterSpacing: 1, color: GOLD }}>
-            MODEL FEATURES
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <LeagueBrandMark height={22} />
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, letterSpacing: 1, color: GOLD }}>
+              MODEL FEATURES
+            </div>
           </div>
           <a href="/#engine" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none" }}>
             ← ENGINE

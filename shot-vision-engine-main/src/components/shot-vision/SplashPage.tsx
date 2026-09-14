@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import VideoBackdrop from "./video-backdrop";
-import FilmRoom from "./film-room";
+import { LeagueBrandMark, NBAEdgeBezel, teamColor, teamLogoUrl } from "@/components/stat-engine/ui";
 
 interface Props {
   onLaunch: () => void;
@@ -53,26 +53,43 @@ const LUKA_ZONES = [
  * Tatum's sample is far smaller than the others'; `fga` is shown per player so
  * that is visible rather than buried.
  */
+// team/teamId are each player's real current franchise — abbreviation feeds
+// teamColor() for the row accent, teamId feeds the same /team/{id}/logo
+// proxy the rest of the app uses, both confirmed against the live /teams
+// endpoint rather than typed from memory.
 const PLAYER_SPREAD = [
   {
     name: "LUKA DONČIĆ",
+    team: "LAL",
+    teamId: "1610612747",
     fga: 1457,
     best: ["RESTRICTED AREA", 1.63],
     worst: ["LEFT CORNER 3", 0.4],
   },
   {
     name: "VICTOR WEMBANYAMA",
+    team: "SAS",
+    teamId: "1610612759",
     fga: 1080,
     best: ["RESTRICTED AREA", 1.5],
     worst: ["MID-RANGE", 0.82],
   },
   {
     name: "CADE CUNNINGHAM",
+    team: "DET",
+    teamId: "1610612765",
     fga: 1189,
     best: ["RESTRICTED AREA", 1.26],
     worst: ["IN THE PAINT", 0.84],
   },
-  { name: "JAYSON TATUM", fga: 287, best: ["RESTRICTED AREA", 1.23], worst: ["MID-RANGE", 0.7] },
+  {
+    name: "JAYSON TATUM",
+    team: "BOS",
+    teamId: "1610612738",
+    fga: 287,
+    best: ["RESTRICTED AREA", 1.23],
+    worst: ["MID-RANGE", 0.7],
+  },
 ] as const;
 
 const LUKA_BEST = LUKA_ZONES[0];
@@ -183,6 +200,21 @@ export default function SplashPage({ onLaunch }: Props) {
                 "radial-gradient(ellipse at 50% 48%, rgba(10,10,15,0) 52%, rgba(10,10,15,0.55) 100%)",
             }}
           />
+
+          {/* League wordmark — a static, persistent brand mark like the nav
+              dots beside it. No animation, no motion: this is a chrome
+              addition, not part of the hero's scroll-triggered sequence, and
+              intentionally does not touch VideoBackdrop or any keyframe
+              above. Silently disappears if the logo proxy can't be reached. */}
+          <div style={{ position: "absolute", left: 32, top: 32, zIndex: 20 }}>
+            <LeagueBrandMark height={34} />
+          </div>
+          {/* Same red/blue edge bezel every other page in the app uses (see
+              NBAEdgeBezel in stat-engine/ui.tsx) — fixed positioning reaches
+              past this sticky container to the real viewport edge, so it
+              still lines up here. Purely an added frame; touches nothing
+              about VideoBackdrop, the scrims, or any keyframe above. */}
+          <NBAEdgeBezel />
 
           {/* Nav dots */}
           <div
@@ -381,6 +413,10 @@ export default function SplashPage({ onLaunch }: Props) {
                   marginTop: 14,
                   opacity: 0,
                   animation: section === 2 ? "fadeUp 0.7s ease 0.8s forwards" : undefined,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "flex-end",
+                  gap: 8,
                   fontFamily: "'JetBrains Mono', monospace",
                   fontSize: 11,
                   color: "#C9A84C",
@@ -388,6 +424,16 @@ export default function SplashPage({ onLaunch }: Props) {
                 }}
               >
                 LUKA DONČIĆ · {LUKA_SEASON} · {LUKA_FGA.toLocaleString()} FGA
+                {/* Same real crest proxy as the rest of the app — this is the
+                    Lakers row, so it should look like one. */}
+                <img
+                  src={teamLogoUrl("1610612747")!}
+                  alt=""
+                  aria-hidden="true"
+                  loading="lazy"
+                  onError={(e) => { e.currentTarget.style.display = "none"; }}
+                  style={{ height: 18, width: 18, objectFit: "contain", flexShrink: 0 }}
+                />
               </div>
               <div
                 style={{
@@ -521,27 +567,46 @@ export default function SplashPage({ onLaunch }: Props) {
                       textAlign: "left",
                     }}
                   >
-                    <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontFamily: "'Bebas Neue', sans-serif",
-                          fontSize: 19,
-                          color: "#F0F0F0",
-                          letterSpacing: "0.03em",
-                          lineHeight: 1.1,
-                        }}
-                      >
-                        {pl.name}
-                      </div>
-                      <div
-                        style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 9,
-                          color: "#6b7a92",
-                          letterSpacing: "0.14em",
-                        }}
-                      >
-                        {pl.fga.toLocaleString()} FGA
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                      {/* Real team crest, same proxy every other team logo in
+                          the app uses — the one piece of this row that
+                          wasn't here before, so these four real players read
+                          as "on a real team" rather than as names in a list. */}
+                      <img
+                        src={teamLogoUrl(pl.teamId)!}
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        onError={(e) => { e.currentTarget.style.display = "none"; }}
+                        style={{ height: 26, width: 26, objectFit: "contain", flexShrink: 0 }}
+                      />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                          <div
+                            style={{
+                              fontFamily: "'Bebas Neue', sans-serif",
+                              fontSize: 19,
+                              color: "#F0F0F0",
+                              letterSpacing: "0.03em",
+                              lineHeight: 1.1,
+                            }}
+                          >
+                            {pl.name}
+                          </div>
+                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: teamColor(pl.team), letterSpacing: "0.1em" }}>
+                            {pl.team}
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 9,
+                            color: "#6b7a92",
+                            letterSpacing: "0.14em",
+                          }}
+                        >
+                          {pl.fga.toLocaleString()} FGA
+                        </div>
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 18, flexShrink: 0 }}>
@@ -670,7 +735,6 @@ export default function SplashPage({ onLaunch }: Props) {
           </SectionOverlay>
         </div>
       </div>
-      <FilmRoom />
     </>
   );
 }

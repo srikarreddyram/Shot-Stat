@@ -261,6 +261,15 @@ export interface ShotQualityBreakdown {
    * taken, which nothing else in this breakdown captures.
    */
   defense_factors: ShotQualityFactor[];
+  /**
+   * Game-state context: score margin, clutch-time flag, and the shot-clock
+   * proxy (time since the last live-ball event — the NBA's public stats API
+   * never publishes literal per-shot shot-clock-remaining, only a season
+   * aggregate FG% split by clock bucket, which can't describe one specific
+   * shot). These were always live model inputs with real contributions;
+   * this list is what makes that visible instead of silently folded away.
+   */
+  context_factors: ShotQualityFactor[];
 }
 
 /** The full matchup narrative, from GET /explain/matchup. */
