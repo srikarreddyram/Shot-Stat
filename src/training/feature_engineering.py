@@ -183,6 +183,7 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
     LEFT JOIN defender_stats ds_overall
         ON s.defender_id = ds_overall.player_id AND s.season = ds_overall.season
         AND ds_overall.defense_category = 'Overall'
+        AND ds_overall.season_type = 'Regular Season'
 
     LEFT JOIN defender_stats ds_zone
         ON s.defender_id = ds_zone.player_id AND s.season = ds_zone.season
@@ -192,6 +193,7 @@ def build_training_matrix(seasons: list[str], use_defender: bool = False) -> pd.
             WHEN s.zone = 'Mid-Range' THEN 'Greater Than 15Ft'
             WHEN s.zone IN ('Left Corner 3', 'Right Corner 3', 'Above the Break 3') THEN '3 Pointers'
         END)
+        AND ds_zone.season_type = 'Regular Season'
         """
 
     query = f"""

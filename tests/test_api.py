@@ -20,7 +20,7 @@ from src.features.shrinkage import BetaPrior
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
-MODEL_NAME = "shot-quality-v19"
+MODEL_NAME = "shot-quality-v20"
 
 pytestmark = pytest.mark.skipif(
     not (MODELS_DIR / f"metadata_{MODEL_NAME}.json").exists(),
@@ -210,7 +210,7 @@ def test_team_logo_rejects_anything_that_is_not_a_team_id(client, bad_id, monkey
 
 
 def test_team_logo_fetches_once_then_serves_from_cache(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(api_mod, "TEAM_LOGO_CACHE", tmp_path / "logos")
+    monkeypatch.setattr(api_mod.media, "MEDIA_CACHE", tmp_path)
     calls = []
 
     class FakeResponse:
@@ -237,7 +237,7 @@ def test_team_logo_fetches_once_then_serves_from_cache(client, tmp_path, monkeyp
 def test_team_logo_reports_upstream_failure_rather_than_caching_garbage(client, tmp_path, monkeypatch):
     """An HTML error page from the CDN must not be written to the cache and
     then served forever as if it were a logo."""
-    monkeypatch.setattr(api_mod, "TEAM_LOGO_CACHE", tmp_path / "logos")
+    monkeypatch.setattr(api_mod.media, "MEDIA_CACHE", tmp_path)
 
     class HtmlResponse:
         content = b"<html>404 not found</html>"
@@ -247,4 +247,43 @@ def test_team_logo_reports_upstream_failure_rather_than_caching_garbage(client, 
     monkeypatch.setattr(api_mod.requests, "get", lambda url, **kw: HtmlResponse())
     response = client.get("/team/1610612737/logo")
     assert response.status_code == 502
-    assert not (tmp_path / "logos" / "1610612737.svg").exists()
+    assert not (tmp_path / "team_logos" / "1610612737.svg").exists()
+
+
+@pytest.mark.parametrize("bad_id", ["../../etc/passwd", "abc", "", "12345678901", "2544 "])
+def test_player_headshot_rejects_anything_that_is_not_a_player_id(client, bad_id, monkeypatch):
+    def explode(*args, **kwargs):
+        raise AssertionError("a request was made for a rejected player id")
+    monkeypatch.setattr(api_mod.requests, "get", explode)
+    assert client.get(f"/player/{bad_id}/headshot").status_code == 404
+
+
+def test_player_headshot_rejects_an_unknown_size(client, monkeypatch):
+    def explode(*args, **kwargs):
+        raise AssertionError("a request was made for a rejected size")
+    monkeypatch.setattr(api_mod.requests, "get", explode)
+    assert client.get("/player/2544/headshot?size=enormous").status_code == 400
+
+
+def test_player_headshot_caches_each_size_separately(client, tmp_path, monkeypatch):
+    """Small and large must not share a cache path, or whichever is requested
+    first is served for both and a 200 KB hero image ends up in a table row."""
+    monkeypatch.setattr(api_mod.media, "MEDIA_CACHE", tmp_path)
+    urls = []
+
+    class FakePng:
+        content = b"\x89PNG\r\n\x1a\n"
+        headers = {"content-type": "image/png"}
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(api_mod.requests, "get", lambda url, **kw: (urls.append(url), FakePng())[1])
+
+    assert client.get("/player/2544/headshot?size=small").status_code == 200
+    assert client.get("/player/2544/headshot?size=large").status_code == 200
+    assert len(urls) == 2
+    assert "260x190" in urls[0] and "1040x760" in urls[1]
+    assert (tmp_path / "player_headshots" / "small" / "2544.png").exists()
+    assert (tmp_path / "player_headshots" / "large" / "2544.png").exists()
+
+    client.get("/player/2544/headshot?size=small")
+    assert len(urls) == 2  # served from disk

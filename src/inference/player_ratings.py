@@ -233,6 +233,7 @@ def compute_ratings(engine, season: str) -> pd.DataFrame:
                SUM(pct_plusminus * d_fga) / NULLIF(SUM(d_fga), 0) AS pm
         FROM defender_stats
         WHERE season IN ({season_in}) AND defense_category != 'Overall'
+          AND season_type = 'Regular Season'
           AND d_fga IS NOT NULL
         GROUP BY player_id, season
     """), engine, params=params)

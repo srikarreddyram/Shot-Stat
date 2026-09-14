@@ -157,6 +157,39 @@ def test_zone_rate_selects_the_shooting_zone(zone_priors):
         assert out.iloc[0]["zone_rate"] == pytest.approx(expected)
 
 
+def test_clutch_flag_uses_the_official_five_minute_window(zone_priors):
+    """clutch_flag matches the NBA's own "Clutch Time" definition (last 5
+    minutes, not the previous ad hoc 2-minute window) — a shot at 200 seconds
+    remaining must now flag as clutch when it would not have before."""
+    row = _raw_row(quarter=4, time_remaining=200.0, score_diff=-3)
+    out = derive_features(apply_hierarchy(pd.DataFrame([row]), zone_priors))
+    assert out.iloc[0]["clutch_flag"] == 1
+
+    not_clutch_time = _raw_row(quarter=4, time_remaining=400.0, score_diff=-3)
+    out2 = derive_features(apply_hierarchy(pd.DataFrame([not_clutch_time]), zone_priors))
+    assert out2.iloc[0]["clutch_flag"] == 0
+
+    not_clutch_margin = _raw_row(quarter=4, time_remaining=200.0, score_diff=11)
+    out3 = derive_features(apply_hierarchy(pd.DataFrame([not_clutch_margin]), zone_priors))
+    assert out3.iloc[0]["clutch_flag"] == 0
+
+
+def test_clutch_edge_is_gated_by_clutch_flag(zone_priors):
+    """clutch_edge is the player's clutch-vs-normal delta, but ONLY on a shot
+    that is itself clutch — the exact interaction the user asked for ("some
+    people are better than others in the clutch"), not a standing bonus that
+    applies regardless of game situation."""
+    clutch_shot = _raw_row(quarter=4, time_remaining=200.0, score_diff=-3,
+                           clutch_fg_delta=0.08)
+    out = derive_features(apply_hierarchy(pd.DataFrame([clutch_shot]), zone_priors))
+    assert out.iloc[0]["clutch_edge"] == pytest.approx(0.08)
+
+    non_clutch_shot = _raw_row(quarter=2, time_remaining=400.0, score_diff=-3,
+                               clutch_fg_delta=0.08)
+    out2 = derive_features(apply_hierarchy(pd.DataFrame([non_clutch_shot]), zone_priors))
+    assert out2.iloc[0]["clutch_edge"] == pytest.approx(0.0)
+
+
 def test_as_model_matrix_preserves_column_order(zone_priors):
     """
     XGBoost binds to column position. A frame with the right columns in the
@@ -248,7 +281,7 @@ def test_serving_path_populates_dense_features():
     be filled by the serving path. `recent_10_fg` failing this check was worth
     roughly half a rim probability.
     """
-    from src.inference.recommender import SHOT_GRID
+    from src.inference.shot_grid import SHOT_GRID
 
     rec = _recommender()
     grid = rec.recommend(player_id="201939", season="2025-26",

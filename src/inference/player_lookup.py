@@ -215,7 +215,9 @@ def resolve_defender_stats(conn, defender_id: str, season: str) -> dict | None:
     if measured_season is not None:
         def_rows = conn.execute(text("""
             SELECT defense_category, d_fg_pct, pct_plusminus, freq
-            FROM defender_stats WHERE player_id = :pid AND season = :season
+            FROM defender_stats
+            WHERE player_id = :pid AND season = :season
+              AND season_type = 'Regular Season'
         """), {"pid": defender_id, "season": measured_season}).fetchall()
         def_stats = {r[0]: {"d_fg_pct": r[1], "pct_plusminus": r[2], "freq": r[3]} for r in def_rows}
 

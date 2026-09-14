@@ -130,6 +130,12 @@ MONOTONE_CONSTRAINTS = {
     "oncourt_def_stl_max": -1,
     "oncourt_def_deflections_max": -1,
     "oncourt_def_gravity_max": -1,
+    # A player who shoots better than his own baseline in the clutch
+    # (positive clutch_fg_delta, engaged by clutch_flag) should never be
+    # modeled as LESS likely to make a clutch shot as that edge increases —
+    # same directional confidence as overall_rate above, just gated to
+    # clutch situations by construction (zero on every non-clutch shot).
+    "clutch_edge": 1,
 }
 
 
@@ -573,6 +579,13 @@ def train(
                   "n_players": p.n_players, "n_attempts": p.n_attempts}
             for cat, p in artifacts.get("category_priors", {}).items()
         },
+        # Point-in-time clutch-shooting prior (see `clutch_performance.py`) —
+        # same "travels with the model" reasoning as zone_priors/category_priors.
+        "clutch_prior": (
+            {"mean": artifacts["clutch_prior"].mean, "strength": artifacts["clutch_prior"].strength,
+             "n_players": artifacts["clutch_prior"].n_players, "n_attempts": artifacts["clutch_prior"].n_attempts}
+            if artifacts.get("clutch_prior") else None
+        ),
         "calibrators": {k: c.to_dict() for k, c in calibrators.items()},
         "calibration_adopted": calibration_adopted,
         "calibration_note": calibration_note,

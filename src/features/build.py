@@ -30,10 +30,12 @@ import pandas as pd
 
 import config
 from src.features import creation as creation_mod
+from src.features.shrinkage import shrink
 from src.features.point_in_time import (
     ZONES,
     apply_hierarchy,
     apply_opponent_defence,
+    build_clutch_performance,
     build_contest_history,
     build_defender_category_rates,
     build_lineup_context,
@@ -41,6 +43,7 @@ from src.features.point_in_time import (
     build_prior_counts,
     build_rolling_form,
     fit_league_category_priors,
+    fit_league_clutch_prior,
     fit_league_zone_priors,
 )
 from src.features.spec import ZONE_TO_DEF_CATEGORY, derive_features
@@ -423,6 +426,28 @@ def build_matrix(
 
     df = apply_hierarchy(df, zone_priors)
 
+    log("  → clutch performance (point-in-time) ...")
+    clutch_prior = fit_league_clutch_prior(engine, through_season=prior_through_season)
+    if verbose:
+        log(f"    clutch prior: mean={clutch_prior.mean:.3f}  k={clutch_prior.strength:.1f}  "
+            f"(n={clutch_prior.n_players} players)")
+    clutch_counts = build_clutch_performance(engine)
+    if not clutch_counts.empty:
+        df = df.merge(clutch_counts, on=["player_id", "game_id"], how="left")
+        df["pit_car_clutch_mk"] = df["pit_car_clutch_mk"].fillna(0.0)
+        df["pit_car_clutch_att"] = df["pit_car_clutch_att"].fillna(0.0)
+        # A player's clutch shooting relative to his OWN normal baseline —
+        # positive means he raises his game in the clutch, negative means he
+        # doesn't. spec/__init__.py multiplies this by `clutch_flag` to get
+        # `clutch_edge`, the actual model feature: zero on every non-clutch
+        # shot, engaged only when the shot itself is one.
+        df["clutch_fg_delta"] = (
+            shrink(df["pit_car_clutch_mk"], df["pit_car_clutch_att"], clutch_prior)
+            - df["overall_rate"]
+        )
+    else:
+        df["clutch_fg_delta"] = 0.0
+
     log("  → opponent zone defence (point-in-time) ...")
     opp = build_opponent_zone_defence(engine)
     if not opp.empty:
@@ -504,6 +529,7 @@ def build_matrix(
         "zone_priors": zone_priors,
         "league_zone_rates": league_zone_rates,
         "category_priors": category_priors,
+        "clutch_prior": clutch_prior,
         "prior_through_season": prior_through_season,
         "feature_cols": feature_cols,
     }

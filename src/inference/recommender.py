@@ -59,6 +59,7 @@ from src.features.point_in_time import (
     ZONE_SUFFIX,
     apply_hierarchy,
     league_average_defender,
+    lookup_clutch_performance,
     lookup_defender_category_rates,
     lookup_lineup_context,
     lookup_prior_counts,
@@ -66,7 +67,7 @@ from src.features.point_in_time import (
     lookup_supporting_cast,
     lookup_zone_creation,
 )
-from src.features.shrinkage import BetaPrior, posterior_interval
+from src.features.shrinkage import BetaPrior, posterior_interval, shrink
 from src.inference.explain import (
     build_matchup_narrative,
     creation_note,
@@ -86,6 +87,7 @@ from src.features.spec import (
 )
 from src.db.database import get_engine
 from src.training.calibration import Calibrator
+from src.inference.shot_grid import SHOT_GRID, ZONE_POINTS, ZONE_DISTANCE_RANGE  # noqa: F401 (ZONE_DISTANCE_RANGE re-exported for existing importers)
 
 MODEL_DIR = Path(config.PROJECT_ROOT) / "models"
 
@@ -97,95 +99,11 @@ MODEL_DIR = Path(config.PROJECT_ROOT) / "models"
 PRIMARY_DEFENDER_SHARE = 0.60
 PRIMARY_DEFENDER_DISPERSION = 0.55
 
-ZONE_POINTS = {
-    "Restricted Area": 2, "In The Paint (Non-RA)": 2, "Mid-Range": 2,
-    "Left Corner 3": 3, "Right Corner 3": 3, "Above the Break 3": 3,
-}
-
-
-# Observed shot-distance range (feet) per zone, from every shot 2016-17
-# onward. The analytic grid below can otherwise place candidates outside the
-# region where shots of that type are actually attempted — restricted-area
-# points nearly five feet out, for instance — and the model has no training
-# signal there, so it extrapolates. Filtering to the observed envelope keeps
-# every scored location one the model has genuinely seen.
-ZONE_DISTANCE_RANGE = {
-    "Restricted Area": (0.0, 3.0),
-    "In The Paint (Non-RA)": (4.0, 15.0),
-    "Mid-Range": (8.0, 23.0),
-    "Left Corner 3": (22.0, 26.0),
-    "Right Corner 3": (22.0, 26.0),
-    "Above the Break 3": (23.0, 32.0),
-}
-
-
-def _generate_court_grid() -> list[dict]:
-    """
-    Candidate shot locations across all six zones.
-
-    Coordinates are NBA shot-chart units: the basket is (0, 0), ten units to
-    the foot, y increasing toward half court. Zone membership is assigned by
-    construction here rather than recomputed from coordinates, so a grid point
-    can never disagree with the zone whose statistics it is scored against.
-    """
-    grid: list[dict] = []
-
-    def add(loc_x, loc_y, zone, shot_type):
-        distance = round(float(np.hypot(loc_x, loc_y)) / 10.0, 1)
-        low, high = ZONE_DISTANCE_RANGE[zone]
-        if not (low <= distance <= high):
-            return
-        grid.append({
-            "loc_x": float(loc_x),
-            "loc_y": float(loc_y),
-            "shot_distance": distance,
-            "zone": zone,
-            "shot_type": shot_type,
-        })
-
-    for x in np.linspace(-35, 35, 8):
-        for y in np.linspace(2, 35, 4):
-            if np.hypot(x, y) <= 42:
-                add(x, y, "Restricted Area", "2PT Field Goal")
-
-    for x in np.linspace(-75, 75, 7):
-        for y in np.linspace(40, 90, 5):
-            if 42 < np.hypot(x, y) <= 100 and abs(x) <= 80:
-                add(x, y, "In The Paint (Non-RA)", "2PT Field Goal")
-
-    for angle in np.linspace(10, 170, 12):
-        for r in (100, 130, 160, 190):
-            x, y = r * np.cos(np.radians(angle)), r * np.sin(np.radians(angle))
-            d = np.hypot(x, y) / 10.0
-            if 9.0 < d < 22.0 and y > 0:
-                add(x, y, "Mid-Range", "2PT Field Goal")
-
-    for x in np.linspace(-235, -220, 4):
-        for y in np.linspace(5, 85, 5):
-            if np.hypot(x, y) / 10.0 >= 22.0 and y <= 93:
-                add(x, y, "Left Corner 3", "3PT Field Goal")
-
-    for x in np.linspace(220, 235, 4):
-        for y in np.linspace(5, 85, 5):
-            if np.hypot(x, y) / 10.0 >= 22.0 and y <= 93:
-                add(x, y, "Right Corner 3", "3PT Field Goal")
-
-    for angle in np.linspace(15, 165, 14):
-        for r in (237, 250, 270):
-            x, y = r * np.cos(np.radians(angle)), r * np.sin(np.radians(angle))
-            if np.hypot(x, y) / 10.0 >= 23.0 and y > 93:
-                add(x, y, "Above the Break 3", "3PT Field Goal")
-
-    return grid
-
-
-SHOT_GRID = _generate_court_grid()
-
 
 class ShotRecommender:
     """Loads the trained models and scores court locations for a matchup."""
 
-    def __init__(self, model_name: str = "shot-quality-v19",
+    def __init__(self, model_name: str = "shot-quality-v20",
                  attainability_name: str = "attainability-pit",
                  model_dir: str | Path = MODEL_DIR):
         model_dir = Path(model_dir)
@@ -219,6 +137,17 @@ class ShotRecommender:
                            n_attempts=p.get("n_attempts", 0))
             for cat, p in self.metadata.get("category_priors", {}).items()
         }
+        # Same discipline for the point-in-time clutch-performance prior
+        # (`lookup_clutch_performance`). A weak, neutral fallback for
+        # metadata files predating this field — a model trained before this
+        # feature existed has no `clutch_fg_delta` column to shrink toward it
+        # anyway, but `_build_feature_frame` still constructs one unconditionally.
+        cp = self.metadata.get("clutch_prior")
+        self.clutch_prior = (
+            BetaPrior(mean=cp["mean"], strength=cp["strength"],
+                     n_players=cp.get("n_players", 0), n_attempts=cp.get("n_attempts", 0))
+            if cp else BetaPrior(mean=0.45, strength=50.0)
+        )
         # Populated from the attainability metadata below, once it is loaded.
         self.creation_priors: dict[str, BetaPrior] = {}
         self.sub_zone_priors: dict[str, BetaPrior] = {}
@@ -313,6 +242,7 @@ class ShotRecommender:
 
             counts = lookup_prior_counts(conn, player_id, as_of_date=as_of_date)
             recent = lookup_recent_form(conn, player_id, as_of_date=as_of_date)
+            clutch_counts = lookup_clutch_performance(conn, player_id, as_of_date=as_of_date)
 
         row = {
             "player_id": str(player_id),
@@ -326,6 +256,7 @@ class ShotRecommender:
         }
         row.update({k: v for k, v in counts.items() if not k.startswith("_")})
         row.update(recent)
+        row.update(clutch_counts)
         row["_latest_season"] = counts.get("_latest_season")
         return row
 
@@ -1066,6 +997,15 @@ class ShotRecommender:
 
         # ── Shared transforms: identical to the training path ─────────────
         raw = apply_hierarchy(raw, self.zone_priors)
+        if {"pit_car_clutch_mk", "pit_car_clutch_att"}.issubset(raw.columns):
+            raw["pit_car_clutch_mk"] = raw["pit_car_clutch_mk"].fillna(0.0)
+            raw["pit_car_clutch_att"] = raw["pit_car_clutch_att"].fillna(0.0)
+            raw["clutch_fg_delta"] = (
+                shrink(raw["pit_car_clutch_mk"], raw["pit_car_clutch_att"], self.clutch_prior)
+                - raw["overall_rate"]
+            )
+        else:
+            raw["clutch_fg_delta"] = 0.0
         features = derive_features(raw, league_zone_rates=self.league_zone_rates)
 
         for col in self.feature_cols:
