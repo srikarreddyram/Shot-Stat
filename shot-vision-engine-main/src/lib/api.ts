@@ -25,7 +25,25 @@ import { Player, HeatmapResponse, MatchupResponse, HealthStatus, AttainabilityEx
 const ratingOr = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 
-function mapBackendPlayer(backendPlayer: any): Player {
+// The raw shape returned by the backend's player endpoints — untyped JSON at
+// the network boundary, narrowed here to exactly the fields this mapper
+// reads rather than left as `any`, so a typo in a field name is a compile
+// error instead of a silent `undefined`.
+interface BackendPlayerRaw {
+  player_id: string;
+  name?: string; player_name?: string; position?: string;
+  height?: number | null; weight?: number | null; wingspan?: number | null;
+  career_fg_pct?: number | null; career_3p_pct?: number | null;
+  rating_off_rating?: unknown; rating_def_rating?: unknown;
+  rating_scoring?: unknown; rating_playmaking?: unknown; rating_volume?: unknown;
+  rating_creation?: unknown; rating_defence?: unknown;
+  def_fg_pct_allowed?: number | null; def_plus_minus?: number | null;
+  ast?: number; tov?: number; ft_pct?: number; rim_pct?: number; mid_pct?: number;
+  stats_source?: "measured" | "prior"; resolved_season?: string | null;
+  team_id?: string | null; rating_source?: "measured" | "2k_fallback" | null;
+}
+
+function mapBackendPlayer(backendPlayer: BackendPlayerRaw): Player {
   const fg = backendPlayer.career_fg_pct != null ? Math.round(backendPlayer.career_fg_pct * 100) : 45;
   const tp = backendPlayer.career_3p_pct != null ? Math.round(backendPlayer.career_3p_pct * 100) : 25;
   
@@ -40,7 +58,7 @@ function mapBackendPlayer(backendPlayer: any): Player {
 
   return {
     id: backendPlayer.player_id,
-    name: backendPlayer.name || backendPlayer.player_name,
+    name: backendPlayer.name || backendPlayer.player_name || backendPlayer.player_id,
     pos: backendPlayer.position || "N/A",
     heightIn: backendPlayer.height ?? null,
     weightLbs: backendPlayer.weight ?? null,
@@ -75,7 +93,14 @@ function mapBackendPlayer(backendPlayer: any): Player {
 // Backend origin. Override with VITE_API_BASE (e.g. in .env.local) when the
 // API is not on its default port — a mismatch here reads as "engine offline"
 // in the UI, since every call including /health simply fails to connect.
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+
+// Whether that came from .env.local or from the fallback. "Engine offline" is
+// almost always this fallback silently winning -- a backend started by hand on
+// a port the frontend was never told about is perfectly healthy and still
+// reads as down. The UI names both the URL and its source so the mismatch is
+// visible instead of being guessed at.
+export const API_BASE_IS_DEFAULT = !import.meta.env.VITE_API_BASE;
 
 // Headshots go through the backend rather than straight to cdn.nba.com.
 // Chrome fails every direct CDN request on some networks with
@@ -119,7 +144,9 @@ export async function getTeamsAPI(): Promise<Team[]> {
   const res = await fetch(`${API_BASE}/teams`);
   if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to fetch teams"));
   const data = await res.json();
-  return data.map((t: any) => ({ teamId: t.team_id, abbreviation: t.abbreviation, name: t.name }));
+  return data.map((t: { team_id: string; abbreviation: string; name: string }) => (
+    { teamId: t.team_id, abbreviation: t.abbreviation, name: t.name }
+  ));
 }
 
 // Every player rostered to one team this season — same card shape as

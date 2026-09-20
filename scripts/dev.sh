@@ -162,6 +162,26 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
+# --- verify the frontend is pointed at the backend we just started -----------
+# The entire "engine offline" failure mode is the frontend talking to a
+# different port than the backend listens on, and it is silent: the API is
+# healthy, the UI simply never reaches it. This script writes that env file
+# itself, so a mismatch here means the write failed or something rewrote it
+# mid-startup. Cheap to check, and failing loudly now beats handing over a
+# splash screen that says the engine is down when it is not.
+EXPECTED_BASE="http://127.0.0.1:$API_PORT"
+ACTUAL_BASE="$(sed -n 's/^VITE_API_BASE=//p' "$ENVFILE" 2>/dev/null | tr -d '[:space:]')"
+if [ "$ACTUAL_BASE" != "$EXPECTED_BASE" ]; then
+  echo ""
+  echo "ERROR: the frontend env does not match the backend just started."
+  echo "  backend listening on : $EXPECTED_BASE"
+  echo "  $ENVFILE : ${ACTUAL_BASE:-<empty or missing>}"
+  echo ""
+  echo "The UI would report \"engine offline\" against a healthy API."
+  echo "Stopping rather than handing you that. Re-run ./scripts/dev.sh"
+  exit 1
+fi
+
 echo ""
 echo "─────────────────────────────────────────────"
 echo "  App    http://localhost:$WEB_PORT"

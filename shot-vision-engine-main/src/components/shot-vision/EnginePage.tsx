@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { ZONES, type Player, type ZoneResult, type HeatmapPoint, type Team } from "@/lib/shot-vision-data";
-import { getRecommendationHeatmapAPI, checkHealthAPI, getTeamsAPI, getTeamRosterAPI } from "@/lib/api";
+import { getRecommendationHeatmapAPI, checkHealthAPI, getTeamsAPI, getTeamRosterAPI, API_BASE, API_BASE_IS_DEFAULT } from "@/lib/api";
 // Reusing the Stat Engine's team-identity building blocks rather than
 // re-deriving colours/logos here: one TEAM_COLORS map, one logo endpoint,
 // used by both halves of the app.
@@ -114,6 +114,43 @@ export default function EnginePage({ onBack }: Props) {
     if (loadingIntervalRef.current != null) clearInterval(loadingIntervalRef.current);
     runIdRef.current += 1;
     setLoading(false);
+  };
+
+  // Switching matchup source is not an ordinary input change, and treating it
+  // like one was a real bug: the capture-phase guard below already killed any
+  // in-flight run, but nothing cleared what was already on screen. Finish a run
+  // in SEARCH, flip to TEAM VS TEAM, and the previous results stayed up —
+  // presented as though they belonged to a team-vs-team matchup that had never
+  // been run. The selected players survived too, even though the roster
+  // constraint had just changed underneath them.
+  //
+  // So the mode pills go through here instead: kill the run, then reset every
+  // piece of state that described the old matchup, so the new mode always
+  // starts from an empty form. The click itself is the confirmation — there is
+  // no prompt, because the only thing being discarded is a result the user has
+  // just said they no longer want.
+  const switchMatchupSource = (next: "search" | "team") => {
+    if (next === matchupSource) return;
+    killRun();
+    setMatchupSource(next);
+
+    // Outputs of the old matchup.
+    setResults(null);
+    setHeatmapPoints([]);
+    setProjected({ attacker: false, defender: false });
+    setError(null);
+    setLoadingIdx(0);
+
+    // Inputs that described the old matchup. Players go in both directions:
+    // a roster-constrained pick means something different in SEARCH, and a
+    // free pick is not necessarily on either roster in TEAM VS TEAM.
+    setAttacker(null);
+    setPrimaryDef(null);
+    setSecondaryDef(null);
+    setOffenseTeam(null);
+    setDefenseTeam(null);
+    setOffenseRoster([]);
+    setDefenseRoster([]);
   };
 
   const run = () => {
@@ -266,8 +303,8 @@ export default function EnginePage({ onBack }: Props) {
         >
           <InputSection label="MATCHUP SOURCE">
             <div style={{ display: "flex", gap: 8 }}>
-              <Pill active={matchupSource === "search"} onClick={() => setMatchupSource("search")}>SEARCH</Pill>
-              <Pill active={matchupSource === "team"} onClick={() => setMatchupSource("team")}>TEAM VS TEAM</Pill>
+              <Pill active={matchupSource === "search"} onClick={() => switchMatchupSource("search")}>SEARCH</Pill>
+              <Pill active={matchupSource === "team"} onClick={() => switchMatchupSource("team")}>TEAM VS TEAM</Pill>
             </div>
           </InputSection>
 
@@ -415,7 +452,12 @@ export default function EnginePage({ onBack }: Props) {
           </button>
           {health === "offline" && (
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#DC2626", letterSpacing: "0.1em", textAlign: "center" }}>
-              ⚠ ENGINE UNREACHABLE — requests will likely fail until the backend is back up
+              ⚠ ENGINE UNREACHABLE at {API_BASE}
+              <div style={{ marginTop: 6, color: "#94a3b8", letterSpacing: "0.05em", lineHeight: 1.6 }}>
+                {API_BASE_IS_DEFAULT
+                  ? "That is the built-in fallback — VITE_API_BASE is not set. If you started the backend by hand on another port, set it in .env.local and restart Vite, or just use ./scripts/dev.sh."
+                  : "From VITE_API_BASE in .env.local. Check the backend is actually listening there."}
+              </div>
             </div>
           )}
         </div>

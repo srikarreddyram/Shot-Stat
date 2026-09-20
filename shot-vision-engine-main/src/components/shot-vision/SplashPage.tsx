@@ -209,6 +209,49 @@ export default function SplashPage({ onLaunch }: Props) {
           <div style={{ position: "absolute", left: 32, top: 32, zIndex: 20 }}>
             <LeagueBrandMark height={34} />
           </div>
+          {/* Top-level nav, mirroring the brand mark on the left.
+              Until this existed, /stats, /archetypes and /model-features were
+              reachable ONLY from the engine's own header — so from the front
+              page the Stat Engine could not be opened at all without first
+              launching the engine and then leaving it, which is not a route
+              anyone would guess. Plain <a> for the same reason EnginePage uses
+              one: these are separate top-level routes while this component is
+              rendered inside the "/" route's own splash/engine toggle. Styling
+              is copied deliberately so the two headers read as one system. */}
+          <nav
+            style={{
+              position: "absolute",
+              right: 32,
+              top: 32,
+              zIndex: 20,
+              display: "flex",
+              alignItems: "center",
+              gap: 24,
+            }}
+          >
+            {[
+              { href: "/stats", label: "STAT ENGINE" },
+              { href: "/archetypes", label: "ARCHETYPES" },
+              { href: "/model-features", label: "MODEL FEATURES" },
+            ].map(({ href, label }) => (
+              <a
+                key={href}
+                href={href}
+                style={{
+                  color: "#64748b",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  letterSpacing: "0.3em",
+                  textDecoration: "none",
+                  transition: "color 200ms",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}
+              >
+                {label}
+              </a>
+            ))}
+          </nav>
           {/* Same red/blue edge bezel every other page in the app uses (see
               NBAEdgeBezel in stat-engine/ui.tsx) — fixed positioning reaches
               past this sticky container to the real viewport edge, so it
