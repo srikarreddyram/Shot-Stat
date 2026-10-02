@@ -56,7 +56,9 @@ from .metadata import (
     player_column_metadata,
     team_column_metadata,
 )
-from .formatting import _clean
+# Re-exported for tests reaching it as `stat_engine._clean` — a redundant-
+# alias import spells that out as intentional rather than an unused-import.
+from .formatting import _clean as _clean
 from .players import build_player_stat_table, player_full_profile
 from .teams import build_team_stat_table, team_full_profile
 

@@ -31,7 +31,10 @@ from dataclasses import asdict
 import pandas as pd
 
 from src.features.creation import _previous_season
-from .aggregate import COUNT, DIFF, PER_GAME, RATE, CareerStat, _f, aggregate as _aggregate
+from .aggregate import COUNT, DIFF, PER_GAME, RATE, CareerStat, aggregate as _aggregate
+# Re-exported for tests reaching it as `aggregate._f` — a redundant-alias
+# import spells that out as intentional rather than an unused-import.
+from .aggregate import _f as _f
 from .catalogue import GROUP_LABELS, GROUP_ORDER, GROUP_SIDE, catalogue as _catalogue
 from .sources import (
     BOX_SCORE_COLUMNS,

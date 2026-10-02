@@ -33,14 +33,14 @@ export function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacke
   );
 
   // A new run replaces the grid, so any previous pick is meaningless.
-  useEffect(() => { setSelected(null); }, [heatmapPoints]);
+  useEffect(() => { setSelected(null); }, [heatmapPoints, setSelected]);
 
   useEffect(() => {
     if (selected === null) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelected(null); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected]);
+  }, [selected, setSelected]);
 
   // The canvas is 400px internally but rendered at width:100%, so pointer
   // coordinates have to be mapped through the displayed size, not the buffer.

@@ -10,7 +10,6 @@ checks the output is actually JSON-round-trippable, not just "doesn't
 raise" while an XGBoost stats package quietly hands back nan floats.
 """
 import json
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -329,7 +328,7 @@ def test_rate_columns_carry_a_volume_qualifier(engine):
 def test_every_qualifier_points_at_a_column_that_exists(engine):
     """A typo in QUALIFIERS would not raise — it would quietly rank nobody."""
     _seed_basics(engine)
-    table = se.build_player_stat_table(engine, "2024-25")
+    se.build_player_stat_table(engine, "2024-25")
     for stat_key, (volume_key, minimum) in se.QUALIFIERS.items():
         assert stat_key in se.STAT_GROUPS, f"{stat_key} is not a known stat"
         assert volume_key in se.STAT_GROUPS, f"{stat_key} points at unknown {volume_key}"

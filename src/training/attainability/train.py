@@ -64,7 +64,6 @@ from src.features.point_in_time import ZONES, fit_league_creation_priors
 from .build import (
     _league_sub_zone_priors,
     build_attainability_matrix,
-    build_season_cast,
 )
 from .features import (
     ATTAINABILITY_FEATURE_COLS,

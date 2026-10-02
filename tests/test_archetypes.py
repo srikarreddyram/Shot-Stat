@@ -241,8 +241,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.db.database import register_unaccent
 from src.db.models import (
-    Base, DefenderStats, Player, PlayerDefensiveActivity, PlayerTwoKRating,
-    PlayerZoneStats, REGULAR_SEASON, Shot, TeamStats,
+    Base, DefenderStats, Player, PlayerDefensiveActivity, REGULAR_SEASON, Shot,
 )
 
 

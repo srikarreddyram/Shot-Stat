@@ -9,7 +9,6 @@ import pandas as pd
 from src.features.point_in_time import build_supporting_cast
 from src.features.shrinkage import fit_beta_prior
 from .features import (
-    ANGLE_SPLIT_ZONES,
     CAST_FEATURE_COLS,
     DIET_SNAPSHOTS,
     SUB_ZONES,

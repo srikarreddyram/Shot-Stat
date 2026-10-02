@@ -57,7 +57,6 @@ from .zones import (
 )
 from .shooting_rates import (
     SEASON_TO_CAREER_STRENGTH,
-    _load_player_game_zone_counts,
     apply_hierarchy,
     build_prior_counts,
     build_rolling_form,
@@ -65,8 +64,12 @@ from .shooting_rates import (
     lookup_prior_counts,
     lookup_recent_form,
 )
+# Re-exported (not otherwise used in this file) so tests can reach them as
+# `point_in_time._load_player_game_zone_counts` etc. — an explicit
+# redundant-alias import, not an oversight, is how that intent is spelled so
+# a linter doesn't flag it as dead.
+from .shooting_rates import _load_player_game_zone_counts as _load_player_game_zone_counts
 from .defender_quality import (
-    _load_defender_exposure,
     apply_opponent_defence,
     build_defender_category_rates,
     build_opponent_zone_defence,
@@ -74,6 +77,7 @@ from .defender_quality import (
     league_average_defender,
     lookup_defender_category_rates,
 )
+from .defender_quality import _load_defender_exposure as _load_defender_exposure
 from .contest import (
     CONTEST_BAND_SUFFIX,
     CONTEST_BANDS,
@@ -95,11 +99,11 @@ from .clutch_performance import (
 )
 from .lineup_context import (
     LINEUP_FEATURE_COLS,
-    _resolve_recent_lineup_ids,
-    _resolve_roster_fallback_ids,
     build_lineup_context,
     lookup_lineup_context,
 )
+from .lineup_context import _resolve_recent_lineup_ids as _resolve_recent_lineup_ids
+from .lineup_context import _resolve_roster_fallback_ids as _resolve_roster_fallback_ids
 
 __all__ = [
     "ZONES", "THREE_POINT_ZONES", "ZONE_SUFFIX", "ZONE_TO_DEF_CATEGORY",

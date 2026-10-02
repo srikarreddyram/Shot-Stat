@@ -12,7 +12,6 @@ player `lookup_*` for serving) agree on the same player.
 """
 from datetime import date
 
-import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

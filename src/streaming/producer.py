@@ -25,7 +25,6 @@ from kafka import KafkaProducer
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-import config
 from src.db.database import get_engine
 from src.streaming.config import (
     DEFAULT_PACE_SECONDS,

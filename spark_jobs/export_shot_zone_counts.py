@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import config
 from src.db.database import get_engine
 from src.features.point_in_time import _load_player_game_zone_counts
 

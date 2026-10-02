@@ -40,7 +40,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
@@ -105,20 +104,20 @@ def report(season: str | None = None, top: int = 15):
     print(f"\n  mean |off_rating - 2K off band|  {df['off_diff'].abs().mean():.1f}")
     print(f"  mean |def_rating - 2K def band|  {df['def_diff'].abs().mean():.1f}")
 
-    print(f"\n  ── Biggest offense disagreements (ours higher) ──")
+    print("\n  ── Biggest offense disagreements (ours higher) ──")
     for _, r in df.nlargest(top, "off_diff").iterrows():
         print(f"    {str(r['name'])[:22]:<22} ours={int(r.off_rating):>3}  2K={int(r.two_k_off_rating):>3}  "
               f"(2K overall {int(r.overall)})")
-    print(f"\n  ── Biggest offense disagreements (2K higher) ──")
+    print("\n  ── Biggest offense disagreements (2K higher) ──")
     for _, r in df.nsmallest(top, "off_diff").iterrows():
         print(f"    {str(r['name'])[:22]:<22} ours={int(r.off_rating):>3}  2K={int(r.two_k_off_rating):>3}  "
               f"(2K overall {int(r.overall)})")
 
-    print(f"\n  ── Biggest defense disagreements (ours higher) ──")
+    print("\n  ── Biggest defense disagreements (ours higher) ──")
     for _, r in df.nlargest(top, "def_diff").iterrows():
         print(f"    {str(r['name'])[:22]:<22} ours={int(r.def_rating):>3}  2K={int(r.two_k_def_rating):>3}  "
               f"(2K overall {int(r.overall)})")
-    print(f"\n  ── Biggest defense disagreements (2K higher) ──")
+    print("\n  ── Biggest defense disagreements (2K higher) ──")
     for _, r in df.nsmallest(top, "def_diff").iterrows():
         print(f"    {str(r['name'])[:22]:<22} ours={int(r.def_rating):>3}  2K={int(r.two_k_def_rating):>3}  "
               f"(2K overall {int(r.overall)})")
