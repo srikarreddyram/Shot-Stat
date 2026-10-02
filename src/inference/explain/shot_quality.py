@@ -430,6 +430,29 @@ def build_matchup_narrative(
     if context_drivers:
         sentences.append(f"Game situation matters here too{context_drivers}.")
 
+    # ── 1d. Comparable shots — a sanity check on the number above, not a
+    # second explanation of it. `comparable_shots` (when present) is the
+    # ACTUAL make rate of the k historical shots whose feature vectors are
+    # closest to this one, in the same space the model was trained on (see
+    # comparable_shots.py). Framed as corroboration when it agrees with the
+    # model, and flagged plainly when it doesn't — that disagreement is a
+    # real signal TreeSHAP's internal decomposition cannot surface on its own.
+    comparable = sq.get("comparable_shots")
+    if comparable and comparable.get("count", 0) >= 5:
+        hist_pct = _pct_points(comparable["historical_make_rate"])
+        gap_pp = abs(round((comparable["historical_make_rate"] - sq["make_probability"]) * 100))
+        if gap_pp <= 8:
+            sentences.append(
+                f"The {comparable['count']} most similar shots in the data went in "
+                f"{hist_pct} of the time, in line with this projection."
+            )
+        else:
+            sentences.append(
+                f"Worth flagging: the {comparable['count']} most similar shots in the "
+                f"data only went in {hist_pct} of the time, notably {'below' if comparable['historical_make_rate'] < sq['make_probability'] else 'above'} "
+                f"this projection — this matchup may be thinner on real precedent than the model number alone suggests."
+            )
+
     # ── 2. Double-team clause ───────────────────────────────────────────
     if secondary_defender_name:
         sentences.append(

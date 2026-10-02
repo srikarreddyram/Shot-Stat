@@ -69,6 +69,7 @@ from src.features.point_in_time import (
 )
 from src.features.shrinkage import BetaPrior, posterior_interval, shrink
 from src.inference.explain import (
+    ComparableShotsIndex,
     build_matchup_narrative,
     creation_note,
     defender_zone_tendency_note,
@@ -76,7 +77,6 @@ from src.inference.explain import (
     explain_shot_quality,
 )
 from src.training.attainability import (
-    attach_sub_zone,
     encode_zone_and_position,
     lookup_diet_history,
 )
@@ -163,6 +163,18 @@ class ShotRecommender:
         # player's mix. See src/features/mechanics.py.
         self.uses_mechanics = any(
             c.startswith("mech_") for c in self.feature_cols
+        )
+
+        # "Comparable shots" — a nearest-neighbor sanity check on the
+        # TreeSHAP explanation, not another model output. Built offline via
+        # `python -m src.training.build_comparable_index` (see that module's
+        # docstring for why this isn't built lazily here). Optional: older
+        # deployments or a freshly trained model with no index yet built
+        # simply don't get the comparable-shots block in the explanation,
+        # rather than failing to load at all.
+        comparable_path = model_dir / f"comparable_shots_{model_name}.joblib"
+        self.comparable_shots: ComparableShotsIndex | None = (
+            ComparableShotsIndex.load(comparable_path) if comparable_path.exists() else None
         )
 
         self.hierarchical = self.metadata.get("hierarchical_split", False)
@@ -681,6 +693,11 @@ class ShotRecommender:
         best_feature_row = features.iloc[[best_idx]].reset_index(drop=True)
 
         sq = explain_shot_quality(self.model, self.feature_cols, best_feature_row)
+
+        comparable = None
+        if self.comparable_shots is not None:
+            comparable = self.comparable_shots.query(best_feature_row, k=8)
+            sq["comparable_shots"] = comparable
 
         points = ZONE_POINTS.get(zone, 2)
         is_league_avg = bool(defender.get("_is_league_average"))

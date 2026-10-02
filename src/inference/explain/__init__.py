@@ -23,22 +23,26 @@ from .attainability import (
     creation_note,
     defender_zone_tendency_note,
     explain_attainability,
-    _percentile,
-    _format_value,
-    _share_text,
-    _driver_clause,
-    _summarize,
 )
+# Re-exported for tests reaching them as `explain._percentile` etc. (see
+# tests/test_explain.py) — redundant-alias imports spell that out as
+# intentional rather than an unused-import.
+from .attainability import _percentile as _percentile
+from .attainability import _format_value as _format_value
+from .attainability import _share_text as _share_text
+from .attainability import _driver_clause as _driver_clause
+from .attainability import _summarize as _summarize
 from .shot_quality import (
     SQ_FEATURE_COPY,
     explain_shot_quality,
     build_matchup_narrative,
-    _sigmoid,
-    _sq_percentile,
-    _pct_points,
-    _side_columns,
-    _group_columns,
 )
+from .shot_quality import _sigmoid as _sigmoid
+from .shot_quality import _sq_percentile as _sq_percentile
+from .shot_quality import _pct_points as _pct_points
+from .shot_quality import _side_columns as _side_columns
+from .shot_quality import _group_columns as _group_columns
+from .comparable_shots import ComparableShotsIndex, build_comparable_shots_index
 
 __all__ = [
     "FEATURE_COPY", "SQ_FEATURE_COPY",
@@ -48,4 +52,5 @@ __all__ = [
     "RARE_ZONE_SHARE", "NEGLIGIBLE_EFFECT",
     "creation_note", "defender_zone_tendency_note",
     "explain_attainability", "explain_shot_quality", "build_matchup_narrative",
+    "ComparableShotsIndex", "build_comparable_shots_index",
 ]

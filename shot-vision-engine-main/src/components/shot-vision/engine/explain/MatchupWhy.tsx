@@ -1,4 +1,4 @@
-import type { MatchupExplanation, ShotQualityFactor } from "@/lib/shot-vision-data";
+import type { MatchupExplanation, ShotQualityBreakdown, ShotQualityFactor } from "@/lib/shot-vision-data";
 
 // One ranked list of factor bars — shared by the offense/defense sections
 // of MatchupWhy. Bar width is relative to the largest factor IN THIS
@@ -41,6 +41,52 @@ function FactorSection({ title, factors }: { title: string; factors: ShotQuality
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// Comparable shots — a nearest-neighbor sanity check on `make_probability`,
+// not another TreeSHAP factor list, so it's styled deliberately differently
+// (a bordered callout, not another bar section) to keep the two kinds of
+// evidence visually distinct: one is exact model attribution, the other is
+// "here's what actually happened to shots that looked like this."
+function ComparableShots({ comparable, makeProbability }: {
+  comparable: NonNullable<ShotQualityBreakdown["comparable_shots"]>;
+  makeProbability: number;
+}) {
+  if (comparable.count < 5 || comparable.historical_make_rate == null) return null;
+  const gapPp = Math.round(Math.abs(comparable.historical_make_rate - makeProbability) * 100);
+  const diverges = gapPp > 8;
+
+  return (
+    <div style={{
+      marginTop: 12, padding: "8px 10px", borderRadius: 6,
+      border: `1px solid ${diverges ? "rgba(220,38,38,0.35)" : "rgba(22,163,74,0.3)"}`,
+      background: diverges ? "rgba(220,38,38,0.06)" : "rgba(22,163,74,0.05)",
+    }}>
+      <div style={{
+        fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+        color: diverges ? "#DC2626" : "#16A34A", letterSpacing: "0.18em",
+        display: "flex", justifyContent: "space-between",
+      }}>
+        <span>COMPARABLE SHOTS ({comparable.count})</span>
+        <span>{(comparable.historical_make_rate * 100).toFixed(0)}% ACTUAL</span>
+      </div>
+      <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+        {comparable.examples.map((ex, i) => (
+          <div key={i} style={{
+            display: "flex", justifyContent: "space-between", gap: 8,
+            fontFamily: "'Inter', sans-serif", fontSize: 10.5, color: "#94A3B8",
+          }}>
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {ex.player_name}{ex.opponent ? ` vs ${ex.opponent}` : ""}
+            </span>
+            <span style={{ color: ex.made ? "#16A34A" : "#DC2626", fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>
+              {ex.made ? "MADE" : "MISS"}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -94,6 +140,13 @@ export function MatchupWhy({ explanation, error }: { explanation: MatchupExplana
         factors={explanation.shot_quality.defense_factors}
       />
       <FactorSection title="GAME SITUATION — SCORE, CLOCK & CLUTCH" factors={explanation.shot_quality.context_factors} />
+
+      {explanation.shot_quality.comparable_shots && (
+        <ComparableShots
+          comparable={explanation.shot_quality.comparable_shots}
+          makeProbability={explanation.shot_quality.make_probability}
+        />
+      )}
 
       <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: "#4a5568", marginTop: 10, lineHeight: 1.5 }}>
         CONTRIBUTIONS ARE EXACT (TREESHAP) AND SUM TO THE ESTIMATE.

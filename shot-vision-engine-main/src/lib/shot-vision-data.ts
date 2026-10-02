@@ -270,6 +270,25 @@ export interface ShotQualityBreakdown {
    * this list is what makes that visible instead of silently folded away.
    */
   context_factors: ShotQualityFactor[];
+  /**
+   * A sanity check on `make_probability`, not another factor breakdown: the
+   * ACTUAL make rate of the k historical shots whose feature vectors are
+   * closest to this one, in the same space the model was trained on (see
+   * src/inference/explain/comparable_shots.py). Absent when no index has
+   * been built for the currently loaded model (older deployments), or when
+   * fewer than 5 comparable shots were found.
+   */
+  comparable_shots?: {
+    count: number;
+    historical_make_rate: number | null;
+    examples: {
+      player_name: string;
+      game_date: string | null;
+      zone: string;
+      opponent: string | null;
+      made: boolean;
+    }[];
+  };
 }
 
 /** The full matchup narrative, from GET /explain/matchup. */
