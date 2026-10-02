@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   CareerPanelData, CareerStat, Side, formatStat, LOWER_IS_BETTER,
 } from "../../lib/stat-engine";
-import { C, F, NUM, Card, SectionLabel, TrendChart } from "./ui";
+import { C, ChartHeader, F, MiniTable, NUM, Card, SectionLabel, TrendChart, ViewMode, useViewMode } from "./ui";
 
 // One player's stats over time: this season, last season as a reference
 // point, a career average, a career total, and — the point of this file —
@@ -47,7 +47,10 @@ const HEADLINE_TRENDS: Record<Side, { key: string; color: string }[]> = {
   info: [],
 };
 
-export function CareerPanel({ playerId, side }: { playerId: string; side: Side }) {
+export function CareerPanel({ playerId, side, defaultMode = "chart" }: {
+  playerId: string; side: Side; defaultMode?: ViewMode;
+}) {
+  const [trendMode, setTrendMode] = useViewMode(defaultMode);
   const [data, setData] = useState<CareerPanelData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -96,12 +99,30 @@ export function CareerPanel({ playerId, side }: { playerId: string; side: Side }
 
       {trendStats.length > 0 && (
         <Card style={{ padding: "16px 20px 8px", marginBottom: 14 }}>
-          <div style={{ marginBottom: 12 }}><SectionLabel>Career trend</SectionLabel></div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20 }}>
-            {trendStats.map((t) => (
-              <TrendChart key={t.key} points={t.stat.series} fmt={t.stat.fmt} color={t.color} label={t.stat.label} />
-            ))}
+          <div style={{ marginBottom: 12 }}>
+            <ChartHeader title="Career trend" mode={trendMode} onChange={setTrendMode} />
           </div>
+          {trendMode === "table" ? (
+            <div style={{ paddingBottom: 10 }}>
+              <MiniTable
+                headers={["Season", ...trendStats.map((t) => t.stat.label)]}
+                rows={[...new Set(trendStats.flatMap((t) => t.stat.series.map((p) => p.season)))]
+                  .sort()
+                  .map((season) => [
+                    season,
+                    ...trendStats.map((t) => formatStat(
+                      t.stat.series.find((p) => p.season === season)?.value ?? null, t.stat.fmt,
+                    )),
+                  ])}
+              />
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20 }}>
+              {trendStats.map((t) => (
+                <TrendChart key={t.key} points={t.stat.series} fmt={t.stat.fmt} color={t.color} label={t.stat.label} />
+              ))}
+            </div>
+          )}
         </Card>
       )}
 

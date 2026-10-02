@@ -4,7 +4,7 @@ import {
   axisScore, buildDistributions, formatStat, isRankable, matchesQuery,
   numericValue, percentileOf, rankOf, foldAccents,
 } from "../../lib/stat-engine";
-import { C, F, NUM, Bar, Card, SectionLabel, TeamChip } from "./ui";
+import { C, ChartHeader, F, MiniTable, NUM, Bar, Card, SectionLabel, TeamChip, useViewMode } from "./ui";
 
 // Head-to-head comparison for up to three players: a radar summary over
 // six measured dimensions, then every stat side by side with each player's
@@ -106,10 +106,11 @@ function RadarPanel({ picked, distributions, columns }: {
   }));
   const comparable = scored.filter((s) => s.values.every((v) => v != null));
   const dropped = scored.filter((s) => !s.values.every((v) => v != null));
+  const [mode, setMode] = useViewMode("chart");
 
   return (
     <Card style={{ padding: "18px 22px 20px", marginBottom: 16 }}>
-      <SectionLabel>Profile shape</SectionLabel>
+      <ChartHeader title="Profile shape" mode={mode} onChange={setMode} />
       <div style={{ fontSize: 11.5, color: C.faint, margin: "8px 0 10px", lineHeight: 1.55, maxWidth: 720 }}>
         Each axis is the average league percentile of the measured stats named under it — a
         summary of the rows below, not a rating. Further out is better on every axis. Note that
@@ -124,6 +125,25 @@ function RadarPanel({ picked, distributions, columns }: {
           Not enough shared dimensions to draw a shape — these players have measured data for fewer
           than three of the same areas.
         </div>
+      ) : mode === "table" ? (
+        <MiniTable
+          headers={["Area", ...picked.map((p) => String(p.row.name ?? `Player ${p.slot + 1}`))]}
+          rows={comparable.map((c) => {
+            const best = Math.max(...(c.values as number[]));
+            return [
+              c.axis.label,
+              ...picked.map((p, i) => {
+                const v = c.values[i] as number;
+                return (
+                  <span style={{ color: C.text, fontWeight: v === best ? 700 : 400 }}>
+                    <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: COMPARE_COLORS[p.slot], marginRight: 6 }} />
+                    {Math.round(v * 100)}
+                  </span>
+                );
+              }),
+            ];
+          })}
+        />
       ) : (
         <div style={{ display: "flex", gap: 30, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ flex: "1 1 330px", maxWidth: RADAR_W }}>
@@ -219,23 +239,30 @@ export function RadarChart({ axes, series }: {
         const [x, y] = point(i, RADAR_R);
         return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />;
       })}
-      {series.map((s, si) => (
-        <polygon
-          key={si}
-          points={s.values.map((v, i) => point(i, RADAR_R * v).join(",")).join(" ")}
-          fill={s.color}
-          fillOpacity={0.13}
-          stroke={s.color}
-          strokeWidth={2}
-          strokeLinejoin="round"
-        />
-      ))}
-      {series.map((s, si) =>
-        s.values.map((v, i) => {
-          const [x, y] = point(i, RADAR_R * v);
-          return <circle key={`${si}-${i}`} cx={x} cy={y} r={3} fill={C.bg} stroke={s.color} strokeWidth={2} />;
-        })
-      )}
+      {/* Keyed on the values so a new player/pick replays the unfold. */}
+      <g
+        key={series.map((s) => s.values.join(",")).join("|")}
+        className="se-unfold"
+        style={{ transformOrigin: `${cx}px ${cy}px`, transformBox: "view-box" }}
+      >
+        {series.map((s, si) => (
+          <polygon
+            key={si}
+            points={s.values.map((v, i) => point(i, RADAR_R * v).join(",")).join(" ")}
+            fill={s.color}
+            fillOpacity={0.13}
+            stroke={s.color}
+            strokeWidth={2}
+            strokeLinejoin="round"
+          />
+        ))}
+        {series.map((s, si) =>
+          s.values.map((v, i) => {
+            const [x, y] = point(i, RADAR_R * v);
+            return <circle key={`${si}-${i}`} cx={x} cy={y} r={3} fill={C.bg} stroke={s.color} strokeWidth={2} />;
+          })
+        )}
+      </g>
       {axes.map((label, i) => {
         const [x, y] = point(i, RADAR_R + 20);
         // Nudge the anchor so labels on the left/right sides don't overlap

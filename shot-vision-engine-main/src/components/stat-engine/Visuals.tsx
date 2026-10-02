@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
-import { ArchetypeDetail, PlayerProfile, formatStat, numericValue } from "../../lib/stat-engine";
-import { Bar, C, F, NUM, Card, SectionLabel, tierColor } from "./ui";
+import {
+  ArchetypeDetail, PlayerProfile, formatStat, isRankable, numericValue, percentileOf, rankOf,
+} from "../../lib/stat-engine";
+import {
+  Bar, C, ChartHeader, F, MiniTable, NUM, Card, SectionLabel, ViewMode, tierColor, useViewMode,
+} from "./ui";
 
 // Three season-view visuals, replacing what used to be three more rows in a
 // stat table: a shot chart by zone, a Synergy-style play-type bar chart, and
@@ -54,7 +58,8 @@ const ZONE_BADGE_LABEL: Record<string, string> = {
   right_corner3: "R CORNER", above_break3: "3PT",
 };
 
-export function ShotZoneCourt({ profile }: { profile: PlayerProfile }) {
+export function ShotZoneCourt({ profile, defaultMode = "chart" }: { profile: PlayerProfile; defaultMode?: ViewMode }) {
+  const [mode, setMode] = useViewMode(defaultMode);
   const zones = Object.keys(ZONE_BADGE_POS).map((slug) => {
     const pctStat = findStat(profile, `zone_fg_pct_${slug}`);
     const fgaStat = findStat(profile, `zone_fga_${slug}`);
@@ -82,12 +87,22 @@ export function ShotZoneCourt({ profile }: { profile: PlayerProfile }) {
 
   return (
     <Card style={{ padding: "16px 20px 18px", marginBottom: 14 }}>
-      <div style={{ marginBottom: 4 }}><SectionLabel>Shot chart by zone</SectionLabel></div>
+      <ChartHeader title="Shot chart by zone" mode={mode} onChange={setMode} />
       <div style={{ fontSize: 11, color: C.faint, marginBottom: 12, lineHeight: 1.5 }}>
         FG% within each zone this season. Coloured against a fixed scale (60%+ elite, under 28% poor)
         rather than league percentile — the same bar for every position, since a rim FG% and a
         three-point FG% are not the same kind of shot.
       </div>
+      {mode === "table" ? (
+        <MiniTable
+          headers={["Zone", "FG%", "Attempts"]}
+          rows={zones.map((z) => [
+            ZONE_BADGE_LABEL[z.slug],
+            <span style={{ color: fixedTier(z.pct) }}>{formatStat(z.pct, "pct")}</span>,
+            z.fga == null ? "—" : z.fga.toFixed(0),
+          ])}
+        />
+      ) : (
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
         <svg viewBox={`0 0 ${COURT_CW} ${COURT_CH}`} style={{ width: "100%", maxWidth: 420, height: "auto", borderRadius: 4, overflow: "hidden" }}>
           <rect x={0} y={0} width={COURT_CW} height={COURT_CH} fill={COURT_SURFACE} />
@@ -103,12 +118,16 @@ export function ShotZoneCourt({ profile }: { profile: PlayerProfile }) {
           <circle cx={HOOP_X} cy={HOOP_Y} r={ft(FT.rimRadius)} fill="none" stroke={COURT_RIM} strokeWidth={2} />
           <line x1={HOOP_X - ft(3)} y1={HOOP_Y + ft(0.6)} x2={HOOP_X + ft(3)} y2={HOOP_Y + ft(0.6)} stroke={COURT_LINE_STRONG} strokeWidth={2} />
 
-          {zones.map((z) => {
+          {zones.map((z, i) => {
             const [x, y] = z.pos;
             const cx = HOOP_X + ft(x), cy = HOOP_Y - ft(y);
             const color = fixedTier(z.pct);
             return (
-              <g key={z.slug}>
+              <g
+                key={z.slug}
+                className="se-unfold"
+                style={{ transformOrigin: `${cx}px ${cy}px`, transformBox: "view-box", animationDelay: `${i * 70}ms` }}
+              >
                 <circle cx={cx} cy={cy} r={26} fill={color} fillOpacity={z.pct == null ? 0.08 : 0.22} stroke={color} strokeWidth={1.5} />
                 <text x={cx} y={cy - 3} textAnchor="middle" fill={z.pct == null ? C.muted : "#fff"} style={{ fontFamily: F.display, fontSize: 15 }}>
                   {z.pct == null ? "—" : `${(z.pct * 100).toFixed(0)}%`}
@@ -131,6 +150,7 @@ export function ShotZoneCourt({ profile }: { profile: PlayerProfile }) {
           ))}
         </div>
       </div>
+      )}
     </Card>
   );
 }
@@ -162,7 +182,8 @@ function pppColor(ppp: number | null): string {
   return "#DC2626";
 }
 
-export function PlayTypeBars({ profile }: { profile: PlayerProfile }) {
+export function PlayTypeBars({ profile, defaultMode = "chart" }: { profile: PlayerProfile; defaultMode?: ViewMode }) {
+  const [mode, setMode] = useViewMode(defaultMode);
   const rows = PLAY_TYPE_SLUGS.map((slug) => {
     const possPct = numericValue(findStat(profile, `playtype_${slug}_poss_pct`)?.value);
     const poss = numericValue(findStat(profile, `playtype_${slug}_poss`)?.value);
@@ -177,13 +198,23 @@ export function PlayTypeBars({ profile }: { profile: PlayerProfile }) {
 
   return (
     <Card style={{ padding: "16px 20px 14px", marginBottom: 14 }}>
-      <div style={{ marginBottom: 4 }}><SectionLabel>Play type (Synergy)</SectionLabel></div>
+      <ChartHeader title="Play type (Synergy)" mode={mode} onChange={setMode} />
       <div style={{ fontSize: 11, color: C.faint, marginBottom: 12, lineHeight: 1.5 }}>
         Bar length is share of offensive possessions run as this play type; colour is points per
         possession — 1.00 PPP is roughly league-average offense. Needs at least 25 possessions to
         be shown at all.
       </div>
-      {rows.map((r) => {
+      {mode === "table" ? (
+        <MiniTable
+          headers={["Play type", "Share", "Poss", "PPP"]}
+          rows={rows.map((r) => [
+            PLAY_TYPE_LABEL[r.slug],
+            formatStat(r.possPct, "pct"),
+            r.poss == null ? "—" : r.poss.toFixed(0),
+            <span style={{ color: pppColor(r.ppp) }}>{formatStat(r.ppp, "num")}</span>,
+          ])}
+        />
+      ) : rows.map((r) => {
         const color = pppColor(r.ppp);
         return (
           <div key={r.slug} style={{ marginBottom: 9 }}>
@@ -195,7 +226,7 @@ export function PlayTypeBars({ profile }: { profile: PlayerProfile }) {
               </span>
             </div>
             <div style={{ height: 8, background: "rgba(255,255,255,0.05)", borderRadius: 3, overflow: "hidden" }}>
-              <div style={{
+              <div className="se-bar-fill" style={{
                 width: `${Math.max(2, ((r.possPct ?? 0) / maxShare) * 100)}%`, height: "100%",
                 background: color, opacity: 0.85, borderRadius: 3, transition: "width 300ms",
               }} />
@@ -229,7 +260,8 @@ function pmColor(pm: number | null): string {
   return "#DC2626";
 }
 
-export function DefenseCategoryChart({ profile }: { profile: PlayerProfile }) {
+export function DefenseCategoryChart({ profile, defaultMode = "chart" }: { profile: PlayerProfile; defaultMode?: ViewMode }) {
+  const [mode, setMode] = useViewMode(defaultMode);
   const rows = DEF_CATEGORIES.map((c) => {
     const fgPct = numericValue(findStat(profile, `def_${c.slug}_fg_pct`)?.value);
     const pm = numericValue(findStat(profile, `def_${c.slug}_pm`)?.value);
@@ -242,12 +274,24 @@ export function DefenseCategoryChart({ profile }: { profile: PlayerProfile }) {
 
   return (
     <Card style={{ padding: "16px 20px 14px", marginBottom: 14 }}>
-      <div style={{ marginBottom: 4 }}><SectionLabel>FG% allowed by category</SectionLabel></div>
+      <ChartHeader title="FG% allowed by category" mode={mode} onChange={setMode} />
       <div style={{ fontSize: 11, color: C.faint, marginBottom: 12, lineHeight: 1.5 }}>
         Bar length is FG% allowed; colour is how that compares to league normal for the same shot
         type — green means holding shooters well below what they'd normally make there.
       </div>
-      {rows.map((r) => {
+      {mode === "table" ? (
+        <MiniTable
+          headers={["Shot type", "FG% allowed", "vs normal", "FGA faced"]}
+          rows={rows.map((r) => [
+            r.label,
+            formatStat(r.fgPct, "pct"),
+            <span style={{ color: pmColor(r.pm) }}>
+              {r.pm != null ? `${r.pm > 0 ? "+" : ""}${formatStat(r.pm, "pct")}` : "—"}
+            </span>,
+            r.fga == null ? "—" : r.fga.toFixed(0),
+          ])}
+        />
+      ) : rows.map((r) => {
         const color = pmColor(r.pm);
         return (
           <div key={r.slug} style={{ marginBottom: 9 }}>
@@ -261,7 +305,7 @@ export function DefenseCategoryChart({ profile }: { profile: PlayerProfile }) {
               </span>
             </div>
             <div style={{ height: 8, background: "rgba(255,255,255,0.05)", borderRadius: 3, overflow: "hidden" }}>
-              <div style={{
+              <div className="se-bar-fill" style={{
                 width: `${Math.max(2, ((r.fgPct ?? 0) / maxPct) * 100)}%`, height: "100%",
                 background: color, opacity: 0.85, borderRadius: 3, transition: "width 300ms",
               }} />
@@ -269,6 +313,126 @@ export function DefenseCategoryChart({ profile }: { profile: PlayerProfile }) {
           </div>
         );
       })}
+    </Card>
+  );
+}
+
+// ── Strengths & weaknesses ───────────────────────────────────────────────────
+// The whole profile in one glance: of every ranked stat this season, the
+// handful where this player sits furthest ABOVE the league median and the
+// handful furthest BELOW it. Bars diverge from the 50th percentile, so length
+// is literally "how far from average" and side is "which way" — direction is
+// carried by position and the printed percentile, not by colour alone.
+// Info sections (overview, composite ratings) are left out: they summarise
+// the stats below rather than being stats in their own right.
+const EXTREMES_PER_SIDE = 5;
+
+export function StrengthsChart({ profile, distributions, defaultMode = "chart" }: {
+  profile: PlayerProfile;
+  distributions: Map<string, number[]>;
+  defaultMode?: ViewMode;
+}) {
+  const [mode, setMode] = useViewMode(defaultMode);
+  const ranked = profile.sections
+    .filter((s) => s.side !== "info")
+    .flatMap((s) => s.stats.map((stat) => ({ stat, section: s.label })))
+    .map(({ stat, section }) => {
+      const v = numericValue(stat.value);
+      if (v == null || !isRankable(stat.key, stat.fmt)) return null;
+      const sorted = distributions.get(stat.key) ?? [];
+      const pct = percentileOf(v, sorted, stat.key);
+      if (pct == null) return null;
+      return { stat, section, pct, rank: rankOf(v, sorted, stat.key) };
+    })
+    .filter((x): x is NonNullable<typeof x> => x != null);
+
+  if (ranked.length < EXTREMES_PER_SIDE * 2) return null;
+
+  const byPct = [...ranked].sort((a, b) => b.pct - a.pct);
+  const strengths = byPct.slice(0, EXTREMES_PER_SIDE).filter((r) => r.pct > 0.5);
+  const weaknesses = byPct.slice(-EXTREMES_PER_SIDE).filter((r) => r.pct < 0.5).reverse();
+  if (strengths.length === 0 && weaknesses.length === 0) return null;
+
+  const ordinal = (p: number) => {
+    const n = Math.round(p * 100);
+    const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th";
+    return `${n}${suffix}`;
+  };
+
+  const row = (r: (typeof ranked)[number], i: number) => {
+    const above = r.pct >= 0.5;
+    const reach = Math.abs(r.pct - 0.5) * 2; // 0 at the median, 1 at the extreme
+    const color = tierColor(r.pct);
+    return (
+      <div
+        key={r.stat.key}
+        title={r.rank ? `${r.stat.label}: ${formatStat(r.stat.value, r.stat.fmt)} — #${r.rank.rank} of ${r.rank.outOf}` : undefined}
+        style={{ display: "grid", gridTemplateColumns: "minmax(120px, 1.1fr) 2fr 44px", alignItems: "center", gap: 12, padding: "5px 0" }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11.5, color: C.dim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {r.stat.label}
+          </div>
+          <div style={{ fontFamily: F.mono, fontSize: 8.5, color: C.muted, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+            {r.section} · {formatStat(r.stat.value, r.stat.fmt)}
+          </div>
+        </div>
+        <div style={{ position: "relative", height: 10 }}>
+          <div style={{ position: "absolute", left: "50%", top: -3, bottom: -3, width: 1, background: "rgba(255,255,255,0.18)" }} />
+          <div
+            className="se-bar-fill"
+            style={{
+              position: "absolute", top: 1, height: 8, borderRadius: 3, background: color, opacity: 0.9,
+              width: `${Math.max(1.5, reach * 50)}%`,
+              ...(above ? { left: "50%" } : { right: "50%" }),
+              transformOrigin: above ? "left center" : "right center",
+              animationDelay: `${120 + i * 60}ms`,
+            }}
+          />
+        </div>
+        <div style={{ ...NUM, fontSize: 11, color: C.text, textAlign: "right", fontWeight: 600 }}>
+          {ordinal(r.pct)}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <Card style={{ padding: "16px 20px 14px", marginBottom: 16 }}>
+      <ChartHeader title={<>Strengths &amp; weaknesses</>} mode={mode} onChange={setMode} />
+      <div style={{ fontSize: 11, color: C.faint, margin: "6px 0 12px", lineHeight: 1.5, maxWidth: 720 }}>
+        Of the {ranked.length} stats this player is ranked in, the ones furthest above and below
+        the league median. Bars grow out from the centre line (50th percentile); the number is his
+        league percentile. Hover a row for the raw value and exact rank.
+      </div>
+      {mode === "table" ? (
+        <MiniTable
+          headers={["Stat", "Value", "Percentile", "Rank"]}
+          rows={[...strengths, ...weaknesses].map((r) => [
+            r.stat.label,
+            formatStat(r.stat.value, r.stat.fmt),
+            <span style={{ color: tierColor(r.pct) }}>{ordinal(r.pct)}</span>,
+            r.rank ? `#${r.rank.rank} / ${r.rank.outOf}` : "—",
+          ])}
+        />
+      ) : <>
+      {strengths.length > 0 && (
+        <>
+          <div style={{ fontFamily: F.mono, fontSize: 8.5, color: C.muted, letterSpacing: "0.2em", marginBottom: 2 }}>
+            ▲ ABOVE MEDIAN
+          </div>
+          {strengths.map((r, i) => row(r, i))}
+        </>
+      )}
+      {weaknesses.length > 0 && (
+        <>
+          <div style={{ fontFamily: F.mono, fontSize: 8.5, color: C.muted, letterSpacing: "0.2em", margin: "10px 0 2px" }}>
+            ▼ BELOW MEDIAN
+          </div>
+          {weaknesses.map((r, i) => row(r, i + strengths.length))}
+        </>
+      )}
+      </>}
     </Card>
   );
 }

@@ -1,14 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { CareerPanel } from "../components/stat-engine/CareerPanel";
+import { SeasonAverages } from "../components/stat-engine/SeasonAverages";
 import { ComparePlayers } from "../components/stat-engine/ComparePlayers";
-import { ArchetypeCard, DefenseCategoryChart, PlayTypeBars, ShotZoneCourt } from "../components/stat-engine/Visuals";
+import {
+  ArchetypeCard, DefenseCategoryChart, PlayTypeBars, ShotZoneCourt, StrengthsChart,
+} from "../components/stat-engine/Visuals";
 import { RadarChart, RADAR_W } from "../components/stat-engine/ComparePlayers";
 import {
-  C, F, NUM, Bar, Card, CourtWatermark, DEFAULT_ACCENT, EmptyState,
-  ErrorState, GhostButton, NavLink, RankPill, SearchInput, SectionLabel,
+  C, F, NUM, Bar, Card, DEFAULT_ACCENT, EmptyState,
+  ErrorState, GhostButton, RankPill, SearchInput, SectionLabel,
   PlayerAvatar, Segmented, TableSkeleton, TeamBackdrop, TeamChip, TeamPageTint,
-  accentVars, teamColor, tierColor, NBAEdgeBezel, NBADefaultWash, LeagueBrandMark, NBAHeaderStripe,
+  accentVars, teamColor, tierColor, NBAEdgeBezel, NBADefaultWash,
+  ChartHeader, CountUp, MOTION_CSS, MiniTable, riseDelay, useViewMode, AppHeader,
 } from "../components/stat-engine/ui";
 import {
   ArchetypeCatalogueEntry, ArchetypeDetail, ArchetypesResponse, Column,
@@ -126,8 +130,11 @@ function StatEnginePage() {
         return r.json();
       });
 
+    type PlayersResponse = { columns?: Column[]; players?: Row[]; season?: string };
+    type TeamsResponse = { columns?: Column[]; teams?: Row[]; season?: string };
+
     Promise.all([get("/stats/players"), get("/stats/teams"), get("/stats/archetypes")])
-      .then(([p, t, a]: [any, any, ArchetypesResponse]) => {
+      .then(([p, t, a]: [PlayersResponse, TeamsResponse, ArchetypesResponse]) => {
         if (cancelled) return;
         setPlayerCols(p.columns ?? []);
         setPlayerRows(p.players ?? []);
@@ -175,32 +182,11 @@ function StatEnginePage() {
       transition: "background 400ms",
       ...accentVars(accent),
     }}>
-      <style>{TABLE_CSS}</style>
+      <style>{TABLE_CSS + MOTION_CSS}</style>
       <NBAEdgeBezel />
       {themeAbbrev ? <TeamPageTint abbrev={themeAbbrev} /> : <NBADefaultWash />}
 
-      <header style={{
-        position: "sticky", top: 0, zIndex: 30, background: "rgba(10,10,15,0.92)",
-        backdropFilter: "blur(10px)", borderBottom: `1px solid ${C.edge}`,
-        padding: "16px 28px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 20,
-        overflow: "hidden",
-      }}>
-        <CourtWatermark />
-        <NBAHeaderStripe />
-        <div style={{ display: "flex", alignItems: "center", gap: 14, position: "relative" }}>
-          <LeagueBrandMark height={30} />
-          <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.12)" }} />
-          <div>
-            <div style={{ fontFamily: F.display, fontSize: 24, letterSpacing: "0.05em" }}>STAT ENGINE</div>
-            <div style={{ fontFamily: F.mono, fontSize: 9, color: C.gold, letterSpacing: "0.4em", marginTop: 2 }}>
-              {season ? `LEAGUE-WIDE · ${season}` : "LEAGUE-WIDE"}
-            </div>
-          </div>
-        </div>
-        <nav style={{ display: "flex", gap: 22, alignItems: "center", position: "relative" }}>
-          <NavLink href="/#engine">← ENGINE</NavLink>
-        </nav>
-      </header>
+      <AppHeader active="stats" sub={season ? `STAT ENGINE · LEAGUE-WIDE ${season}` : "STAT ENGINE · LEAGUE-WIDE"} />
 
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: "26px 28px 64px", position: "relative", zIndex: 1 }}>
         {error && <ErrorState message={error} />}
@@ -681,6 +667,8 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
   // exactly as before, one row apiece — the toggle the user asked for, so
   // switching back costs nothing and loses no information either way.
   const [density, setDensity] = useState<"visual" | "list">("visual");
+  const chartDefault = density === "visual" ? "chart" : "table";
+  const [radarMode, setRadarMode] = useViewMode(chartDefault);
 
   useEffect(() => {
     let cancelled = false;
@@ -767,6 +755,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
         <span style={{ ...NUM, fontSize: 10, color: C.muted, letterSpacing: "0.25em" }}>{profile.season}</span>
       </div>
 
+      <div className="se-rise">
       <Card accent={accent} style={{ padding: "22px 26px", marginBottom: 16, position: "relative", overflow: "hidden" }}>
         <TeamBackdrop teamId={profile.team_id} abbrev={teamLabel} height={260} />
         <div style={{ display: "flex", justifyContent: "space-between", gap: 28, flexWrap: "wrap", alignItems: "flex-end", position: "relative", zIndex: 1 }}>
@@ -805,7 +794,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
                   {h.label}
                 </div>
                 <div style={{ fontFamily: F.display, fontSize: 44, lineHeight: 1.05, color: tierColor(h.pct) }}>
-                  {h.value.toFixed(0)}
+                  <CountUp value={h.value} />
                 </div>
                 {h.rank && (
                   <div style={{ ...NUM, fontSize: 9.5, color: C.muted }}>
@@ -817,24 +806,45 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
           </div>
         </div>
       </Card>
+      </div>
 
-      {density === "visual" && radarAxes.length >= 3 && (
+      <div className="se-rise" style={riseDelay(1)}>
+        <SeasonAverages kind="player" id={playerId} />
+      </div>
+
+      {radarAxes.length >= 3 && (
+        <div className="se-rise" style={riseDelay(1)}>
         <Card style={{ padding: "18px 22px 20px", marginBottom: 16 }}>
-          <SectionLabel>Profile shape</SectionLabel>
+          <ChartHeader title="Profile shape" mode={radarMode} onChange={setRadarMode} />
           <div style={{ fontSize: 11.5, color: C.faint, margin: "8px 0 14px", lineHeight: 1.55, maxWidth: 720 }}>
             Each axis is the league percentile of this player's measured stats in that area — a
             summary of the sections below, not a separate rating. Further out is better on every axis.
           </div>
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <div style={{ maxWidth: RADAR_W, width: "100%" }}>
-              <RadarChart
-                axes={radarAxes.map((a) => a.axis.label)}
-                series={[{ color: accent, values: radarAxes.map((a) => a.value) }]}
-              />
+          {radarMode === "table" ? (
+            <MiniTable
+              headers={["Area", "League percentile"]}
+              rows={radarAxes.map((a) => [
+                a.axis.label,
+                <span style={{ color: tierColor(a.value) }}>{Math.round(a.value * 100)}</span>,
+              ])}
+            />
+          ) : (
+            <div style={{ display: "flex", justifyContent: "center" }}>
+              <div style={{ maxWidth: RADAR_W, width: "100%" }}>
+                <RadarChart
+                  axes={radarAxes.map((a) => a.axis.label)}
+                  series={[{ color: accent, values: radarAxes.map((a) => a.value) }]}
+                />
+              </div>
             </div>
-          </div>
+          )}
         </Card>
+        </div>
       )}
+
+      <div className="se-rise" style={riseDelay(2)}>
+        <StrengthsChart profile={profile} distributions={distributions} defaultMode={chartDefault} />
+      </div>
 
       {/* "Info" sections (Overview, Ratings) belong to neither side of the
           ball — shown once here, above the split, rather than duplicated
@@ -843,8 +853,8 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
         <div style={{ breakInside: "avoid" }}>
           <ArchetypeCard playerId={playerId} />
         </div>
-        {infoSections.map((section) => (
-            <div key={section.group} style={{ breakInside: "avoid", marginBottom: 16 }}>
+        {infoSections.map((section, i) => (
+            <div key={section.group} className="se-rise" style={{ breakInside: "avoid", marginBottom: 16, ...riseDelay(i + 3) }}>
               <Card style={{ padding: "15px 19px 9px" }}>
                 <div style={{ marginBottom: 12 }}><SectionLabel>{section.label}</SectionLabel></div>
                 {density === "visual" && section.stats.length > COMPACT_THRESHOLD ? (
@@ -889,7 +899,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
       </div>
 
       {view === "career" ? (
-        <CareerPanel playerId={playerId} side={side} />
+        <CareerPanel playerId={playerId} side={side} defaultMode={chartDefault} />
       ) : (
         <>
           <div style={{ fontSize: 11.5, color: C.faint, marginBottom: 16, lineHeight: 1.6, maxWidth: 780 }}>
@@ -902,16 +912,18 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
             <EmptyState>NO {side.toUpperCase()} STATS FOR THIS PLAYER</EmptyState>
           ) : (
             <>
-              {side === "offense" && <ShotZoneCourt profile={profile} />}
-              {side === "offense" && <PlayTypeBars profile={profile} />}
-              {side === "defense" && <DefenseCategoryChart profile={profile} />}
+              <div key={side} className="se-rise">
+                {side === "offense" && <ShotZoneCourt profile={profile} defaultMode={chartDefault} />}
+                {side === "offense" && <PlayTypeBars profile={profile} defaultMode={chartDefault} />}
+                {side === "defense" && <DefenseCategoryChart profile={profile} defaultMode={chartDefault} />}
+              </div>
 
               {/* Columns, not grid: the sections are wildly different heights
                   (Shooting has 16 rows, Overview 6) and a grid leaves a tall
                   hole under the short ones. CSS columns pack them. */}
               <div style={{ columnWidth: 350, columnGap: 16 }}>
-                {sideSections.map((section) => (
-                  <div key={section.group} style={{ breakInside: "avoid", marginBottom: 16 }}>
+                {sideSections.map((section, i) => (
+                  <div key={`${side}-${section.group}`} className="se-rise" style={{ breakInside: "avoid", marginBottom: 16, ...riseDelay(i) }}>
                     <Card style={{ padding: "15px 19px 9px" }}>
                       <div style={{ marginBottom: 12 }}><SectionLabel>{section.label}</SectionLabel></div>
                       {density === "visual" && section.stats.length > COMPACT_THRESHOLD ? (
@@ -1094,6 +1106,10 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
           )}
         </div>
       </Card>
+
+      <div className="se-rise">
+        <SeasonAverages kind="team" id={teamId} />
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(290px, 1fr) minmax(330px, 1.25fr)", gap: 16, alignItems: "start" }}>
         <div>

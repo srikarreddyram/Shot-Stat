@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useId, useState } from "react";
 import { formatStat, SeasonPoint } from "../../lib/stat-engine";
 
 // Shared visual language for the Stat Engine. The tokens here are taken from
@@ -190,17 +190,144 @@ export function Chips({ options, value, onChange }: {
   );
 }
 
+// ── Motion ──────────────────────────────────────────────────────────────────
+// Entrance animations only: things arrive, they don't loop. Every one is
+// switched off under prefers-reduced-motion, where content simply appears.
+// Injected once per page (see stats.tsx) rather than per component.
+export const MOTION_CSS = `
+@keyframes seBarGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes seRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes seUnfold { from { opacity: 0; transform: scale(0.15); } to { opacity: 1; transform: scale(1); } }
+@keyframes seGrowUp { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.se-bar-fill { transform-origin: left center; animation: seBarGrow 750ms cubic-bezier(.2,.8,.2,1) both; }
+.se-rise { animation: seRise 420ms ease-out both; }
+.se-unfold { animation: seUnfold 700ms cubic-bezier(.2,.8,.2,1) both; }
+.se-grow-up { animation: seGrowUp 650ms cubic-bezier(.2,.8,.2,1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .se-bar-fill, .se-rise, .se-unfold, .se-grow-up { animation: none; }
+}
+`;
+
+/** Stagger helper for `.se-rise` — each successive card lands a beat later. */
+export function riseDelay(i: number): React.CSSProperties {
+  return { animationDelay: `${Math.min(i, 10) * 55}ms` };
+}
+
+// ── Chart ⇄ table toggle ─────────────────────────────────────────────────────
+// Every chart on the Stat Engine can be flipped to a plain table of the same
+// numbers. The page-level VISUAL/LIST switch sets the default for all of them
+// (and re-applies it when flipped); each chart can then be overridden alone.
+export type ViewMode = "chart" | "table";
+
+export function useViewMode(defaultMode: ViewMode = "chart") {
+  const [mode, setMode] = useState<ViewMode>(defaultMode);
+  useEffect(() => { setMode(defaultMode); }, [defaultMode]);
+  return [mode, setMode] as const;
+}
+
+export function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
+  return (
+    <div role="group" aria-label="Chart or table view" style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}>
+      {(["chart", "table"] as const).map((m) => {
+        const active = m === mode;
+        return (
+          <button
+            key={m}
+            onClick={() => onChange(m)}
+            aria-pressed={active}
+            style={{
+              fontFamily: F.mono, fontSize: 8.5, letterSpacing: "0.16em", padding: "3px 7px",
+              borderRadius: 2, cursor: "pointer", transition: "all 150ms",
+              background: active ? "var(--se-hover)" : "transparent",
+              border: `1px solid ${active ? "var(--se-edge-strong)" : "rgba(255,255,255,0.08)"}`,
+              color: active ? C.gold : C.muted,
+            }}
+          >
+            {m.toUpperCase()}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Card header row: section label on the left, the chart/table toggle on the right. */
+export function ChartHeader({ title, mode, onChange }: {
+  title: ReactNode; mode: ViewMode; onChange: (m: ViewMode) => void;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 4 }}>
+      <SectionLabel>{title}</SectionLabel>
+      <ViewToggle mode={mode} onChange={onChange} />
+    </div>
+  );
+}
+
+/** The table side of every chart: a header row and plain rows of text. */
+export function MiniTable({ headers, rows }: { headers: string[]; rows: ReactNode[][] }) {
+  return (
+    <div className="se-rise" style={{ overflowX: "auto" }}>
+      <table className="se-table" style={{ minWidth: 0 }}>
+        <thead>
+          <tr>
+            {headers.map((h, i) => (
+              <th key={h} className={i === 0 ? "se-left" : undefined} style={{ cursor: "default", position: "static" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, ri) => (
+            <tr key={ri} style={{ cursor: "default" }}>
+              {r.map((cell, ci) => (
+                <td key={ci} className={ci === 0 ? "se-left" : undefined}
+                    style={ci === 0 ? { fontFamily: F.body, fontSize: 12, color: C.dim } : undefined}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** Percentile bar. Width is the percentile; colour is its tier. */
 export function Bar({ pct, color, height = 3 }: { pct: number; color?: string; height?: number }) {
   return (
     <div style={{ flex: 1, height, background: "rgba(255,255,255,0.05)", borderRadius: height / 2, overflow: "hidden" }}>
-      <div style={{
+      <div className="se-bar-fill" style={{
         width: `${Math.max(2, pct * 100)}%`, height: "100%",
         background: color ?? tierColor(pct), borderRadius: height / 2,
         transition: "width 300ms",
       }} />
     </div>
   );
+}
+
+/** A number that counts up from zero when it first appears. Settles on the
+ *  exact value; under reduced motion it just shows the value. */
+export function CountUp({ value, decimals = 0, duration = 900 }: {
+  value: number; decimals?: number; duration?: number;
+}) {
+  const [shown, setShown] = useState(value);
+  useEffect(() => {
+    if (typeof window === "undefined" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setShown(value);
+      return;
+    }
+    let frame = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - (1 - t) ** 3;
+      setShown(value * eased);
+      if (t < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [value, duration]);
+  return <>{shown.toFixed(decimals)}</>;
 }
 
 /** League rank, as a tier-tinted pill: "#74 / 582". */
@@ -215,6 +342,96 @@ export function RankPill({ rank, outOf, pct }: { rank: number; outOf: number; pc
       #{rank}
       <span style={{ color: C.muted, marginLeft: 3 }}>/{outOf}</span>
     </span>
+  );
+}
+
+// ── Brand ───────────────────────────────────────────────────────────────────
+// The app icon (public/icon.svg — a basketball whose seams form an eye) and
+// the one navigation bar every page shares. Below 40px the simplified
+// favicon.svg is used: the full icon's highlight and bezel turn to mush.
+// The brand pieces also render on the front page and the engine, which don't
+// set --se-accent; without a fallback they'd silently turn white there.
+const GOLD_FALLBACK = "var(--se-accent, #C9A84C)";
+
+export function ShotVisionMark({ size = 30 }: { size?: number }) {
+  return (
+    <img src={size < 40 ? "/favicon.svg" : "/icon.svg"} alt="" aria-hidden="true" width={size} height={size}
+         style={{ display: "block", borderRadius: size * 0.22, flexShrink: 0 }} />
+  );
+}
+
+export function BrandLockup({ size = 30, sub }: { size?: number; sub?: ReactNode }) {
+  return (
+    <a href="/" aria-label="SHOT VISION home" style={{ display: "flex", alignItems: "center", gap: 11, textDecoration: "none", color: C.text }}>
+      <ShotVisionMark size={size} />
+      <div>
+        <div style={{ fontFamily: F.display, fontSize: size * 0.8, letterSpacing: "0.06em", lineHeight: 1 }}>SHOT VISION</div>
+        {sub && (
+          <div style={{ fontFamily: F.mono, fontSize: 8.5, color: GOLD_FALLBACK, letterSpacing: "0.34em", marginTop: 3 }}>{sub}</div>
+        )}
+      </div>
+    </a>
+  );
+}
+
+export type SiteSection = "engine" | "stats" | "archetypes" | "model";
+export const SITE_SECTIONS: { key: SiteSection; href: string; label: string }[] = [
+  { key: "engine", href: "/#engine", label: "SHOT ENGINE" },
+  { key: "stats", href: "/stats", label: "STAT ENGINE" },
+  { key: "archetypes", href: "/archetypes", label: "ARCHETYPES" },
+  { key: "model", href: "/model-features", label: "MODEL" },
+];
+
+/** The shared top navigation. The current page is marked, not just linked. */
+export function SiteNav({ active, onEngine }: { active?: SiteSection; onEngine?: () => void }) {
+  return (
+    <nav aria-label="Sections" style={{ display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap", position: "relative" }}>
+      {SITE_SECTIONS.map((s) => {
+        const on = s.key === active;
+        return (
+          <a
+            key={s.key}
+            href={s.href}
+            aria-current={on ? "page" : undefined}
+            onClick={s.key === "engine" && onEngine ? (e) => { e.preventDefault(); onEngine(); } : undefined}
+            style={{
+              color: on ? GOLD_FALLBACK : C.muted, fontFamily: F.mono, fontSize: 10.5, letterSpacing: "0.26em",
+              textDecoration: "none", transition: "color 200ms", paddingBottom: 4,
+              borderBottom: `1px solid ${on ? GOLD_FALLBACK : "transparent"}`,
+            }}
+            onMouseEnter={(e) => { if (!on) e.currentTarget.style.color = "#C9A84C"; }}
+            onMouseLeave={(e) => { if (!on) e.currentTarget.style.color = C.muted; }}
+          >
+            {s.label}
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
+
+/** The sticky header every page shares: league mark, the SHOT VISION
+ *  lockup with this page's name under it, and the site navigation. */
+export function AppHeader({ sub, active, right }: { sub: ReactNode; active: SiteSection; right?: ReactNode }) {
+  return (
+    <header style={{
+      position: "sticky", top: 0, zIndex: 30, background: "rgba(10,10,15,0.92)",
+      backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderBottom: `1px solid ${C.edge}`,
+      padding: "14px 28px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 20,
+      flexWrap: "wrap", overflow: "hidden",
+    }}>
+      <CourtWatermark />
+      <NBAHeaderStripe />
+      <div style={{ display: "flex", alignItems: "center", gap: 14, position: "relative" }}>
+        <LeagueBrandMark height={28} />
+        <div style={{ width: 1, height: 26, background: "rgba(255,255,255,0.12)" }} />
+        <BrandLockup size={32} sub={sub} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 20, position: "relative" }}>
+        {right}
+        <SiteNav active={active} />
+      </div>
+    </header>
   );
 }
 
@@ -635,6 +852,11 @@ export function TrendChart({ points, fmt, color = C.gold, label }: {
   color?: string;
   label?: string;
 }) {
+  const [hover, setHover] = useState<number | null>(null);
+  // A per-chart id: deriving it from the colour broke when the colour is a
+  // CSS variable ("var(--se-accent)" isn't a valid id), and the fill fell back
+  // to solid black.
+  const fillId = `trend-fill-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   if (points.length === 0) {
     return (
       <div style={{ height: TREND_H, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 11 }}>
@@ -670,7 +892,7 @@ export function TrendChart({ points, fmt, color = C.gold, label }: {
       {label && <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 6 }}>{label}</div>}
       <svg viewBox={`0 0 ${TREND_W} ${TREND_H}`} style={{ width: "100%", height: "auto", display: "block" }}>
         <defs>
-          <linearGradient id={`trend-fill-${color.replace("#", "")}`} x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={color} stopOpacity="0.22" />
             <stop offset="100%" stopColor={color} stopOpacity="0" />
           </linearGradient>
@@ -682,7 +904,7 @@ export function TrendChart({ points, fmt, color = C.gold, label }: {
           <line x1={TREND_PAD.left} x2={TREND_W - TREND_PAD.right} y1={y(0)} y2={y(0)}
                 stroke="rgba(255,255,255,0.12)" strokeDasharray="3 3" />
         )}
-        <path d={area} fill={`url(#trend-fill-${color.replace("#", "")})`} />
+        <path d={area} fill={`url(#${fillId})`} />
         <path d={path} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         {points.map((p, i) => (
           <circle key={p.season} cx={x(i)} cy={y(p.value)} r={i === points.length - 1 ? 3.5 : 2.5}
@@ -690,17 +912,55 @@ export function TrendChart({ points, fmt, color = C.gold, label }: {
         ))}
         {points.map((p, i) => (
           (i % labelEvery === 0 || i === points.length - 1) && (
-            <text key={p.season} x={x(i)} y={TREND_H - 6} textAnchor="middle"
+            <text key={p.season} x={x(i)} y={TREND_H - 6}
+                  textAnchor={points.length > 1 && i === 0 ? "start" : points.length > 1 && i === points.length - 1 ? "end" : "middle"}
                   fill={C.muted} style={{ fontFamily: F.mono, fontSize: 8.5 }}>
-              {p.season.slice(2, 5)}
+              {p.season.slice(2)}
             </text>
           )
         ))}
-        {/* The current (rightmost) value, printed at its own point. */}
-        <text x={x(points.length - 1)} y={y(points[points.length - 1].value) - 9} textAnchor="middle"
-              fill={color} style={{ fontFamily: F.mono, fontSize: 10.5, fontWeight: 700 }}>
-          {formatStat(points[points.length - 1].value, fmt)}
-        </text>
+        {/* The current (rightmost) value, printed at its own point — hidden
+            while hovering so it never collides with the tooltip. */}
+        {hover === null && (
+          <text x={x(points.length - 1)} y={y(points[points.length - 1].value) - 9} textAnchor="middle"
+                fill={C.text} style={{ fontFamily: F.mono, fontSize: 10.5, fontWeight: 700 }}>
+            {formatStat(points[points.length - 1].value, fmt)}
+          </text>
+        )}
+
+        {hover !== null && (() => {
+          const hx = x(hover), hy = y(points[hover].value);
+          const tipW = 92, tipH = 30;
+          const tipX = Math.min(Math.max(hx - tipW / 2, 2), TREND_W - tipW - 2);
+          const tipY = hy - tipH - 10 < 2 ? hy + 10 : hy - tipH - 10;
+          return (
+            <g pointerEvents="none">
+              <line x1={hx} x2={hx} y1={TREND_PAD.top} y2={TREND_PAD.top + innerH}
+                    stroke="rgba(255,255,255,0.18)" strokeWidth={1} />
+              <circle cx={hx} cy={hy} r={5} fill={color} stroke={C.bg} strokeWidth={2} />
+              <rect x={tipX} y={tipY} width={tipW} height={tipH} rx={3}
+                    fill={C.raised} stroke="rgba(255,255,255,0.12)" />
+              <text x={tipX + tipW / 2} y={tipY + 12} textAnchor="middle" fill={C.muted}
+                    style={{ fontFamily: F.mono, fontSize: 8.5, letterSpacing: "0.08em" }}>
+                {points[hover].season}
+              </text>
+              <text x={tipX + tipW / 2} y={tipY + 24} textAnchor="middle" fill={C.text}
+                    style={{ fontFamily: F.mono, fontSize: 10.5, fontWeight: 700 }}>
+                {formatStat(points[hover].value, fmt)}
+              </text>
+            </g>
+          );
+        })()}
+
+        {/* Hit targets: one full-height column per season, much wider than
+            the dot itself, so hovering anywhere near a season picks it. */}
+        {points.map((p, i) => {
+          const half = points.length === 1 ? innerW / 2 : innerW / (points.length - 1) / 2;
+          return (
+            <rect key={`hit-${p.season}`} x={x(i) - half} y={0} width={half * 2} height={TREND_H}
+                  fill="transparent" onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} />
+          );
+        })}
       </svg>
     </div>
   );
