@@ -104,3 +104,31 @@ def stat_engine_player_career(player_id: str, season: Optional[str] = None):
 
     resolved = resolve_rating_season(_state.db_engine, season or "2026-27")
     return career_panel(_state.db_engine, player_id, resolved)
+
+
+@router.get("/stats/player/{player_id}/seasons")
+def stat_engine_player_seasons(player_id: str):
+    """Season-by-season averages of the major box-score stats, regular
+    season and playoffs, plus a career line. See season_averages.py."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.season_averages import player_seasons
+
+    out = player_seasons(_state.db_engine, player_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No box scores for player {player_id}.")
+    return out
+
+
+@router.get("/stats/team/{team_id}/seasons")
+def stat_engine_team_seasons(team_id: str):
+    """A team's season-by-season averages, its opponents' line, and its
+    league rank in each stat that season."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.season_averages import team_seasons
+
+    out = team_seasons(_state.db_engine, team_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No box scores for team {team_id}.")
+    return out
