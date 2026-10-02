@@ -12,6 +12,40 @@ const LOADING_LINES = [
   "Ranking by expected points...",
 ];
 
+// BEST/WORST toggle for the ranked zone list below the court — same segmented-
+// pill shape as MetricToggle inside ResultsOutput, just standalone since it
+// needs no closure over that component's local state beyond the two props.
+function RankingToggle({ view, setView }: { view: "best" | "worst"; setView: (v: "best" | "worst") => void }) {
+  return (
+    <div style={{ display: "flex", background: "#111118", borderRadius: 20, padding: 4, width: "fit-content", border: "1px solid rgba(255,255,255,0.05)" }}>
+      <button
+        onClick={() => setView("best")}
+        style={{
+          background: view === "best" ? "#16A34A" : "transparent",
+          color: view === "best" ? "#000" : "#64748b",
+          border: "none", padding: "4px 14px", borderRadius: 16,
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700,
+          cursor: "pointer", transition: "all 0.2s",
+        }}
+      >
+        BEST SHOTS
+      </button>
+      <button
+        onClick={() => setView("worst")}
+        style={{
+          background: view === "worst" ? "#DC2626" : "transparent",
+          color: view === "worst" ? "#000" : "#64748b",
+          border: "none", padding: "4px 14px", borderRadius: 16,
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 700,
+          cursor: "pointer", transition: "all 0.2s",
+        }}
+      >
+        WORST SHOTS
+      </button>
+    </div>
+  );
+}
+
 export function ErrorOutput({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 580, textAlign: "center", gap: 16, padding: "0 24px" }}>
@@ -62,10 +96,31 @@ export function LoadingOutput({ idx }: { idx: number }) {
   );
 }
 
+// Best and worst are literally the same card, the same hero block, and the
+// same "here's the other end" callout — only which slice of `results` feeds
+// them and which three colors paint them differ. Centralizing that here
+// means WORST can never silently drift out of sync with a future change to
+// how BEST renders.
+const RANK_PALETTES = {
+  best: { colors: ["#16A34A", "#C9A84C", "#B8860B"], heroValue: "#16A34A", label: "OPTIMAL ZONE", inspect: "TAP TO INSPECT ▸" },
+  worst: { colors: ["#DC2626", "#B91C1C", "#7F1D1D"], heroValue: "#DC2626", label: "WEAKEST ZONE", inspect: "TAP TO INSPECT ▸" },
+} as const;
+
 export function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDefender, season, projected }: { results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; attacker: Player; defender: Player; secondaryDefender?: Player | null; season: string; projected: { attacker: boolean; defender: boolean } }) {
   const [showProb, setShowProb] = useState(false);
+  // BEST ranks results best-first (results is already sorted that way);
+  // WORST reverses the bottom slice so its own #1 is the single worst zone —
+  // rank position always means "how extreme," never "index into the array."
+  const [view, setView] = useState<"best" | "worst">("best");
+  const palette = RANK_PALETTES[view];
+  const ranked = view === "best" ? results.slice(0, 3) : results.slice(-3).reverse();
+  const hero = view === "best" ? results[0] : results[results.length - 1];
+  // The "other end" callout always points at the opposite extreme from
+  // whichever view is active, so it stays useful information rather than
+  // repeating what the hero above it already says.
   const best = results[0];
   const worst = results[results.length - 1];
+  const otherEnd = view === "best" ? worst : best;
 
   // Lifted out of CourtCanvas so the ranked zone cards below can open the
   // exact same shot-detail panel a court click does — both are just two
@@ -174,17 +229,19 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
           </span>
         </div>
       )}
-      <CourtCanvas bestKey={best.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} attacker={attacker} defender={defender} season={season} selected={selected} setSelected={setSelected} />
+      <CourtCanvas bestKey={hero.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} attacker={attacker} defender={defender} season={season} selected={selected} setSelected={setSelected} />
+
+      <RankingToggle view={view} setView={setView} />
 
       <div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
-            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#C9A84C", letterSpacing: "0.4em" }}>OPTIMAL ZONE</div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: view === "best" ? "#C9A84C" : "#DC2626", letterSpacing: "0.4em" }}>{palette.label}</div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, color: "#F0F0F0", lineHeight: 1.05, marginTop: 4 }}>{best.zone.label}</div>
-              {best.shotDistance != null ? (
+              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, color: "#F0F0F0", lineHeight: 1.05, marginTop: 4 }}>{hero.zone.label}</div>
+              {hero.shotDistance != null ? (
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "#64748b" }}>
-                  {best.shotDistance.toFixed(1)} FT
+                  {hero.shotDistance.toFixed(1)} FT
                 </div>
               ) : null}
             </div>
@@ -193,24 +250,24 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
         </div>
 
         <div style={{ display: "flex", alignItems: "baseline", gap: 20, marginTop: 8 }}>
-          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 64, color: "#16A34A", lineHeight: 1 }}>
-            {showProb ? `${Math.round(best.makeProb * 100)}%` : best.ep.toFixed(2)}
+          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 64, color: palette.heroValue, lineHeight: 1 }}>
+            {showProb ? `${Math.round(hero.makeProb * 100)}%` : hero.ep.toFixed(2)}
           </div>
           <div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b", letterSpacing: "0.2em" }}>
               {showProb ? "EXPECTED PTS" : "MAKE PROB"}
             </div>
             <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 22, color: "#F0F0F0" }}>
-              {showProb ? best.ep.toFixed(2) : `${Math.round(best.makeProb * 100)}%`}
+              {showProb ? hero.ep.toFixed(2) : `${Math.round(hero.makeProb * 100)}%`}
             </div>
           </div>
         </div>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {results.slice(0, 3).map((r, i) => {
+        {ranked.map((r, i) => {
           const isTop = i === 0;
-          const color = i === 0 ? "#16A34A" : i === 1 ? "#C9A84C" : "#B8860B";
+          const color = palette.colors[i] ?? palette.colors[palette.colors.length - 1];
           return (
             <div
               key={r.zone.key}
@@ -218,12 +275,16 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
               tabIndex={0}
               onClick={() => selectZone(r.zone.label)}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectZone(r.zone.label); } }}
-              aria-label={`Inspect the best ${r.zone.label} shot`}
+              aria-label={`Inspect the ${view === "best" ? "best" : "worst"} ${r.zone.label} shot`}
               style={{
                 background: "#111118",
-                border: isTop ? "1px solid rgba(201,168,76,0.25)" : "1px solid rgba(255,255,255,0.05)",
+                border: isTop
+                  ? `1px solid ${view === "best" ? "rgba(201,168,76,0.25)" : "rgba(220,38,38,0.3)"}`
+                  : "1px solid rgba(255,255,255,0.05)",
                 padding: "12px 16px", borderRadius: 3,
-                boxShadow: isTop ? "0 0 32px rgba(201,168,76,0.08)" : "none",
+                boxShadow: isTop
+                  ? `0 0 32px ${view === "best" ? "rgba(201,168,76,0.08)" : "rgba(220,38,38,0.1)"}`
+                  : "none",
                 cursor: "pointer", transition: "opacity 160ms ease",
               }}
               onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.8"; }}
@@ -275,8 +336,8 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
                     {Math.round(r.attemptsBehind).toLocaleString()} SIMILAR SHOTS BEHIND THIS
                   </div>
                 ) : <span />}
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#C9A84C", letterSpacing: "0.1em" }}>
-                  TAP TO INSPECT ▸
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: view === "best" ? "#C9A84C" : "#DC2626", letterSpacing: "0.1em" }}>
+                  {palette.inspect}
                 </div>
               </div>
             </div>
@@ -284,9 +345,9 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
         })}
       </div>
 
-      <div style={{ background: "#0e0e16", borderLeft: "3px solid #DC2626", padding: "12px 16px" }}>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#DC2626", letterSpacing: "0.15em" }}>
-          ⚠ AVOID · {worst.zone.label.toUpperCase()}{worst.shotDistance != null ? ` · ${worst.shotDistance.toFixed(1)} FT` : ""} · {showProb ? `${Math.round(worst.makeProb * 100)}% PROB` : `${worst.ep.toFixed(2)} EP`}
+      <div style={{ background: "#0e0e16", borderLeft: `3px solid ${view === "best" ? "#DC2626" : "#16A34A"}`, padding: "12px 16px" }}>
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: view === "best" ? "#DC2626" : "#16A34A", letterSpacing: "0.15em" }}>
+          {view === "best" ? "⚠ AVOID" : "✓ BEST ALTERNATIVE"} · {otherEnd.zone.label.toUpperCase()}{otherEnd.shotDistance != null ? ` · ${otherEnd.shotDistance.toFixed(1)} FT` : ""} · {showProb ? `${Math.round(otherEnd.makeProb * 100)}% PROB` : `${otherEnd.ep.toFixed(2)} EP`}
         </div>
       </div>
 
