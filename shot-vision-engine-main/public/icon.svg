@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SHOT VISION">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="36%" r="78%">
+      <stop offset="0%" stop-color="#1c1a22"/>
+      <stop offset="100%" stop-color="#08080c"/>
+    </radialGradient>
+    <!-- userSpaceOnUse, not the default bounding box: a bounding-box gradient
+         can't paint a zero-width shape like the vertical seam. -->
+    <linearGradient id="gold" gradientUnits="userSpaceOnUse" x1="0" y1="80" x2="0" y2="416">
+      <stop offset="0%" stop-color="#EACB70"/>
+      <stop offset="100%" stop-color="#B08A32"/>
+    </linearGradient>
+    <radialGradient id="leather" cx="40%" cy="34%" r="75%">
+      <stop offset="0%" stop-color="#5a3414"/>
+      <stop offset="100%" stop-color="#23140a"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#C9A84C" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#C9A84C" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="ball"><circle cx="256" cy="248" r="160"/></clipPath>
+  </defs>
+
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <circle cx="256" cy="248" r="214" fill="url(#glow)"/>
+
+  <!-- Ball: leather, then its seams. The two side seams bow toward each
+       other to form the eye; the vertical seam runs behind the pupil. -->
+  <circle cx="256" cy="248" r="160" fill="url(#leather)"/>
+  <g clip-path="url(#ball)" fill="none" stroke="url(#gold)" stroke-linecap="round">
+    <line x1="256" y1="80" x2="256" y2="416" stroke-width="16"/>
+    <path d="M 90 248 Q 256 112 422 248" stroke-width="20"/>
+    <path d="M 90 248 Q 256 384 422 248" stroke-width="20"/>
+  </g>
+  <circle cx="256" cy="248" r="160" fill="none" stroke="url(#gold)" stroke-width="24"/>
+
+  <!-- Pupil: the target. -->
+  <circle cx="256" cy="248" r="54" fill="url(#gold)"/>
+  <circle cx="256" cy="248" r="24" fill="#08080c"/>
+  <circle cx="274" cy="229" r="9" fill="#F7E9BD"/>
+
+  <!-- NBA red / blue edge — the same bezel every page carries. -->
+  <rect x="146" y="446" width="110" height="10" rx="5" fill="#C8102E"/>
+  <rect x="256" y="446" width="110" height="10" rx="5" fill="#1D428A"/>
+</svg>

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { NBAEdgeBezel, NBADefaultWash, LeagueBrandMark } from "../components/stat-engine/ui";
+import { AppHeader, DEFAULT_ACCENT, NBAEdgeBezel, NBADefaultWash, accentVars } from "../components/stat-engine/ui";
 
 // A new, self-contained page at /archetypes — additive only. It does not
 // import from or modify EnginePage.tsx / CourtCanvas, which is the core
@@ -141,8 +141,8 @@ function ArchetypesPage() {
         setClusters(def.clusters);
         setModelVersion(def.model_version);
         setPoints(court.clusters);
-      } catch (e: any) {
-        setError(e.message ?? "failed to load archetypes");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "failed to load archetypes");
       }
     })();
   }, []);
@@ -184,20 +184,13 @@ function ArchetypesPage() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0B0B0F", color: "#F0F0F0", fontFamily: "'Inter', sans-serif", padding: "32px 24px" }}>
+    <div style={{ minHeight: "100vh", background: "#0B0B0F", color: "#F0F0F0", fontFamily: "'Inter', sans-serif", ...accentVars(DEFAULT_ACCENT) }}>
       <NBAEdgeBezel />
       <NBADefaultWash />
-      <div style={{ maxWidth: 900, margin: "0 auto", position: "relative" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <LeagueBrandMark height={22} />
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, letterSpacing: 1, color: "#C9A84C" }}>
-              SHOT ARCHETYPES
-            </div>
-          </div>
-          <a href="/#engine" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none" }}>
-            ← ENGINE
-          </a>
+      <AppHeader active="archetypes" sub="SHOT ARCHETYPES · PCA + K-MEANS" />
+      <div style={{ maxWidth: 900, margin: "0 auto", position: "relative", padding: "28px 24px 32px" }}>
+        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, letterSpacing: 1, color: "#C9A84C" }}>
+          SHOT ARCHETYPES
         </div>
         <div style={{ fontSize: 13, color: "rgba(240,240,240,0.55)", marginTop: 4, marginBottom: 24 }}>
           {clusters.length > 0

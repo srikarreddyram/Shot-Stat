@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { NBAEdgeBezel, NBADefaultWash, LeagueBrandMark } from "../components/stat-engine/ui";
+import { AppHeader, DEFAULT_ACCENT, NBAEdgeBezel, NBADefaultWash, accentVars } from "../components/stat-engine/ui";
 
 // Model Features — every feature the live shot-quality model reasons with,
 // published as data rather than buried in src/features/spec.py. This
@@ -106,20 +106,13 @@ function ModelFeaturesPage() {
   const maxGroupShare = data ? Math.max(...data.groups.map((g) => g.gain_share), 1e-9) : 1;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0B0B0F", color: "#F0F0F0", fontFamily: "'Inter', sans-serif", padding: "32px 24px" }}>
+    <div style={{ minHeight: "100vh", background: "#0B0B0F", color: "#F0F0F0", fontFamily: "'Inter', sans-serif", ...accentVars(DEFAULT_ACCENT) }}>
       <NBAEdgeBezel />
       <NBADefaultWash />
-      <div style={{ maxWidth: 900, margin: "0 auto", position: "relative" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <LeagueBrandMark height={22} />
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, letterSpacing: 1, color: GOLD }}>
-              MODEL FEATURES
-            </div>
-          </div>
-          <a href="/#engine" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none" }}>
-            ← ENGINE
-          </a>
+      <AppHeader active="model" sub="MODEL · WHAT THE ENGINE LEARNED" />
+      <div style={{ maxWidth: 900, margin: "0 auto", position: "relative", padding: "28px 24px 32px" }}>
+        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, letterSpacing: 1, color: GOLD }}>
+          MODEL FEATURES
         </div>
         <div style={{ fontSize: 13, color: "rgba(240,240,240,0.55)", marginTop: 4, marginBottom: 6 }}>
           {data

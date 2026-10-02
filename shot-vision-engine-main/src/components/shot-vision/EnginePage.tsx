@@ -4,7 +4,7 @@ import { getRecommendationHeatmapAPI, checkHealthAPI, getTeamsAPI, getTeamRoster
 // Reusing the Stat Engine's team-identity building blocks rather than
 // re-deriving colours/logos here: one TEAM_COLORS map, one logo endpoint,
 // used by both halves of the app.
-import { teamColor, NBA_RED, NBA_BLUE, NBAEdgeBezel, NBADefaultWash, LeagueBrandMark, NBAHeaderStripe } from "@/components/stat-engine/ui";
+import { teamColor, NBA_RED, NBA_BLUE, NBAEdgeBezel, NBADefaultWash, LeagueBrandMark, NBAHeaderStripe, BrandLockup, SiteNav } from "@/components/stat-engine/ui";
 
 // This file is the orchestrator only: state, effects, the run() call, and
 // the page layout. Every visual piece below has its own file under
@@ -246,32 +246,16 @@ export default function EnginePage({ onBack }: Props) {
             chrome above it. */}
         <NBAHeaderStripe bottom={-5} />
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <LeagueBrandMark height={40} />
-          <div style={{ width: 1, height: 32, background: "rgba(255,255,255,0.12)" }} />
-          <div>
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: "#F0F0F0", letterSpacing: "0.05em" }}>SHOT VISION</div>
-            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#C9A84C", letterSpacing: "0.4em", marginTop: 2 }}>SHOT QUALITY ENGINE</div>
-          </div>
+          <LeagueBrandMark height={34} />
+          <div style={{ width: 1, height: 30, background: "rgba(255,255,255,0.12)" }} />
+          <BrandLockup size={34} sub="SHOT ENGINE · SHOT QUALITY" />
         </div>
         {/* Status and nav sit together on the right. Under space-between the
             status pill landed dead-centre with nothing on its axis, reading as
             a stray element rather than as chrome. */}
         <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
           <HealthIndicator status={health} />
-          {/* Plain <a>, not a router Link: /stats, /archetypes, and
-              /model-features are separate top-level routes, and this
-              component is rendered inside the "/" route's own splash/engine
-              toggle rather than being a route itself. A full navigation is
-              the honest thing here and costs nothing at this size. */}
-          <a href="/stats" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
-            STAT ENGINE
-          </a>
-          <a href="/archetypes" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
-            ARCHETYPES
-          </a>
-          <a href="/model-features" style={{ color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", textDecoration: "none", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
-            MODEL FEATURES
-          </a>
+          <SiteNav active="engine" />
           <button onClick={onBack} style={{ background: "transparent", border: "none", color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", cursor: "pointer", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
             ← BACK
           </button>

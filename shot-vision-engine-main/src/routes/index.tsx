@@ -6,10 +6,10 @@ import EnginePage from "@/components/shot-vision/EnginePage";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "SHOT VISION — NBA Shot Quality & Matchup Engine" },
-      { name: "description", content: "Real-time NBA shot quality and matchup recommendations. XGBoost trained on 847,000 shots across 12 seasons. Know before you shoot." },
-      { property: "og:title", content: "SHOT VISION — NBA Shot Quality Engine" },
-      { property: "og:description", content: "Input the matchup. Run the engine. Optimal zones, expected points, and make probability in under 200ms." },
+      { title: "SHOT VISION — NBA Intelligence" },
+      { name: "description", content: "Shot Engine and Stat Engine: where to shoot against any defender, every stat for every player, and the shot archetypes the league takes. Built on 2.2M shots across 10 seasons." },
+      { property: "og:title", content: "SHOT VISION — NBA Intelligence" },
+      { property: "og:description", content: "Where to shoot against any defender, and what every player actually does." },
     ],
   }),
   component: Index,

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import VideoBackdrop from "./video-backdrop";
-import { LeagueBrandMark, NBAEdgeBezel, teamColor, teamLogoUrl } from "@/components/stat-engine/ui";
+import {
+  BrandLockup, LeagueBrandMark, NBAEdgeBezel, ShotVisionMark, SiteNav, teamLogoUrl,
+} from "@/components/stat-engine/ui";
 
 interface Props {
   onLaunch: () => void;
@@ -46,54 +48,49 @@ const LUKA_ZONES = [
 ].map((z) => ({ ...z, ep: (z.fgm / z.fga) * z.value }));
 
 /**
- * Best and worst scoring zone for four current stars, from the same
- * player_zone_stats table, 2025-26, minimum 15 attempts in a zone. These are
- * public performance statistics — the thing the engine exists to analyse.
- *
- * Tatum's sample is far smaller than the others'; `fga` is shown per player so
- * that is visible rather than buried.
+ * Stephen Curry's 2025-26 profile as the Stat Engine shows it: headline
+ * ratings with league rank, and three of the stats he ranks first in.
+ * Straight off /stats (player_stat_table), not rounded up for effect.
  */
-// team/teamId are each player's real current franchise — abbreviation feeds
-// teamColor() for the row accent, teamId feeds the same /team/{id}/logo
-// proxy the rest of the app uses, both confirmed against the live /teams
-// endpoint rather than typed from memory.
-const PLAYER_SPREAD = [
-  {
-    name: "LUKA DONČIĆ",
-    team: "LAL",
-    teamId: "1610612747",
-    fga: 1457,
-    best: ["RESTRICTED AREA", 1.63],
-    worst: ["LEFT CORNER 3", 0.4],
-  },
-  {
-    name: "VICTOR WEMBANYAMA",
-    team: "SAS",
-    teamId: "1610612759",
-    fga: 1080,
-    best: ["RESTRICTED AREA", 1.5],
-    worst: ["MID-RANGE", 0.82],
-  },
-  {
-    name: "CADE CUNNINGHAM",
-    team: "DET",
-    teamId: "1610612765",
-    fga: 1189,
-    best: ["RESTRICTED AREA", 1.26],
-    worst: ["IN THE PAINT", 0.84],
-  },
-  {
-    name: "JAYSON TATUM",
-    team: "BOS",
-    teamId: "1610612738",
-    fga: 287,
-    best: ["RESTRICTED AREA", 1.23],
-    worst: ["MID-RANGE", 0.7],
-  },
+const CURRY = {
+  season: "2025-26",
+  ratings: [
+    { label: "OFFENSE", value: 99, rank: "#1 / 542", color: "#16A34A" },
+    { label: "DEFENSE", value: 66, rank: "#292 / 541", color: "#C9A84C" },
+    { label: "NBA 2K", value: 93, rank: "#9 / 481", color: "#16A34A" },
+  ],
+  tops: [
+    { stat: "THREES MADE / GAME", value: "4.40", rank: "#1 OF 582" },
+    { stat: "THREES ATTEMPTED / GAME", value: "11.3", rank: "#1 OF 582" },
+    { stat: "SECONDARY ASSISTS / GAME", value: "1.30", rank: "#1 OF 582" },
+  ],
+} as const;
+
+/**
+ * The seven shot archetypes found by PCA + K-Means over 2,234,150 shots
+ * (models/shot_archetypes_metadata.json, pca_kmeans_v1): share of all shots
+ * and FG% within each. The same clusters the /archetypes page draws.
+ */
+const ARCHETYPES = {
+  shots: 2234150,
+  rows: [
+    { label: "Open above-the-break spot-up three", share: 0.354, fg: 0.362 },
+    { label: "Contested driving layup at the rim", share: 0.264, fg: 0.558 },
+    { label: "Open above-the-break pull-up three", share: 0.121, fg: 0.408 },
+    { label: "Contested short driving floater", share: 0.083, fg: 0.452 },
+    { label: "Contested short post-up jumper", share: 0.073, fg: 0.447 },
+    { label: "Contested alley-oop dunk", share: 0.062, fg: 0.873 },
+    { label: "Open above-the-break step-back three", share: 0.044, fg: 0.394 },
+  ],
+} as const;
+
+const PRODUCTS = [
+  { key: "engine", name: "SHOT ENGINE", href: "/#engine", blurb: "Where to shoot against any defender — make %, expected points and why." },
+  { key: "stats", name: "STAT ENGINE", href: "/stats", blurb: "Every stat for every player and team, ranked, compared and charted." },
+  { key: "archetypes", name: "ARCHETYPES", href: "/archetypes", blurb: "The kinds of shot the league takes, found by clustering 2M+ shots." },
 ] as const;
 
 const LUKA_BEST = LUKA_ZONES[0];
-const LUKA_WORST = LUKA_ZONES[LUKA_ZONES.length - 1];
 const LUKA_FGA = LUKA_ZONES.reduce((n, z) => n + z.fga, 0);
 
 function WordLine({
@@ -201,57 +198,18 @@ export default function SplashPage({ onLaunch }: Props) {
             }}
           />
 
-          {/* League wordmark — a static, persistent brand mark like the nav
-              dots beside it. No animation, no motion: this is a chrome
-              addition, not part of the hero's scroll-triggered sequence, and
-              intentionally does not touch VideoBackdrop or any keyframe
-              above. Silently disappears if the logo proxy can't be reached. */}
-          <div style={{ position: "absolute", left: 32, top: 32, zIndex: 20 }}>
-            <LeagueBrandMark height={34} />
+          {/* Brand + navigation chrome — static, not part of the scroll
+              sequence. The same lockup and nav every other page carries, so
+              the front page reads as the door to the whole app rather than
+              to the shot engine alone. */}
+          <div style={{ position: "absolute", left: 32, top: 28, zIndex: 20, display: "flex", alignItems: "center", gap: 14 }}>
+            <LeagueBrandMark height={32} />
+            <div style={{ width: 1, height: 28, background: "rgba(255,255,255,0.14)" }} />
+            <BrandLockup size={34} sub="NBA INTELLIGENCE" />
           </div>
-          {/* Top-level nav, mirroring the brand mark on the left.
-              Until this existed, /stats, /archetypes and /model-features were
-              reachable ONLY from the engine's own header — so from the front
-              page the Stat Engine could not be opened at all without first
-              launching the engine and then leaving it, which is not a route
-              anyone would guess. Plain <a> for the same reason EnginePage uses
-              one: these are separate top-level routes while this component is
-              rendered inside the "/" route's own splash/engine toggle. Styling
-              is copied deliberately so the two headers read as one system. */}
-          <nav
-            style={{
-              position: "absolute",
-              right: 32,
-              top: 32,
-              zIndex: 20,
-              display: "flex",
-              alignItems: "center",
-              gap: 24,
-            }}
-          >
-            {[
-              { href: "/stats", label: "STAT ENGINE" },
-              { href: "/archetypes", label: "ARCHETYPES" },
-              { href: "/model-features", label: "MODEL FEATURES" },
-            ].map(({ href, label }) => (
-              <a
-                key={href}
-                href={href}
-                style={{
-                  color: "#64748b",
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 11,
-                  letterSpacing: "0.3em",
-                  textDecoration: "none",
-                  transition: "color 200ms",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")}
-                onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}
-              >
-                {label}
-              </a>
-            ))}
-          </nav>
+          <div style={{ position: "absolute", right: 32, top: 36, zIndex: 20 }}>
+            <SiteNav onEngine={onLaunch} />
+          </div>
           {/* Same red/blue edge bezel every other page in the app uses (see
               NBAEdgeBezel in stat-engine/ui.tsx) — fixed positioning reaches
               past this sticky container to the real viewport edge, so it
@@ -296,483 +254,208 @@ export default function SplashPage({ onLaunch }: Props) {
             ))}
           </div>
 
-          {/* SECTION 0 */}
+          {/* SECTION 0 — what SHOT VISION is now: three products, one engine */}
           <SectionOverlay active={section === 0} align="center">
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                pointerEvents: "none",
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "'Bebas Neue', sans-serif",
-                  fontSize: 200,
-                  color: "rgba(201,168,76,0.018)",
-                  letterSpacing: "0.02em",
-                }}
-              >
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 200, color: "rgba(201,168,76,0.018)", letterSpacing: "0.02em" }}>
                 VISION
               </div>
             </div>
-            <div
-              style={{
-                position: "relative",
-                maxWidth: 700,
-                margin: "0 auto",
-                padding: "0 24px",
-                textAlign: "center",
-              }}
-            >
-              <Tag>SHOT VISION</Tag>
-              <div style={{ marginTop: 24 }}>
-                <WordLine text="Every bucket" active={section === 0} />
-                <WordLine text="starts here." active={section === 0} delay={0.18} />
+            <div style={{ position: "relative", maxWidth: 820, margin: "0 auto", padding: "0 24px", textAlign: "center" }}>
+              <div style={{ display: "flex", justifyContent: "center", opacity: 0,
+                            animation: section === 0 ? "statPop 0.7s cubic-bezier(0.34,1.56,0.64,1) 0.05s forwards" : undefined }}>
+                <ShotVisionMark size={84} />
               </div>
-              <p
-                style={{
-                  marginTop: 32,
-                  opacity: 0,
-                  animation: section === 0 ? "fadeUp 0.7s ease 0.9s forwards" : undefined,
-                  fontFamily: "'Inter', sans-serif",
-                  fontWeight: 400,
-                  fontSize: 17,
-                  color: "#9aa7bd",
-                  maxWidth: 460,
-                  marginLeft: "auto",
-                  marginRight: "auto",
-                  lineHeight: 1.55,
-                }}
-              >
-                2 seconds. One defender. One decision. SHOT VISION already knows the answer.
+              <div style={{ marginTop: 22 }}><Tag>SHOT VISION · NBA INTELLIGENCE</Tag></div>
+              <div style={{ marginTop: 22, display: "flex", flexDirection: "column", alignItems: "center" }}>
+                <WordLine text="Read the game" active={section === 0} />
+                <WordLine text="before it's played." active={section === 0} delay={0.18} />
+              </div>
+              <p style={{ marginTop: 28, opacity: 0, animation: section === 0 ? "fadeUp 0.7s ease 0.9s forwards" : undefined,
+                          fontFamily: "'Inter', sans-serif", fontSize: 17, color: "#9aa7bd", maxWidth: 560,
+                          marginLeft: "auto", marginRight: "auto", lineHeight: 1.55 }}>
+                Where to shoot against any defender, every stat for every player, and the shapes of the
+                shots the whole league takes — one engine, built on ten seasons of real games.
               </p>
-            </div>
-            <div
-              style={{
-                position: "absolute",
-                bottom: 40,
-                left: "50%",
-                transform: "translateX(-50%)",
-                textAlign: "center",
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 9,
-                  color: "#C9A84C",
-                  letterSpacing: "0.4em",
-                }}
-              >
-                SCROLL
+              <div style={{ marginTop: 26, display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", opacity: 0,
+                            animation: section === 0 ? "fadeUp 0.7s ease 1.15s forwards" : undefined }}>
+                {PRODUCTS.map((p) => (
+                  <span key={p.key} style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.26em",
+                                             color: "#C9A84C", border: "1px solid rgba(201,168,76,0.3)", borderRadius: 3,
+                                             padding: "6px 12px", background: "rgba(201,168,76,0.06)" }}>
+                    {p.name}
+                  </span>
+                ))}
               </div>
-              <div
-                style={{
-                  width: 1,
-                  height: 40,
-                  background: "#C9A84C",
-                  margin: "10px auto 0",
-                  animation: "scrollNudge 1.6s ease infinite",
-                  transformOrigin: "top",
-                }}
-              />
+            </div>
+            <div style={{ position: "absolute", bottom: 40, left: "50%", transform: "translateX(-50%)", textAlign: "center" }}>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#C9A84C", letterSpacing: "0.4em" }}>SCROLL</div>
+              <div style={{ width: 1, height: 40, background: "#C9A84C", margin: "10px auto 0",
+                            animation: "scrollNudge 1.6s ease infinite", transformOrigin: "top" }} />
             </div>
           </SectionOverlay>
 
-          {/* SECTION 1 */}
+          {/* SECTION 1 — SHOT ENGINE */}
           <SectionOverlay active={section === 1} align="left">
-            <div style={{ paddingLeft: "8vw", maxWidth: 620 }}>
-              <Tag>— THE MOMENT</Tag>
+            <div style={{ paddingLeft: "8vw", maxWidth: 580 }}>
+              <Tag>01 — SHOT ENGINE</Tag>
               <div style={{ marginTop: 20 }}>
-                <WordLine text="The closeout" active={section === 1} size={90} />
-                <WordLine text="is coming." active={section === 1} delay={0.2} size={90} />
+                <WordLine text="Not all shots" active={section === 1} size={88} />
+                <WordLine text="are equal." active={section === 1} delay={0.18} size={88} />
               </div>
-              <p
-                style={{
-                  marginTop: 28,
-                  opacity: 0,
-                  animation: section === 1 ? "fadeUp 0.7s ease 0.9s forwards" : undefined,
-                  fontFamily: "'Inter', sans-serif",
-                  fontSize: 16,
-                  color: "#9aa7bd",
-                  maxWidth: 400,
-                  lineHeight: 1.55,
-                }}
-              >
-                A 6'9" wing at full sprint. 80 inches of wingspan. You have 0.4 seconds. SHOT VISION
-                already has the answer.
+              <p style={{ marginTop: 18, opacity: 0, animation: section === 1 ? "fadeUp 0.7s ease 0.8s forwards" : undefined,
+                          fontFamily: "'Inter', sans-serif", fontSize: 15.5, color: "#9aa7bd", maxWidth: 440, lineHeight: 1.55 }}>
+                Pick a shooter and the defender on him. The engine scores every spot on the floor — make
+                probability, expected points, and why.
               </p>
-              <div
-                style={{
-                  marginTop: 40,
-                  opacity: 0,
-                  animation:
-                    section === 1
-                      ? "statPop 0.6s cubic-bezier(0.34,1.56,0.64,1) 1.3s forwards"
-                      : undefined,
-                }}
-              >
-                <div
-                  style={{
-                    fontFamily: "'Bebas Neue', sans-serif",
-                    fontSize: 72,
-                    color: "#C9A84C",
-                    lineHeight: 1,
-                  }}
-                >
-                  0.4
-                </div>
-                <div
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 10,
-                    color: "#9aa7bd",
-                    letterSpacing: "0.4em",
-                    marginTop: 6,
-                  }}
-                >
-                  SECONDS TO DECIDE
-                </div>
-              </div>
-            </div>
-          </SectionOverlay>
-
-          {/* SECTION 2 */}
-          <SectionOverlay active={section === 2} align="right">
-            <div
-              style={{ paddingRight: "8vw", maxWidth: 560, marginLeft: "auto", textAlign: "right" }}
-            >
-              <Tag>— SHOT QUALITY</Tag>
-              <div style={{ marginTop: 20 }}>
-                <WordLine text="Not all shots" active={section === 2} size={90} />
-                <WordLine text="are equal." active={section === 2} delay={0.18} size={90} />
-              </div>
-              <div
-                style={{
-                  marginTop: 14,
-                  opacity: 0,
-                  animation: section === 2 ? "fadeUp 0.7s ease 0.8s forwards" : undefined,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "flex-end",
-                  gap: 8,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 11,
-                  color: "#C9A84C",
-                  letterSpacing: "0.22em",
-                }}
-              >
+              <div style={{ marginTop: 18, opacity: 0, animation: section === 1 ? "fadeUp 0.7s ease 0.9s forwards" : undefined,
+                            display: "flex", alignItems: "center", gap: 8, fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 11, color: "#C9A84C", letterSpacing: "0.22em" }}>
+                <img src={teamLogoUrl("1610612747")!} alt="" aria-hidden="true" loading="lazy"
+                     onError={(e) => { e.currentTarget.style.display = "none"; }}
+                     style={{ height: 18, width: 18, objectFit: "contain", flexShrink: 0 }} />
                 LUKA DONČIĆ · {LUKA_SEASON} · {LUKA_FGA.toLocaleString()} FGA
-                {/* Same real crest proxy as the rest of the app — this is the
-                    Lakers row, so it should look like one. */}
-                <img
-                  src={teamLogoUrl("1610612747")!}
-                  alt=""
-                  aria-hidden="true"
-                  loading="lazy"
-                  onError={(e) => { e.currentTarget.style.display = "none"; }}
-                  style={{ height: 18, width: 18, objectFit: "contain", flexShrink: 0 }}
-                />
               </div>
-              <div
-                style={{
-                  marginTop: 22,
-                  opacity: 0,
-                  animation: section === 2 ? "fadeUp 0.7s ease 0.9s forwards" : undefined,
-                }}
-              >
+              <div style={{ marginTop: 16, opacity: 0, animation: section === 1 ? "fadeUp 0.7s ease 1s forwards" : undefined }}>
                 {LUKA_ZONES.map((z, i) => (
-                  <div key={z.zone} style={{ marginTop: i === 0 ? 0 : 12 }}>
+                  <div key={z.zone} style={{ marginTop: i === 0 ? 0 : 10 }}>
                     <ComparisonRow
                       label={z.zone}
-                      // Bars are scaled against his best zone, so the drop-off
-                      // reads at a glance rather than needing the numbers.
+                      // Scaled against his best zone, so the drop-off reads at a glance.
                       pct={(z.ep / LUKA_BEST.ep) * 100}
                       color={z.ep >= 1.2 ? "#C9A84C" : z.ep >= 0.85 ? "#B06A2C" : "#DC2626"}
                       epColor={z.ep >= 1.2 ? "#16A34A" : undefined}
                       ep={`${z.ep.toFixed(2)} EP`}
                       sub={`${z.fgm}/${z.fga} · ${((z.fgm / z.fga) * 100).toFixed(1)}%`}
-                      active={section === 2}
-                      delay={1.0 + i * 0.12}
+                      active={section === 1}
+                      delay={1.05 + i * 0.12}
                     />
                   </div>
                 ))}
-                <div
-                  style={{
-                    marginTop: 20,
-                    opacity: 0,
-                    animation: section === 2 ? "fadeUp 0.6s ease 2s forwards" : undefined,
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 12,
-                    color: "#C9A84C",
-                  }}
-                >
-                  {(LUKA_BEST.ep - LUKA_WORST.ep).toFixed(2)} EP between his best zone and his worst
-                </div>
               </div>
+              <SectionCta active={section === 1} delay={1.8} onClick={onLaunch}>OPEN THE SHOT ENGINE →</SectionCta>
             </div>
           </SectionOverlay>
 
-          {/* SECTION 3 */}
-          <SectionOverlay active={section === 3} align="left">
-            <div style={{ paddingLeft: "8vw", maxWidth: 900 }}>
-              <Tag>— THE DATASET</Tag>
+          {/* SECTION 2 — STAT ENGINE */}
+          <SectionOverlay active={section === 2} align="right">
+            <div style={{ paddingRight: "8vw", maxWidth: 580, marginLeft: "auto", textAlign: "right" }}>
+              <Tag>02 — STAT ENGINE</Tag>
               <div style={{ marginTop: 20 }}>
-                <WordLine text="2.1 million shots." active={section === 3} size={90} />
-                <WordLine text="10 seasons." active={section === 3} delay={0.2} size={90} />
+                <WordLine text="Every stat." active={section === 2} size={88} />
+                <WordLine text="Every player." active={section === 2} delay={0.18} size={88} />
               </div>
-              <div style={{ marginTop: 44, display: "flex", gap: 64, flexWrap: "wrap" }}>
-                <StatCallout
-                  value="10"
-                  label="SEASONS ANALYZED"
-                  active={section === 3}
-                  delay={1.0}
-                />
-                <StatCallout
-                  value="2.1M"
-                  label="SHOTS PROCESSED"
-                  active={section === 3}
-                  delay={1.2}
-                />
-                <StatCallout value="<200" label="MS INFERENCE" active={section === 3} delay={1.4} />
-              </div>
-            </div>
-          </SectionOverlay>
-
-          {/* SECTION 4 */}
-          <SectionOverlay active={section === 4} align="right">
-            <div
-              style={{ paddingRight: "8vw", maxWidth: 620, marginLeft: "auto", textAlign: "right" }}
-            >
-              <Tag>— THE INTELLIGENCE</Tag>
-              <div style={{ marginTop: 20 }}>
-                <WordLine text="XGBoost." active={section === 4} size={90} />
-                <WordLine text="Trained on" active={section === 4} delay={0.15} size={90} />
-                <WordLine text="mismatches." active={section === 4} delay={0.3} size={90} />
-              </div>
-              <p
-                style={{
-                  marginTop: 32,
-                  marginLeft: "auto",
-                  opacity: 0,
-                  animation: section === 4 ? "fadeUp 0.7s ease 1.1s forwards" : undefined,
-                  fontFamily: "'Inter', sans-serif",
-                  fontSize: 16,
-                  color: "#9aa7bd",
-                  maxWidth: 440,
-                  lineHeight: 1.55,
-                }}
-              >
-                Height differential. Wingspan. Contest rate. Zone tendencies. Game state. All of it
-                in under 200ms.
+              <p style={{ marginTop: 18, marginLeft: "auto", opacity: 0, animation: section === 2 ? "fadeUp 0.7s ease 0.8s forwards" : undefined,
+                          fontFamily: "'Inter', sans-serif", fontSize: 15.5, color: "#9aa7bd", maxWidth: 440, lineHeight: 1.55 }}>
+                Box score to tracking data, ranked against the whole league, with a career trend behind every
+                number and a side-by-side compare for any three players.
               </p>
-              <div
-                style={{
-                  marginTop: 30,
-                  marginLeft: "auto",
-                  maxWidth: 470,
-                  opacity: 0,
-                  animation: section === 4 ? "fadeUp 0.7s ease 1.35s forwards" : undefined,
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 9,
-                    color: "#6b7a92",
-                    letterSpacing: "0.24em",
-                    paddingBottom: 8,
-                    borderBottom: "1px solid rgba(201,168,76,0.22)",
-                  }}
-                >
-                  <span>PLAYER · {LUKA_SEASON}</span>
-                  <span>BEST / WORST ZONE · EP</span>
-                </div>
-                {PLAYER_SPREAD.map((pl, i) => (
-                  <div
-                    key={pl.name}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 14,
-                      padding: "9px 0",
-                      borderBottom:
-                        i === PLAYER_SPREAD.length - 1
-                          ? "none"
-                          : "1px solid rgba(255,255,255,0.06)",
-                      textAlign: "left",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                      {/* Real team crest, same proxy every other team logo in
-                          the app uses — the one piece of this row that
-                          wasn't here before, so these four real players read
-                          as "on a real team" rather than as names in a list. */}
-                      <img
-                        src={teamLogoUrl(pl.teamId)!}
-                        alt=""
-                        aria-hidden="true"
-                        loading="lazy"
-                        onError={(e) => { e.currentTarget.style.display = "none"; }}
-                        style={{ height: 26, width: 26, objectFit: "contain", flexShrink: 0 }}
-                      />
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                          <div
-                            style={{
-                              fontFamily: "'Bebas Neue', sans-serif",
-                              fontSize: 19,
-                              color: "#F0F0F0",
-                              letterSpacing: "0.03em",
-                              lineHeight: 1.1,
-                            }}
-                          >
-                            {pl.name}
-                          </div>
-                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: teamColor(pl.team), letterSpacing: "0.1em" }}>
-                            {pl.team}
-                          </div>
-                        </div>
-                        <div
-                          style={{
-                            fontFamily: "'JetBrains Mono', monospace",
-                            fontSize: 9,
-                            color: "#6b7a92",
-                            letterSpacing: "0.14em",
-                          }}
-                        >
-                          {pl.fga.toLocaleString()} FGA
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: 18, flexShrink: 0 }}>
-                      <ZoneChip zone={pl.best[0]} ep={pl.best[1]} tone="#C9A84C" />
-                      <ZoneChip zone={pl.worst[0]} ep={pl.worst[1]} tone="#DC2626" />
-                    </div>
+              <div style={{ marginTop: 20, display: "flex", gap: 30, justifyContent: "flex-end", opacity: 0,
+                            animation: section === 2 ? "fadeUp 0.7s ease 0.95s forwards" : undefined }}>
+                {CURRY.ratings.map((r) => (
+                  <div key={r.label} style={{ textAlign: "right" }}>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#6b7a92", letterSpacing: "0.25em" }}>{r.label}</div>
+                    <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 52, lineHeight: 1, color: r.color }}>{r.value}</div>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, color: "#6b7a92" }}>{r.rank}</div>
                   </div>
                 ))}
               </div>
+              <div style={{ marginTop: 18, opacity: 0, animation: section === 2 ? "fadeUp 0.7s ease 1.1s forwards" : undefined }}>
+                <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: 11, color: "#C9A84C", letterSpacing: "0.22em", marginBottom: 10 }}>
+                  STEPHEN CURRY · {CURRY.season} · LEAGUE RANK
+                  <img src={teamLogoUrl("1610612744")!} alt="" aria-hidden="true" loading="lazy"
+                       onError={(e) => { e.currentTarget.style.display = "none"; }}
+                       style={{ height: 18, width: 18, objectFit: "contain", flexShrink: 0 }} />
+                </div>
+                {CURRY.tops.map((t, i) => (
+                  <div key={t.stat} style={{ marginTop: i === 0 ? 0 : 10 }}>
+                    <ComparisonRow label={t.stat} pct={100} color="#16A34A" ep={t.value} sub={t.rank}
+                                   active={section === 2} delay={1.2 + i * 0.12} />
+                  </div>
+                ))}
+              </div>
+              <SectionCta active={section === 2} delay={1.8} href="/stats" align="right">BROWSE THE STAT ENGINE →</SectionCta>
             </div>
           </SectionOverlay>
 
-          {/* SECTION 5 - CTA */}
-          <SectionOverlay active={section === 5} align="center">
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                pointerEvents: "none",
-              }}
-            >
-              <div
-                style={{
-                  width: 600,
-                  height: 600,
-                  borderRadius: "50%",
-                  background:
-                    "radial-gradient(circle, rgba(201,168,76,0.08) 0%, rgba(201,168,76,0) 70%)",
-                  animation: "ambientPulse 5s ease infinite",
-                }}
-              />
-            </div>
-            <div
-              style={{
-                position: "relative",
-                textAlign: "center",
-                padding: "0 24px",
-                maxWidth: 1000,
-                margin: "0 auto",
-              }}
-            >
-              <Tag>SHOT VISION — NBA SHOT QUALITY ENGINE</Tag>
-              <div
-                style={{
-                  marginTop: 28,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <WordLine text="Know before" active={section === 5} size={130} />
-                <WordLine text="you shoot." active={section === 5} delay={0.22} size={130} />
+          {/* SECTION 3 — ARCHETYPES */}
+          <SectionOverlay active={section === 3} align="left">
+            <div style={{ paddingLeft: "8vw", maxWidth: 700, paddingTop: 40 }}>
+              <Tag>03 — SHOT ARCHETYPES</Tag>
+              <div style={{ marginTop: 16 }}>
+                <WordLine text="The league takes" active={section === 3} size={74} />
+                <WordLine text="seven shots." active={section === 3} delay={0.18} size={74} />
               </div>
-              <div
-                style={{
-                  width: 48,
-                  height: 1,
-                  background: "#C9A84C",
-                  margin: "36px auto 0",
-                  opacity: 0,
-                  animation: section === 5 ? "fadeUp 0.6s ease 1s forwards" : undefined,
-                }}
-              />
-              <p
-                style={{
-                  marginTop: 20,
-                  opacity: 0,
-                  animation: section === 5 ? "fadeUp 0.7s ease 1.1s forwards" : undefined,
-                  fontFamily: "'Inter', sans-serif",
-                  fontSize: 17,
-                  color: "#9aa7bd",
-                }}
-              >
-                Input the matchup. Run the engine.
+              <p style={{ marginTop: 14, opacity: 0, animation: section === 3 ? "fadeUp 0.7s ease 0.8s forwards" : undefined,
+                          fontFamily: "'Inter', sans-serif", fontSize: 15, color: "#9aa7bd", maxWidth: 520, lineHeight: 1.5 }}>
+                {ARCHETYPES.shots.toLocaleString()} real shots, clustered by where, how and how contested they were.
+                Bar length is how often each kind is taken; the number is how often it goes in.
               </p>
-              <button
-                onClick={onLaunch}
-                style={{
-                  marginTop: 40,
-                  opacity: 0,
-                  animation:
-                    section === 5
-                      ? "statPop 0.6s cubic-bezier(0.34,1.56,0.64,1) 1.4s forwards"
-                      : undefined,
-                  background: "#C9A84C",
-                  color: "#000",
-                  border: "none",
-                  fontFamily: "'Bebas Neue', sans-serif",
-                  fontSize: 22,
-                  letterSpacing: "0.05em",
-                  padding: "18px 52px",
-                  borderRadius: 3,
-                  boxShadow: "0 0 40px rgba(201,168,76,0.25)",
-                  cursor: "pointer",
-                  transition: "all 300ms ease",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.boxShadow = "0 0 64px rgba(201,168,76,0.45)";
-                  e.currentTarget.style.transform = "scale(1.03)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.boxShadow = "0 0 40px rgba(201,168,76,0.25)";
-                  e.currentTarget.style.transform = "scale(1)";
-                }}
-              >
-                RUN SHOT VISION →
-              </button>
-              <div
-                style={{
-                  marginTop: 40,
-                  opacity: 0,
-                  animation: section === 5 ? "fadeUp 0.6s ease 1.7s forwards" : undefined,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 9,
-                  color: "#5a5a70",
-                  letterSpacing: "0.3em",
-                }}
-              >
-                SHOT VISION · XGBOOST · 12 SEASONS · &lt;200MS INFERENCE
+              <div style={{ marginTop: 16, maxWidth: 520 }}>
+                {ARCHETYPES.rows.map((a, i) => (
+                  <div key={a.label} style={{ marginTop: i === 0 ? 0 : 6 }}>
+                    <ComparisonRow
+                      label={a.label.toUpperCase()}
+                      // Scaled to the most common archetype, so frequency reads at a glance.
+                      pct={(a.share / ARCHETYPES.rows[0].share) * 100}
+                      color={a.fg >= 0.5 ? "#16A34A" : a.fg >= 0.4 ? "#C9A84C" : "#B06A2C"}
+                      ep={`${Math.round(a.fg * 100)}% FG`}
+                      sub={`${(a.share * 100).toFixed(1)}% of all shots`}
+                      active={section === 3}
+                      delay={1.0 + i * 0.1}
+                    />
+                  </div>
+                ))}
+              </div>
+              <SectionCta active={section === 3} delay={1.9} href="/archetypes" marginTop={18}>EXPLORE THE ARCHETYPES →</SectionCta>
+            </div>
+          </SectionOverlay>
+
+          {/* SECTION 4 — the data, and how honest the models are about it */}
+          <SectionOverlay active={section === 4} align="right">
+            <div style={{ paddingRight: "8vw", maxWidth: 900, marginLeft: "auto", textAlign: "right" }}>
+              <Tag>04 — UNDER THE HOOD</Tag>
+              <div style={{ marginTop: 20 }}>
+                <WordLine text="2.2 million shots." active={section === 4} size={88} />
+                <WordLine text="Zero peeking." active={section === 4} delay={0.2} size={88} />
+              </div>
+              <p style={{ marginTop: 18, marginLeft: "auto", opacity: 0, animation: section === 4 ? "fadeUp 0.7s ease 0.9s forwards" : undefined,
+                          fontFamily: "'Inter', sans-serif", fontSize: 15.5, color: "#9aa7bd", maxWidth: 480, lineHeight: 1.55 }}>
+                Every feature is point-in-time: the model only ever sees games played before the shot it's scoring.
+                Then it's tested on a season it never trained on — and the results are published, good and bad.
+              </p>
+              <div style={{ marginTop: 34, display: "flex", gap: 40, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <StatCallout value="10" label="SEASONS" active={section === 4} delay={1.1} />
+                <StatCallout value="2.2M" label="SHOTS MODELLED" active={section === 4} delay={1.25} />
+                <StatCallout value="273K" label="PLAYER BOX SCORES" active={section === 4} delay={1.4} />
+                <StatCallout value="582" label="PLAYERS RANKED" active={section === 4} delay={1.55} />
+              </div>
+              <div style={{ marginTop: 26, opacity: 0, animation: section === 4 ? "fadeUp 0.6s ease 1.8s forwards" : undefined,
+                            fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#6b7a92", letterSpacing: "0.22em" }}>
+                XGBOOST · TREESHAP · EMPIRICAL-BAYES SHRINKAGE · CALIBRATION-CHECKED
+              </div>
+            </div>
+          </SectionOverlay>
+
+          {/* SECTION 5 — CTA: pick where to start */}
+          <SectionOverlay active={section === 5} align="center">
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+              <div style={{ width: 640, height: 640, borderRadius: "50%",
+                            background: "radial-gradient(circle, rgba(201,168,76,0.08) 0%, rgba(201,168,76,0) 70%)",
+                            animation: "ambientPulse 5s ease infinite" }} />
+            </div>
+            <div style={{ position: "relative", textAlign: "center", padding: "0 24px", maxWidth: 1080, margin: "0 auto" }}>
+              <Tag>SHOT VISION</Tag>
+              <div style={{ marginTop: 22, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                <WordLine text="Know before" active={section === 5} size={120} />
+                <WordLine text="tip-off." active={section === 5} delay={0.22} size={120} />
+              </div>
+              <div style={{ marginTop: 40, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
+                {PRODUCTS.map((p, i) => (
+                  <ProductTile key={p.key} product={p} active={section === 5} delay={1 + i * 0.12}
+                               onClick={p.key === "engine" ? onLaunch : undefined} />
+                ))}
               </div>
             </div>
           </SectionOverlay>
@@ -906,31 +589,65 @@ function ComparisonRow({
   );
 }
 
-function ZoneChip({ zone, ep, tone }: { zone: string; ep: number; tone: string }) {
+function SectionCta({ children, active, delay, onClick, href, align = "left", marginTop = 26 }: {
+  children: React.ReactNode; active: boolean; delay: number; onClick?: () => void; href?: string;
+  align?: "left" | "right"; marginTop?: number;
+}) {
+  const style: React.CSSProperties = {
+    display: "inline-block", marginTop, opacity: 0,
+    animation: active ? `fadeUp 0.6s ease ${delay}s forwards` : undefined,
+    fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.26em", color: "#C9A84C",
+    background: "rgba(201,168,76,0.08)", border: "1px solid rgba(201,168,76,0.4)", borderRadius: 3,
+    padding: "10px 16px", cursor: "pointer", textDecoration: "none", transition: "background 200ms, color 200ms",
+  };
+  const hover = (on: boolean) => (e: React.MouseEvent<HTMLElement>) => {
+    e.currentTarget.style.background = on ? "#C9A84C" : "rgba(201,168,76,0.08)";
+    e.currentTarget.style.color = on ? "#000" : "#C9A84C";
+  };
   return (
-    <div style={{ textAlign: "right", minWidth: 92 }}>
-      <div
-        style={{
-          fontFamily: "'Bebas Neue', sans-serif",
-          fontSize: 24,
-          color: tone,
-          lineHeight: 1,
-        }}
-      >
-        {ep.toFixed(2)}
-      </div>
-      <div
-        style={{
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: 8,
-          color: "#6b7a92",
-          letterSpacing: "0.12em",
-          marginTop: 3,
-        }}
-      >
-        {zone}
-      </div>
+    <div style={{ textAlign: align }}>
+      {href ? (
+        <a href={href} style={style} onMouseEnter={hover(true)} onMouseLeave={hover(false)}>{children}</a>
+      ) : (
+        <button onClick={onClick} style={style} onMouseEnter={hover(true)} onMouseLeave={hover(false)}>{children}</button>
+      )}
     </div>
+  );
+}
+
+function ProductTile({ product, active, delay, onClick }: {
+  product: (typeof PRODUCTS)[number]; active: boolean; delay: number; onClick?: () => void;
+}) {
+  const primary = product.key === "engine";
+  const body = (
+    <>
+      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, letterSpacing: "0.05em", lineHeight: 1,
+                    color: primary ? "#000" : "#F0F0F0" }}>
+        {product.name} →
+      </div>
+      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12.5, lineHeight: 1.45, marginTop: 8,
+                    color: primary ? "rgba(0,0,0,0.72)" : "#9aa7bd" }}>
+        {product.blurb}
+      </div>
+    </>
+  );
+  const style: React.CSSProperties = {
+    display: "block", textAlign: "left", cursor: "pointer", textDecoration: "none", borderRadius: 6,
+    padding: "18px 18px 20px", opacity: 0, width: "100%",
+    animation: active ? `statPop 0.55s cubic-bezier(0.34,1.56,0.64,1) ${delay}s forwards` : undefined,
+    background: primary ? "#C9A84C" : "rgba(14,14,22,0.82)",
+    border: `1px solid ${primary ? "#C9A84C" : "rgba(201,168,76,0.25)"}`,
+    boxShadow: primary ? "0 0 40px rgba(201,168,76,0.25)" : "none",
+    transition: "transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease",
+  };
+  const hover = (on: boolean) => (e: React.MouseEvent<HTMLElement>) => {
+    e.currentTarget.style.transform = on ? "translateY(-3px)" : "none";
+    if (!primary) e.currentTarget.style.borderColor = on ? "rgba(201,168,76,0.7)" : "rgba(201,168,76,0.25)";
+  };
+  return onClick ? (
+    <button onClick={onClick} style={style} onMouseEnter={hover(true)} onMouseLeave={hover(false)}>{body}</button>
+  ) : (
+    <a href={product.href} style={style} onMouseEnter={hover(true)} onMouseLeave={hover(false)}>{body}</a>
   );
 }
 
