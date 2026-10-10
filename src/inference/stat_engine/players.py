@@ -4,6 +4,7 @@ note (why this is a read-only join over data other modules already own).
 """
 from __future__ import annotations
 
+import functools
 import weakref
 
 import numpy as np
@@ -23,6 +24,18 @@ from .metadata import (
     STAT_GROUPS,
     ZONE_SLUG,
 )
+
+
+@functools.lru_cache(maxsize=1)
+def _team_ids_by_abbrev() -> dict[str, str]:
+    """Team abbreviation -> franchise id, from nba_api's bundled team list,
+    plus the two abbreviations this data's seasons used that it no longer
+    lists (New Jersey Nets, New Orleans Hornets)."""
+    from nba_api.stats.static import teams
+
+    ids = {t["abbreviation"]: str(t["id"]) for t in teams.get_teams()}
+    ids.update({"NJN": ids["BKN"], "NOH": ids["NOP"], "NOK": ids["NOP"]})
+    return ids
 
 
 # The table joins a dozen sources and takes ~2 s to build; every profile,
@@ -106,6 +119,27 @@ def _build_player_stat_table(engine, season: str) -> pd.DataFrame:
             engine,
         ).set_index("player_id")["team_id"]
         players["team_id"] = players["player_id"].map(current_team).fillna(players["team_id"])
+
+    # Seasons before 2024-25 were ingested without players.team_id at all.
+    # Fill it here (read-time only, nothing is written back) from the team of
+    # his last game that season, else from the NBA's own advanced stats, so a
+    # past season's profile and leaderboard still say who he played for.
+    missing_team = players["team_id"].isna()
+    if missing_team.any():
+        last_game = pd.read_sql(
+            "SELECT player_id, team_id, MAX(game_date) FROM player_game_logs "
+            "WHERE season = ? AND team_id IS NOT NULL GROUP BY player_id",
+            engine, params=(season,),
+        ).set_index("player_id")["team_id"]
+        players.loc[missing_team, "team_id"] = players.loc[missing_team, "player_id"].map(last_game)
+        missing_team = players["team_id"].isna()
+    if missing_team.any():
+        advanced_team = pd.read_sql(
+            "SELECT player_id, team_abbrev FROM player_advanced_stats "
+            "WHERE season = ? AND season_type = 'Regular Season'",
+            engine, params=(season,),
+        ).set_index("player_id")["team_abbrev"].map(_team_ids_by_abbrev())
+        players.loc[missing_team, "team_id"] = players.loc[missing_team, "player_id"].map(advanced_team)
 
     # ── Zone shooting, pivoted wide ────────────────────────────────────
     zones = pd.read_sql(

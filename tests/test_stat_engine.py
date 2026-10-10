@@ -589,3 +589,26 @@ def test_a_past_season_keeps_the_team_he_played_for_that_season(engine):
     now = se.build_player_stat_table(engine, "2024-25").set_index("player_id")
     assert past.loc["MOVER", "team_id"] == "T_OLD"
     assert now.loc["MOVER", "team_id"] == "T_NEW"
+
+
+
+def test_a_past_season_with_no_stored_team_falls_back_to_his_last_game(engine):
+    """Seasons before 2024-25 were ingested with no team at all."""
+    from datetime import date
+
+    from src.db.models import Player, PlayerGameLog, Shot
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        session.merge(Player(player_id="OLDTIMER", season="2019-20", name="Old Timer", team_id=None))
+        session.merge(Player(player_id="OLDTIMER", season="2024-25", name="Old Timer", team_id="T_NOW"))
+        for season in ("2019-20", "2024-25"):
+            session.add(Shot(shot_id=f"o-{season}", game_id="G1", player_id="OLDTIMER",
+                             season=season, shot_made=1, zone="Restricted Area"))
+        # Traded mid-season: the team of his LAST game is the one shown.
+        for gid, day, team in (("A", 1, "T_FIRST"), ("B", 20, "T_LAST")):
+            session.add(PlayerGameLog(player_id="OLDTIMER", game_id=gid, season="2019-20",
+                                      season_type="Regular Season", game_date=date(2020, 1, day),
+                                      team_id=team, team_abbrev=team, opp_abbrev="X", home=1))
+        session.commit()
+    row = se.build_player_stat_table(engine, "2019-20").set_index("player_id").loc["OLDTIMER"]
+    assert row["team_id"] == "T_LAST"
