@@ -52,6 +52,21 @@ def test_player_per_game_averages_and_shooting_from_totals(engine):
     assert row["team"] == "AAA · BBB"  # traded mid-season: both teams, in order
 
 
+def test_efg_and_ts_from_season_totals(engine):
+    # Season A: 32 pts on 13/22, no threes or free throws -> both reduce to
+    # makes over attempts weighted by points.
+    row = player_seasons(engine, "P")["regular"]["seasons"][0]
+    assert row["efg_pct"] == pytest.approx(13 / 22, abs=1e-4)
+    assert row["ts_pct"] == pytest.approx(32 / (2 * 22), abs=1e-4)
+    # T1: 40/90 with 10 threes, 230 pts over two games of 90 FGA and 0 FTA.
+    team = team_seasons(engine, "T1")["regular"]["seasons"][0]
+    assert team["efg_pct"] == pytest.approx((40 + 5) / 90, abs=1e-4)
+    assert team["ts_pct"] == pytest.approx(230 / (2 * 180), abs=1e-4)
+    # Opponent eFG% ranks lower-is-better: T1 allowed (40+5)/80, T2 (40+5)/90.
+    assert team["opp_efg_pct"] == pytest.approx(45 / 80, abs=1e-4)
+    assert team["ranks"]["opp_efg_pct"] == 2
+
+
 def test_playoffs_are_kept_separate_and_career_spans_seasons(engine):
     out = player_seasons(engine, "P")
     assert out["playoffs"]["seasons"][0]["pts"] == 40.0

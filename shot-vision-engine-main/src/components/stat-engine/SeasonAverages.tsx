@@ -113,7 +113,8 @@ export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: stri
       <ChartHeader title="Season averages" mode={mode} onChange={setMode} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", margin: "10px 0 12px" }}>
         <div style={{ fontSize: 11, color: C.faint, lineHeight: 1.5, maxWidth: 640 }}>
-          Per game, every season in the data. Shooting percentages are total makes over total attempts.{" "}
+          Per game, every season in the data. Shooting percentages are total makes over total
+          attempts; eFG% counts a three as 1.5 makes and TS% also credits free throws.{" "}
           <span style={{ color: C.gold }}>Gold</span> marks the best season in each column
           {kind === "team" ? "; the small number under each value is the league rank that season." : "."}
         </div>

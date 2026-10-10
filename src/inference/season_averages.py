@@ -10,6 +10,11 @@ Two rules that keep these matching the NBA's own numbers:
     of anything else.
   * Shooting percentages are total makes over total attempts. Averaging each
     game's FG% would weight a 1-for-2 night the same as a 12-for-20 one.
+    eFG% and TS% follow the same rule, from season totals:
+      eFG% = (FGM + 0.5 * 3PM) / FGA        a three counts as 1.5 makes
+      TS%  = PTS / (2 * (FGA + 0.44 * FTA)) free throws included; 0.44 is the
+                                            league's estimate of the share of
+                                            FTA that end a possession
 
 Teams additionally get their opponents' line (from the other team's row in
 the same game) and a league rank per stat per season, so "112.4 points" can
@@ -29,6 +34,7 @@ PLAYER_COLUMNS = [
     ("gp", "GP", "count"), ("min", "MIN", "num"), ("pts", "PTS", "num"), ("reb", "REB", "num"),
     ("ast", "AST", "num"), ("stl", "STL", "num"), ("blk", "BLK", "num"), ("tov", "TOV", "num"),
     ("fg_pct", "FG%", "pct"), ("fg3_pct", "3P%", "pct"), ("ft_pct", "FT%", "pct"),
+    ("efg_pct", "eFG%", "pct"), ("ts_pct", "TS%", "pct"),
     ("fg3m", "3PM", "num"), ("oreb", "OREB", "num"), ("dreb", "DREB", "num"), ("pf", "PF", "num"),
     ("plus_minus", "+/−", "num"),
 ]
@@ -37,10 +43,12 @@ TEAM_COLUMNS = [
     ("pts", "PTS", "num"), ("opp_pts", "OPP PTS", "num"), ("margin", "MARGIN", "num"),
     ("reb", "REB", "num"), ("ast", "AST", "num"), ("stl", "STL", "num"), ("blk", "BLK", "num"),
     ("tov", "TOV", "num"), ("fg_pct", "FG%", "pct"), ("fg3_pct", "3P%", "pct"), ("ft_pct", "FT%", "pct"),
+    ("efg_pct", "eFG%", "pct"), ("ts_pct", "TS%", "pct"),
     ("fg3m", "3PM", "num"), ("opp_fg_pct", "OPP FG%", "pct"), ("opp_fg3_pct", "OPP 3P%", "pct"),
+    ("opp_efg_pct", "OPP eFG%", "pct"),
 ]
 # For team ranks: stats where fewer is better (1st = the fewest).
-LOWER_IS_BETTER = {"opp_pts", "tov", "opp_fg_pct", "opp_fg3_pct", "l", "pf"}
+LOWER_IS_BETTER = {"opp_pts", "tov", "opp_fg_pct", "opp_fg3_pct", "opp_efg_pct", "l", "pf"}
 # Neither better nor worse — no rank.
 UNRANKED = {"gp"}
 
@@ -60,6 +68,8 @@ def _summarise(g: pd.DataFrame, extra: dict | None = None) -> pd.DataFrame:
     out["fg_pct"] = _div(g["fgm"], g["fga"])
     out["fg3_pct"] = _div(g["fg3m"], g["fg3a"])
     out["ft_pct"] = _div(g["ftm"], g["fta"])
+    out["efg_pct"] = _div(g["fgm"] + 0.5 * g["fg3m"], g["fga"])
+    out["ts_pct"] = _div(g["pts"], 2 * (g["fga"] + 0.44 * g["fta"]))
     for k, v in (extra or {}).items():
         out[k] = v
     return out
@@ -137,6 +147,7 @@ def _team_frame(engine, season_type: str) -> pd.DataFrame:
         "team": abbrev, "w": g["win"], "l": g["games"] - g["win"], "win_pct": g["win"] / g["games"],
         "opp_pts": g["o_pts"] / g["games"], "margin": g["plus_minus"] / g["games"],
         "opp_fg_pct": _div(g["o_fgm"], g["o_fga"]), "opp_fg3_pct": _div(g["o_fg3m"], g["o_fg3a"]),
+        "opp_efg_pct": _div(g["o_fgm"] + 0.5 * g["o_fg3m"], g["o_fga"]),
     })
 
 
