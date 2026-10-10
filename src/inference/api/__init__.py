@@ -86,6 +86,11 @@ async def lifespan(app: FastAPI):
 
     def warm_caches():
         warm_league_cache(db_engine)
+        try:  # the Stat Engine's league table and archetypes (~2 s and ~4 s)
+            from src.inference.archetypes import compute_archetypes
+            compute_archetypes(db_engine)
+        except Exception as e:  # optional: the first request computes them
+            print(f"  ⚠ Stat Engine warm-up skipped: {e}")
         try:  # the archetype court sample (~1-2 s): same reasoning
             from src.inference.api.shot_archetypes import archetypes_court
             archetypes_court(points_per_cluster=300, season=None)

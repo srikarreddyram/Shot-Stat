@@ -4,6 +4,8 @@ note (why this is a read-only join over data other modules already own).
 """
 from __future__ import annotations
 
+import weakref
+
 import numpy as np
 import pandas as pd
 
@@ -23,15 +25,30 @@ from .metadata import (
 )
 
 
+# The table joins a dozen sources and takes ~2 s to build; every profile,
+# leaderboard, team page and archetype request needs it, and it only changes
+# when data is ingested (after which the API is restarted). One copy per
+# engine and season; callers get their own copy, so nothing they do to it
+# can leak into the next request.
+_TABLE_CACHE: "weakref.WeakKeyDictionary[object, dict[str, pd.DataFrame]]" = weakref.WeakKeyDictionary()
+
+
 def build_player_stat_table(engine, season: str | None = None) -> pd.DataFrame:
     """
     One row per player rostered in `season` (default: the most recent season
     with real box-score data — see resolve_rating_season), every stat this
     project tracks. Basic identity/shooting on the left, advanced tracking-
     derived and defensive-activity stats on the right, our ratings and NBA
-    2K's last.
+    2K's last. Cached per engine and season (see _TABLE_CACHE).
     """
     season = resolve_rating_season(engine, season or "2026-27")
+    per_engine = _TABLE_CACHE.setdefault(engine, {})
+    if season not in per_engine:
+        per_engine[season] = _build_player_stat_table(engine, season)
+    return per_engine[season].copy()
+
+
+def _build_player_stat_table(engine, season: str) -> pd.DataFrame:
 
     players = pd.read_sql(
         "SELECT player_id, name, position, team_id, height, weight, wingspan, "
