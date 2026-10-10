@@ -424,6 +424,25 @@ def team_abbrev(engine, team_id: str, season: str) -> str | None:
     return row[0] if row else None
 
 
+def _team_shots(engine, abbrev: str, seasons: list[str], side: str, season_type: str) -> pd.DataFrame:
+    """A team's shots (offense) or its opponents' (defense), in game order."""
+    # The date window is a pre-filter that lets SQLite start from the team's
+    # games (as in supporting_cast.py); s.season is the exact test.
+    params = {"t": abbrev, "seasons": seasons, "po": SEASON_TYPES[season_type],
+              "start": f"{seasons[0][:4]}-09-01", "end": f"{int(seasons[-1][:4]) + 1}-11-01"}
+    op = "=" if side == "offense" else "!="
+    stmt = text(f"""
+        SELECT s.loc_x, s.loc_y, s.shot_made, s.zone, g.date
+        FROM games g CROSS JOIN shots s ON s.game_id = g.game_id
+        WHERE (g.home_team = :t OR g.away_team = :t)
+          AND g.date >= :start AND g.date < :end
+          AND s.season IN :seasons AND s.playoff_flag = :po AND s.home_away IS NOT NULL
+          AND (CASE WHEN s.home_away = 1 THEN g.home_team ELSE g.away_team END) {op} :t
+        ORDER BY g.date, s.game_id, s.quarter, s.time_remaining DESC
+    """).bindparams(bindparam("seasons", expanding=True))
+    return pd.read_sql(stmt, engine, params=params)
+
+
 def team_shot_map(engine, team_id: str, season: str, side: str = "offense",
                   season_type: str = "regular", span: int = 1) -> dict | None:
     """Where a team shoots from and how well by zone ("offense"), or the
@@ -434,20 +453,7 @@ def team_shot_map(engine, team_id: str, season: str, side: str = "offense",
     if abbrev is None:
         return None
     seasons = season_window(season, span)
-    # The date window is a pre-filter that lets SQLite start from the team's
-    # games (as in supporting_cast.py); s.season is the exact test.
-    params = {"t": abbrev, "seasons": seasons, "po": SEASON_TYPES[season_type],
-              "start": f"{seasons[0][:4]}-09-01", "end": f"{int(season[:4]) + 1}-11-01"}
-    op = "=" if side == "offense" else "!="
-    stmt = text(f"""
-        SELECT s.loc_x, s.loc_y, s.shot_made, s.zone
-        FROM games g CROSS JOIN shots s ON s.game_id = g.game_id
-        WHERE (g.home_team = :t OR g.away_team = :t)
-          AND g.date >= :start AND g.date < :end
-          AND s.season IN :seasons AND s.playoff_flag = :po AND s.home_away IS NOT NULL
-          AND (CASE WHEN s.home_away = 1 THEN g.home_team ELSE g.away_team END) {op} :t
-    """).bindparams(bindparam("seasons", expanding=True))
-    shots = pd.read_sql(stmt, engine, params=params)
+    shots = _team_shots(engine, abbrev, seasons, side, season_type)
     if shots.empty:
         return None
     out = build_shot_map(shots, league_zone_rates(engine, seasons, season_type))
@@ -496,6 +502,14 @@ def player_shots(engine, player_id: str, season: str, season_type: str = "regula
                                            "po": SEASON_TYPES[season_type]})
     if df.empty:
         return None
+    return {"player_id": player_id, "season": season, "seasons": seasons, "season_type": season_type,
+            **_replay_payload(df, limit)}
+
+
+def _replay_payload(df: pd.DataFrame, limit: int) -> dict:
+    """[loc_x, loc_y, made, game number] per shot, in order, thinned evenly
+    past `limit` (which keeps both the order and the make rate)."""
+    df = df[df["loc_x"].notna() & df["loc_y"].notna()]
     game_number = (df["date"] != df["date"].shift()).cumsum()
     total, makes = len(df), int(df["shot_made"].sum())
     if total > limit:
@@ -503,5 +517,20 @@ def player_shots(engine, player_id: str, season: str, season_type: str = "regula
         df, game_number = df.iloc[keep], game_number.iloc[keep]
     shots = [[int(x), int(y), int(m), int(g)] for x, y, m, g in
              zip(df["loc_x"], df["loc_y"], df["shot_made"], game_number)]
-    return {"player_id": player_id, "season": season, "seasons": seasons, "season_type": season_type,
-            "attempts": total, "makes": makes, "games": int(game_number.max()), "shots": shots}
+    return {"attempts": total, "makes": makes, "games": int(game_number.max()), "shots": shots}
+
+
+def team_shots(engine, team_id: str, season: str, side: str = "offense", season_type: str = "regular",
+               span: int = 1, limit: int = MAX_SHOTS) -> dict | None:
+    """A team's shots (or its opponents'), in order, for the team replay."""
+    if side not in ("offense", "defense"):
+        raise ValueError("side must be offense or defense")
+    abbrev = team_abbrev(engine, team_id, season)
+    if abbrev is None:
+        return None
+    seasons = season_window(season, span)
+    df = _team_shots(engine, abbrev, seasons, side, season_type)
+    if df.empty:
+        return None
+    return {"team_id": team_id, "side": side, "season": season, "seasons": seasons,
+            "season_type": season_type, **_replay_payload(df, limit)}

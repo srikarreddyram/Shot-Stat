@@ -588,15 +588,22 @@ export function TeamShotMapCard({
       pathFor={(r) =>
         `/stats/team/${encodeURIComponent(teamId)}/shot-map?season=${season}&side=${side}&season_type=${r.type}&span=${r.span}`
       }
+      shotsPathFor={(r) =>
+        `/stats/team/${encodeURIComponent(teamId)}/shots?season=${season}&side=${side}&season_type=${r.type}&span=${r.span}`
+      }
       captions={
         side === "offense"
           ? {
+              shots:
+                "Their season, shot by shot: each ball flies from its spot to the rim and leaves a green dot if it went in, a red cross if it didn't (a full season is thinned evenly to 2,500 shots).",
               frequency: "Where the team's shots came from — darker means more often.",
               vs_league: VS_LEAGUE_CAPTION(
                 "a team's thousands of shots mean the two barely differ.",
               ),
             }
           : {
+              shots:
+                "Every shot opponents took against them, replayed in order — green went in, red didn't (thinned evenly to 2,500 shots).",
               frequency: "Where opponents shot from against them — darker means more often.",
               vs_league: VS_LEAGUE_CAPTION(
                 "for a defense, blue (opponents below league average) is good.",

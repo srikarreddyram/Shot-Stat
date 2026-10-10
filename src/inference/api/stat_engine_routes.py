@@ -229,6 +229,24 @@ def stat_engine_player_shot_change(player_id: str, season: Optional[str] = None,
     return out
 
 
+@router.get("/stats/team/{team_id}/shots")
+def stat_engine_team_shots(team_id: str, season: str, side: str = "offense",
+                           season_type: str = "regular", span: int = 1):
+    """A team's shots (side=offense) or its opponents' (side=defense), in
+    order, for the team shot replay."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.shot_maps import team_shots
+
+    _shot_map_args(season_type, span)
+    if side not in ("offense", "defense"):
+        raise HTTPException(status_code=422, detail="side must be offense or defense.")
+    out = team_shots(_state.db_engine, team_id, season, side, season_type, span)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No shots for team {team_id} in {season}.")
+    return out
+
+
 @router.get("/stats/team/{team_id}/shot-map")
 def stat_engine_team_shot_map(team_id: str, season: str, side: str = "offense",
                               season_type: str = "regular", span: int = 1):

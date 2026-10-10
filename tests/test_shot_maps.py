@@ -245,3 +245,12 @@ def test_player_shots_come_back_in_game_order_and_thin_evenly(league):
     thinned = player_shots(league, "LG", SEASON, limit=100)
     assert len(thinned["shots"]) == 100 and thinned["attempts"] > 100
     assert player_shots(league, "NOBODY", SEASON) is None
+
+
+def test_team_shots_for_the_replay(league):
+    from src.inference.shot_maps import team_shots
+    off = team_shots(league, "T_BOS", SEASON, "offense")
+    dfn = team_shots(league, "T_BOS", SEASON, "defense")
+    assert dfn["attempts"] == 20 and dfn["games"] == 1
+    assert off["attempts"] > dfn["attempts"] and off["games"] == 2
+    assert team_shots(league, "T_NONE", SEASON) is None
