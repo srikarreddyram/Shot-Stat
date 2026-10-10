@@ -570,3 +570,22 @@ def test_box_score_stats_are_surfaced_from_the_same_activity_table(engine):
     assert by_key["dreb"]["side"] == "defense"
     assert by_key["oreb"]["side"] == "offense"
     assert by_key["dd2"]["side"] == "info"
+
+
+
+def test_a_past_season_keeps_the_team_he_played_for_that_season(engine):
+    """The current season shows a player's team today (see the test above);
+    an earlier season, opened from the profile's season picker, shows the
+    team he played for then."""
+    from src.db.models import Player, Shot
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        for season, team in (("2023-24", "T_OLD"), ("2024-25", "T_NEW")):
+            session.merge(Player(player_id="MOVER", season=season, name="Mover", team_id=team))
+            session.add(Shot(shot_id=f"m-{season}", game_id="G1", player_id="MOVER",
+                             season=season, shot_made=1, zone="Restricted Area"))
+        session.commit()
+    past = se.build_player_stat_table(engine, "2023-24").set_index("player_id")
+    now = se.build_player_stat_table(engine, "2024-25").set_index("player_id")
+    assert past.loc["MOVER", "team_id"] == "T_OLD"
+    assert now.loc["MOVER", "team_id"] == "T_NEW"

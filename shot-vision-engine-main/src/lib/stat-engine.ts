@@ -40,6 +40,8 @@ export type PlayerProfile = {
   name: string;
   team_id: string | null;
   season: string;
+  /** Every season he has shot data for, newest first — the season picker. */
+  available_seasons?: string[];
   sections: Section[];
 };
 

@@ -341,7 +341,7 @@ const TIER_TITLE: Record<string, string> = {
   pattern: "A pattern worth flagging",
 };
 
-export function ArchetypeCard({ playerId }: { playerId: string }) {
+export function ArchetypeCard({ playerId, season }: { playerId: string; season?: string }) {
   const [detail, setDetail] = useState<ArchetypeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -355,7 +355,8 @@ export function ArchetypeCard({ playerId }: { playerId: string }) {
     let cancelled = false;
     setDetail(null);
     setError(null);
-    fetch(`${API_BASE}/stats/player/${encodeURIComponent(playerId)}/archetype`)
+    const query = season ? `?season=${encodeURIComponent(season)}` : "";
+    fetch(`${API_BASE}/stats/player/${encodeURIComponent(playerId)}/archetype${query}`)
       .then((r) => {
         if (!r.ok) throw new Error(`engine returned ${r.status}`);
         return r.json();
@@ -363,7 +364,7 @@ export function ArchetypeCard({ playerId }: { playerId: string }) {
       .then((d: ArchetypeDetail) => { if (!cancelled) setDetail(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [playerId]);
+  }, [playerId, season]);
 
   if (error || !detail) return null; // a missing archetype is not worth an error banner on the profile
 

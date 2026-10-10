@@ -684,13 +684,37 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
   const chartDefault = density === "visual" ? "chart" : "table";
   const [radarMode, setRadarMode] = useViewMode(chartDefault);
   const [advanced, toggleAdvanced] = useAdvancedOpen();
-  const columnsByKey = useMemo(() => new Map(leagueColumns.map((c) => [c.key, c])), [leagueColumns]);
+
+  // Which season the profile shows; null is the leaderboard's own season.
+  const [season, setSeason] = useState<string | null>(null);
+  useEffect(() => { setSeason(null); }, [playerId]);
+  const currentSeason = leagueRows.length ? String(leagueRows[0].season ?? "") : null;
+  const pickedPast = season != null && season !== currentSeason;
+  // A past season is ranked against THAT season's league, not this one's —
+  // percentiles against the wrong population would be wrong on every row.
+  const [pastLeague, setPastLeague] = useState<{ season: string; rows: Row[]; columns: Column[] } | null>(null);
+  useEffect(() => {
+    if (!pickedPast || pastLeague?.season === season) return;
+    let cancelled = false;
+    fetch(`${API_BASE}/stats/players?season=${encodeURIComponent(season!)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d) setPastLeague({ season: season!, rows: d.players ?? [], columns: d.columns ?? [] });
+      })
+      .catch(() => { /* ranks fall back to dashes */ });
+    return () => { cancelled = true; };
+  }, [pickedPast, season, pastLeague?.season]);
+  const pastReady = pickedPast && pastLeague?.season === season;
+  const rankRows = pastReady ? pastLeague!.rows : leagueRows;
+  const rankColumns = pastReady ? pastLeague!.columns : leagueColumns;
+  const columnsByKey = useMemo(() => new Map(rankColumns.map((c) => [c.key, c])), [rankColumns]);
 
   useEffect(() => {
     let cancelled = false;
     setProfile(null);
     setError(null);
-    fetch(`${API_BASE}/stats/player/${encodeURIComponent(playerId)}`)
+    const query = season ? `?season=${encodeURIComponent(season)}` : "";
+    fetch(`${API_BASE}/stats/player/${encodeURIComponent(playerId)}${query}`)
       .then((r) => {
         if (!r.ok) throw new Error(`engine returned ${r.status}`);
         return r.json();
@@ -698,26 +722,26 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
       .then((d: PlayerProfile) => { if (!cancelled) setProfile(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [playerId]);
+  }, [playerId, season]);
 
   // Sorted values per column, once, so each stat row can locate itself in the
   // league without re-scanning the whole table. Also covers every stat
   // RADAR_AXES needs, since those are all already members of some section.
   const distributions = useMemo(
     () => buildDistributions(
-      leagueRows,
+      rankRows,
       profile ? profile.sections.flatMap((s) => s.stats.map((x) => x.key)) : [],
-      leagueColumns
+      rankColumns
     ),
-    [profile, leagueRows, leagueColumns]
+    [profile, rankRows, rankColumns]
   );
 
   // This player's own leaderboard row, for the profile-shape radar — the
   // same RADAR_AXES/axisScore ComparePlayers.tsx already uses, just with one
   // series instead of two or three.
   const playerRow = useMemo(
-    () => leagueRows.find((r) => String(r.player_id) === String(playerId)) ?? null,
-    [leagueRows, playerId]
+    () => rankRows.find((r) => String(r.player_id) === String(playerId)) ?? null,
+    [rankRows, playerId]
   );
   // Below a stat's attempt minimum a player is shown his number but not
   // ranked: ranking him against the qualified field alone put a 25-attempt
@@ -736,12 +760,12 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
   const radarAxes = useMemo(() => {
     if (!playerRow) return [];
     return RADAR_AXES
-      .map((axis) => ({ axis, value: axisScore(playerRow, axis, distributions, leagueColumns) }))
+      .map((axis) => ({ axis, value: axisScore(playerRow, axis, distributions, rankColumns) }))
       .filter((a): a is { axis: typeof RADAR_AXES[number]; value: number } => a.value != null);
-  }, [playerRow, distributions, leagueColumns]);
+  }, [playerRow, distributions, rankColumns]);
 
   if (error) return <><GhostButton onClick={onBack}>← ALL STATS</GhostButton><div style={{ marginTop: 16 }}><ErrorState message={error} /></div></>;
-  if (!profile) {
+  if (!profile || (pickedPast && !pastReady)) {
     return (
       <>
         <GhostButton onClick={onBack}>← ALL STATS</GhostButton>
@@ -802,7 +826,11 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <GhostButton onClick={onBack}>← ALL STATS</GhostButton>
-        <span style={{ ...NUM, fontSize: 10, color: C.muted, letterSpacing: "0.25em" }}>{profile.season}</span>
+        <SeasonPicker
+          value={profile.season}
+          seasons={profile.available_seasons ?? [profile.season]}
+          onChange={(v) => setSeason(v === currentSeason ? null : v)}
+        />
       </div>
 
       {/* ── BASIC ─────────────────────────────────────────────────────────
@@ -875,7 +903,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
           into both tabs or hidden behind either one. */}
       <div style={{ columnWidth: 320, columnGap: 16 }}>
         <div style={{ breakInside: "avoid", marginBottom: 16 }}>
-          <ArchetypeCard playerId={playerId} />
+          <ArchetypeCard playerId={playerId} season={profile.season} />
         </div>
         {infoSections.map((section, i) => sectionCard(section, section.group, i + 3))}
       </div>
@@ -1049,6 +1077,31 @@ function AdvancedToggle({ open, onToggle, contents }: { open: boolean; onToggle:
         transform: open ? "rotate(180deg)" : "none", transition: "transform 250ms",
       }}>▾</span>
     </button>
+  );
+}
+
+/** The profile's season: every season he has shot data for, newest first. */
+function SeasonPicker({ value, seasons, onChange }: { value: string; seasons: string[]; onChange: (s: string) => void }) {
+  if (seasons.length <= 1) {
+    return <span style={{ ...NUM, fontSize: 10, color: C.muted, letterSpacing: "0.25em" }}>{value}</span>;
+  }
+  return (
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <span style={{ ...NUM, fontSize: 9, color: C.muted, letterSpacing: "0.25em" }}>SEASON</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Season"
+        style={{
+          background: C.surface, color: C.gold, border: `1px solid ${C.edgeStrong}`, borderRadius: 3,
+          padding: "5px 9px", fontFamily: F.mono, fontSize: 11, letterSpacing: "0.12em", cursor: "pointer",
+        }}
+      >
+        {seasons.map((s) => (
+          <option key={s} value={s}>{s}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 

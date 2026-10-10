@@ -93,12 +93,19 @@ def _build_player_stat_table(engine, season: str) -> pd.DataFrame:
     # because a HISTORICAL season's position should stay that season's),
     # team has no such bound — "what team are they on" means today, no
     # matter which season's numbers are on screen.
-    current_team = pd.read_sql(
-        "SELECT player_id, team_id, MAX(season) FROM players "
-        "WHERE team_id IS NOT NULL GROUP BY player_id",
-        engine,
-    ).set_index("player_id")["team_id"]
-    players["team_id"] = players["player_id"].map(current_team).fillna(players["team_id"])
+    #
+    # That holds for the CURRENT season only. Once a profile can be opened for
+    # an earlier season (the season picker), the team beside 2019-20's numbers
+    # has to be 2019-20's team — LeBron James's 2019-20 profile is a Lakers
+    # season, whoever he plays for now.
+    latest = pd.read_sql("SELECT MAX(season) AS s FROM shots", engine)["s"].iloc[0]
+    if latest is None or season >= latest:
+        current_team = pd.read_sql(
+            "SELECT player_id, team_id, MAX(season) FROM players "
+            "WHERE team_id IS NOT NULL GROUP BY player_id",
+            engine,
+        ).set_index("player_id")["team_id"]
+        players["team_id"] = players["player_id"].map(current_team).fillna(players["team_id"])
 
     # ── Zone shooting, pivoted wide ────────────────────────────────────
     zones = pd.read_sql(
@@ -291,10 +298,18 @@ def player_full_profile(engine, player_id: str, season: str | None = None) -> di
         sections.append({"group": group, "label": GROUP_LABELS[group],
                          "side": GROUP_SIDE[group], "stats": stats})
 
+    # Every season he has shot data for, newest first — the profile's season
+    # picker. (Rostered-but-never-played seasons have nothing to show.)
+    seasons = pd.read_sql(
+        "SELECT DISTINCT season FROM shots WHERE player_id = ? ORDER BY season DESC",
+        engine, params=(str(player_id),),
+    )["season"].tolist()
+
     return {
         "player_id": str(player_id),
         "name": row.get("name"),
         "team_id": row.get("team_id"),
         "season": row.get("season"),
+        "available_seasons": seasons,
         "sections": sections,
     }
