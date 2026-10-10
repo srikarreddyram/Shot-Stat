@@ -1,3 +1,4 @@
+import { CompareShotMaps } from "./ShotMap";
 import { useMemo, useState } from "react";
 import {
   Column, Row, RADAR_AXES, RADAR_STAT_KEYS, COMPARE_COLORS,
@@ -80,6 +81,14 @@ export function ComparePlayers({ columns, rows, teamNames, onOpenPlayer }: {
       ) : (
         <>
           <RadarPanel picked={picked} distributions={distributions} columns={columns} />
+          <CompareShotMaps
+            season={String(picked[0].row.season ?? "")}
+            players={picked.map((p) => ({
+              id: String(p.row.player_id),
+              name: String(p.row.name ?? `Player ${p.slot + 1}`),
+              color: COMPARE_COLORS[p.slot],
+            }))}
+          />
           <HeadToHead
             picked={picked}
             columns={columns}

@@ -853,3 +853,153 @@ export function ShotMapGallery({
     </Card>
   );
 }
+
+// ── Compare: shot maps side by side ─────────────────────────────────────────
+function ComparedMap({
+  playerId,
+  name,
+  season,
+  color,
+  metric,
+}: {
+  playerId: string;
+  name: string;
+  season: string;
+  color: string;
+  metric: Exclude<ShotMetric, "shots">;
+}) {
+  const { data, missing, error } = useShotMap(
+    `/stats/player/${encodeURIComponent(playerId)}/shot-map?season=${season}`,
+  );
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 }} />
+        <span style={{ fontSize: 12.5, color: C.text, fontWeight: 600 }}>{name}</span>
+      </div>
+      {error ? (
+        <div style={{ color: C.red, fontSize: 12 }}>{error}</div>
+      ) : missing ? (
+        <div
+          style={{ ...muted, border: `1px dashed ${C.edge}`, borderRadius: 4, padding: "60px 0" }}
+        >
+          NO SHOTS
+        </div>
+      ) : !data ? (
+        <div style={{ ...muted, padding: "80px 0" }}>LOADING…</div>
+      ) : (
+        <>
+          <div style={{ borderRadius: 4, boxShadow: `0 0 0 1px ${color}55` }}>
+            <CourtMap
+              paint={paintFor(data, metric)}
+              label={`${name}: ${metric === "frequency" ? "shot locations" : "FG% vs league by zone"}`}
+              legend={false}
+            />
+          </div>
+          <div style={{ ...NUM, fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>
+            {data.attempts} shots · {formatStat(data.fg_pct, "pct")}
+            {data.expected_fg_pct != null && (
+              <span style={{ color: C.muted }}>
+                {" "}
+                (exp. {formatStat(data.expected_fg_pct, "pct")})
+              </span>
+            )}{" "}
+            <span style={{ color: gapColor(data.vs_expected, data.attempts) }}>
+              {signed(data.vs_expected)}
+            </span>
+          </div>
+          <div style={{ ...NUM, fontSize: 9.5, color: C.muted, marginTop: 2 }}>
+            {data.zones
+              .filter((z) => z.share >= 0.15)
+              .sort((a, b) => b.share - a.share)
+              .map((z) => `${ZONE_SHORT[z.zone] ?? z.zone} ${formatStat(z.share, "pct")}`)
+              .join(" · ")}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Two or three players' shot maps on one shared scale — where each shoots,
+ *  or how well by zone. */
+export function CompareShotMaps({
+  players,
+  season,
+}: {
+  players: { id: string; name: string; color: string }[];
+  season: string;
+}) {
+  const [metric, setMetric] = useState<Exclude<ShotMetric, "shots">>("frequency");
+  return (
+    <Card style={{ padding: "16px 20px 18px", marginBottom: 16 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <SectionLabelLike>Shot maps</SectionLabelLike>
+        <Chips
+          value={metric}
+          onChange={(v) => setMetric(v as Exclude<ShotMetric, "shots">)}
+          options={[
+            { value: "frequency", label: "Where" },
+            { value: "vs_league", label: "FG% vs league" },
+          ]}
+        />
+      </div>
+      <div
+        style={{
+          fontSize: 11,
+          color: C.faint,
+          margin: "8px 0 4px",
+          lineHeight: 1.5,
+          maxWidth: 760,
+        }}
+      >
+        {metric === "frequency"
+          ? `Where each player's ${season} shots came from — darker means more often. The line under each map is his share of shots from his main zones.`
+          : "Each zone's FG% against the league's there, adjusted for sample size (see a player's own shot map for the raw numbers)."}
+      </div>
+      <LegendBar kind={metric} />
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: 18,
+        }}
+      >
+        {players.map((p) => (
+          <ComparedMap
+            key={p.id}
+            playerId={p.id}
+            name={p.name}
+            season={season}
+            color={p.color}
+            metric={metric}
+          />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function SectionLabelLike({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        fontFamily: F.mono,
+        fontSize: 10,
+        color: C.gold,
+        letterSpacing: "0.4em",
+        textTransform: "uppercase",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
