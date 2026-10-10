@@ -177,6 +177,22 @@ def stat_engine_player_shot_map(player_id: str, season: Optional[str] = None,
     return out
 
 
+@router.get("/stats/player/{player_id}/shots")
+def stat_engine_player_shots(player_id: str, season: Optional[str] = None,
+                             season_type: str = "regular", span: int = 1):
+    """Every shot in the window, in order, for the animated shot replay."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.shot_maps import player_shots
+
+    _shot_map_args(season_type, span)
+    season = season or _latest_shot_season(player_id)
+    out = player_shots(_state.db_engine, player_id, season, season_type, span) if season else None
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No shots for player {player_id} in {season}.")
+    return out
+
+
 @router.get("/stats/player/{player_id}/shot-maps")
 def stat_engine_player_shot_maps(player_id: str, group: str, season: Optional[str] = None,
                                  season_type: str = "regular", span: int = 1):

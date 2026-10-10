@@ -84,7 +84,20 @@ export type ShotChange = {
   zones: ShotChangeZone[];
 };
 
-export type ShotMetric = "frequency" | "vs_league";
+/** Every shot in the window, in the order taken: [loc_x, loc_y, made, game
+ *  number]. Thinned evenly past the server's cap; `attempts`/`makes` are the
+ *  full totals. */
+export type ShotList = {
+  season: string;
+  seasons: string[];
+  season_type: "regular" | "playoffs";
+  attempts: number;
+  makes: number;
+  games: number;
+  shots: [number, number, number, number][];
+};
+
+export type ShotMetric = "shots" | "frequency" | "vs_league";
 
 export type FetchState<T> = { data: T | null; missing: boolean; error: string | null };
 

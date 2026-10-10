@@ -6,10 +6,12 @@ import {
   ShotMapData,
   ShotMapGroup,
   ShotMapZone,
+  ShotList,
   ShotMetric,
   SubsetMap,
   useShotMap,
 } from "../../lib/shot-maps";
+import { ShotFilter, ShotReplay } from "./ShotReplay";
 import { drawCourtLines, drawHardwood, fillZone } from "../shot-vision/engine/court/courtDrawing";
 import {
   COURT_AREA_H,
@@ -234,7 +236,7 @@ function CourtMap({
 }
 
 function paintFor(data: ShotMapData, metric: ShotMetric): Paint {
-  return metric === "frequency"
+  return metric !== "vs_league"
     ? { kind: "frequency", grid: data.grid, values: data.frequency }
     : { kind: "vs_league", zones: data.zones };
 }
@@ -395,6 +397,7 @@ function RangeChips({ range, onChange }: { range: Range; onChange: (r: Range) =>
 function ShotMapPanel({
   title,
   pathFor,
+  shotsPathFor,
   captions,
   noun,
   distributions,
@@ -403,7 +406,10 @@ function ShotMapPanel({
 }: {
   title: string;
   pathFor: (range: Range) => string;
-  captions: Record<ShotMetric, string>;
+  /** Where the individual shots come from, for the SHOTS replay; without it
+   *  the replay is not offered. */
+  shotsPathFor?: (range: Range) => string;
+  captions: Partial<Record<ShotMetric, string>>;
   /** "WHERE HE SHOOTS" / "WHERE THEY SHOOT" */
   noun: string;
   distributions?: Map<string, number[]>;
@@ -411,9 +417,13 @@ function ShotMapPanel({
   extra?: ReactNode;
 }) {
   const [mode, setMode] = useViewMode(defaultMode);
-  const [metric, setMetric] = useState<ShotMetric>("frequency");
+  const [metric, setMetric] = useState<ShotMetric>(shotsPathFor ? "shots" : "frequency");
   const [range, setRange] = useState<Range>({ type: "regular", span: "1" });
+  const [filter, setFilter] = useState<ShotFilter>("all");
   const { data, missing, error } = useShotMap(pathFor(range));
+  const shots = useShotMap<ShotList>(
+    metric === "shots" && shotsPathFor ? shotsPathFor(range) : null,
+  );
 
   // No regular-season shots this season at all: nothing to map, so no card.
   if (missing && range.type === "regular" && range.span === "1" && !extra) return null;
@@ -437,12 +447,26 @@ function ShotMapPanel({
             value={metric}
             onChange={(v) => setMetric(v as ShotMetric)}
             options={[
+              ...(shotsPathFor ? [{ value: "shots", label: "SHOTS" }] : []),
               { value: "frequency", label: noun },
               { value: "vs_league", label: "FG% VS LEAGUE" },
             ]}
           />
         </div>
-        <RangeChips range={range} onChange={setRange} />
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          {metric === "shots" && (
+            <Chips
+              value={filter}
+              onChange={(v) => setFilter(v as ShotFilter)}
+              options={[
+                { value: "all", label: "All" },
+                { value: "made", label: "Makes" },
+                { value: "missed", label: "Misses" },
+              ]}
+            />
+          )}
+          <RangeChips range={range} onChange={setRange} />
+        </div>
       </div>
       <div
         style={{ fontSize: 11, color: C.faint, marginBottom: 12, lineHeight: 1.5, maxWidth: 780 }}
@@ -471,10 +495,24 @@ function ShotMapPanel({
           style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}
         >
           <div style={{ flex: "1 1 340px", maxWidth: 460 }}>
-            <CourtMap
-              paint={paintFor(data, metric)}
-              label={`${title}: ${metric === "frequency" ? "shot locations" : "FG% vs league by zone"}`}
-            />
+            {metric === "shots" ? (
+              shots.data ? (
+                <ShotReplay
+                  data={shots.data}
+                  filter={filter}
+                  label={`${title}: every shot, replayed in order`}
+                />
+              ) : (
+                <div style={{ ...muted, padding: "120px 0" }}>
+                  {shots.error ?? "LOADING SHOTS…"}
+                </div>
+              )
+            ) : (
+              <CourtMap
+                paint={paintFor(data, metric)}
+                label={`${title}: ${metric === "frequency" ? "shot locations" : "FG% vs league by zone"}`}
+              />
+            )}
           </div>
           <div style={{ flex: "1 1 300px", minWidth: 0 }}>
             <ZoneTable data={data} distributions={distributions} />
@@ -508,7 +546,12 @@ export function ShotMapCard({
       pathFor={(r) =>
         `/stats/player/${encodeURIComponent(playerId)}/shot-map?season=${season}&season_type=${r.type}&span=${r.span}`
       }
+      shotsPathFor={(r) =>
+        `/stats/player/${encodeURIComponent(playerId)}/shots?season=${season}&season_type=${r.type}&span=${r.span}`
+      }
       captions={{
+        shots:
+          "Every shot, replayed in the order he took it: each ball flies from its spot to the rim and leaves a green dot if it went in, a red cross if it didn't.",
         frequency:
           "Where his shots came from — darker means more often. Heaves from beyond 33 ft are counted but not drawn.",
         vs_league: VS_LEAGUE_CAPTION("three seasons gives the steadier picture."),
@@ -698,7 +741,7 @@ export function ShotMapGallery({
 }) {
   const [mode, setMode] = useViewMode(defaultMode);
   const [tab, setTab] = useState<GalleryTab>("shot_types");
-  const [metric, setMetric] = useState<ShotMetric>("vs_league");
+  const [metric, setMetric] = useState<Exclude<ShotMetric, "shots">>("vs_league");
   const [range, setRange] = useState<Range>({ type: "regular", span: "1" });
   const id = encodeURIComponent(playerId);
   const group = useShotMap<ShotMapGroup>(
@@ -740,7 +783,7 @@ export function ShotMapGallery({
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
             <Chips
               value={metric}
-              onChange={(v) => setMetric(v as ShotMetric)}
+              onChange={(v) => setMetric(v as Exclude<ShotMetric, "shots">)}
               options={[
                 { value: "frequency", label: "Where" },
                 { value: "vs_league", label: "FG% vs league" },

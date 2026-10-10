@@ -470,3 +470,38 @@ def warm_league_cache(engine) -> None:
                 league_zone_rates(engine, seasons, "regular", subset)
     except Exception as e:  # an optimisation only: requests compute on demand
         print(f"  ⚠ Shot-map cache warm-up skipped: {e}")
+
+
+# ── Individual shots, for the animated shot chart ─────────────────────────
+MAX_SHOTS = 2500
+
+
+def player_shots(engine, player_id: str, season: str, season_type: str = "regular",
+                 span: int = 1, limit: int = MAX_SHOTS) -> dict | None:
+    """Every shot a player took in the window, in the order he took them —
+    for the profile's shot replay, which plays them back one by one. Each
+    shot is [loc_x, loc_y, made, game number]. Past `limit` the shots are
+    thinned evenly, which keeps both the order and the make rate."""
+    if season_type not in SEASON_TYPES:
+        raise ValueError(f"season_type must be one of {sorted(SEASON_TYPES)}")
+    seasons = season_window(season, span)
+    stmt = text("""
+        SELECT s.loc_x, s.loc_y, s.shot_made, g.date
+        FROM shots s JOIN games g ON g.game_id = s.game_id
+        WHERE s.player_id = :pid AND s.season IN :seasons AND s.playoff_flag = :po
+          AND s.loc_x IS NOT NULL AND s.loc_y IS NOT NULL
+        ORDER BY g.date, s.game_id, s.quarter, s.time_remaining DESC
+    """).bindparams(bindparam("seasons", expanding=True))
+    df = pd.read_sql(stmt, engine, params={"pid": player_id, "seasons": seasons,
+                                           "po": SEASON_TYPES[season_type]})
+    if df.empty:
+        return None
+    game_number = (df["date"] != df["date"].shift()).cumsum()
+    total, makes = len(df), int(df["shot_made"].sum())
+    if total > limit:
+        keep = np.linspace(0, total - 1, limit).round().astype(int)
+        df, game_number = df.iloc[keep], game_number.iloc[keep]
+    shots = [[int(x), int(y), int(m), int(g)] for x, y, m, g in
+             zip(df["loc_x"], df["loc_y"], df["shot_made"], game_number)]
+    return {"player_id": player_id, "season": season, "seasons": seasons, "season_type": season_type,
+            "attempts": total, "makes": makes, "games": int(game_number.max()), "shots": shots}

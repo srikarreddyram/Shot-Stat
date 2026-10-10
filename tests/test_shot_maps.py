@@ -234,3 +234,14 @@ def test_team_offense_and_defense(league):
     assert off["team_abbrev"] == "BOS" and off["attempts"] == g1_home + 30
     assert dfn["attempts"] == 20  # NYK's shots in G2
     assert team_shot_map(league, "T_NONE", SEASON) is None
+
+
+def test_player_shots_come_back_in_game_order_and_thin_evenly(league):
+    from src.inference.shot_maps import player_shots
+    out = player_shots(league, "BOSP", SEASON)
+    assert out["attempts"] == 30 and out["makes"] == 15 and out["games"] == 1
+    assert all(len(s) == 4 for s in out["shots"])
+    # Two games: MOVER's season has one; LG spans G1 only — use the cap.
+    thinned = player_shots(league, "LG", SEASON, limit=100)
+    assert len(thinned["shots"]) == 100 and thinned["attempts"] > 100
+    assert player_shots(league, "NOBODY", SEASON) is None
