@@ -60,6 +60,9 @@ class Shot(Base):
         # game, read for zone and outcome) without touching the table: the
         # defender-quality lookup drops from ~145 ms to ~15 ms.
         Index("ix_shots_game_player", "game_id", "player_id", "zone", "shot_made"),
+        # The Stat Engine's defense shot map reads every shot a player was the
+        # assigned defender on (shot_maps.py); without this it is a full scan.
+        Index("ix_shots_defender_season", "defender_id", "season"),
     )
 
     # Relationships

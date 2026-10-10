@@ -7,6 +7,8 @@ import { useEffect, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
+export type ShotGrid = { x0: number; y0: number; cell: number; nx: number; ny: number };
+
 export type ShotMapZone = {
   zone: string;
   fga: number;
@@ -26,20 +28,69 @@ export type ShotMapData = {
   /** Every season the shots come from: one, or the three ending in `season`. */
   seasons: string[];
   season_type: "regular" | "playoffs";
-  grid: { x0: number; y0: number; cell: number; nx: number; ny: number };
+  grid: ShotGrid;
   attempts: number;
   makes: number;
+  fg_pct: number | null;
+  /** The league's FG% on these shots' exact zone mix. */
+  expected_fg_pct: number | null;
+  vs_expected: number | null;
   drawn: number;
   frequency: (number | null)[];
   zones: ShotMapZone[];
 };
 
+/** One map of a group: a subset of the player's shots (or his assignments'). */
+export type SubsetMap = ShotMapData & {
+  key: string;
+  label: string;
+  note: string;
+  /** This subset's share of all the shots in the group. */
+  share: number;
+};
+
+export type ShotMapGroup = {
+  season: string;
+  seasons: string[];
+  season_type: "regular" | "playoffs";
+  group: "shot_types" | "clutch" | "defense";
+  maps: SubsetMap[];
+};
+
+export type ShotChangeZone = {
+  zone: string;
+  fga: number;
+  previous_fga: number;
+  share: number;
+  previous_share: number;
+  share_change: number;
+  fg_pct: number | null;
+  previous_fg_pct: number | null;
+};
+
+export type ShotChange = {
+  season: string;
+  previous_season: string;
+  grid: ShotGrid;
+  attempts: number;
+  previous_attempts: number;
+  /** This season's share of shots per square foot minus last season's. */
+  change: (number | null)[];
+  /** 0-1 per square foot: how far the change is beyond sampling noise
+   *  (from 2 standard errors to full at 3.5) — the change map's opacity. */
+  confidence: (number | null)[];
+  /** Colour scale for `change`: the larger season's peak density. */
+  scale: number;
+  zones: ShotChangeZone[];
+};
+
 export type ShotMetric = "frequency" | "vs_league";
 
-export type ShotMapState = { data: ShotMapData | null; missing: boolean; error: string | null };
+export type FetchState<T> = { data: T | null; missing: boolean; error: string | null };
 
-export function useShotMap(path: string | null): ShotMapState {
-  const [state, setState] = useState<ShotMapState>({ data: null, missing: false, error: null });
+/** GET an engine path; a 404 is "nothing to show" (`missing`), not an error. */
+export function useShotMap<T = ShotMapData>(path: string | null): FetchState<T> {
+  const [state, setState] = useState<FetchState<T>>({ data: null, missing: false, error: null });
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
@@ -50,7 +101,7 @@ export function useShotMap(path: string | null): ShotMapState {
         if (!r.ok) throw new Error(`engine returned ${r.status}`);
         return r.json();
       })
-      .then((d: ShotMapData | null) => {
+      .then((d: T | null) => {
         if (!cancelled) setState({ data: d, missing: d == null, error: null });
       })
       .catch((e) => {

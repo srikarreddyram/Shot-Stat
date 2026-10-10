@@ -111,3 +111,126 @@ def test_unknown_player_is_none_and_season_window(engine):
     assert player_shot_map(engine, "NOBODY", SEASON) is None
     assert season_window("2025-26", 3) == ["2023-24", "2024-25", "2025-26"]
     assert season_window("2009-10", 1) == ["2009-10"]
+
+
+# ── More maps: shot types, clutch, defense, change, teams ───────────────────
+from datetime import date  # noqa: E402
+
+from src.db.models import Game, ShotContext, TeamStats  # noqa: E402
+from src.inference.shot_maps import (  # noqa: E402
+    player_shot_change, player_shot_maps, shot_family, team_shot_map,
+)
+
+
+@pytest.fixture()
+def league():
+    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(eng, tables=[Shot.__table__, ShotContext.__table__, Game.__table__,
+                                          TeamStats.__table__])
+    shots, ctx = [], []
+    n = 0
+
+    def add(player, k, made, loc_y, zone, subtype, game="G1", home=1, season=SEASON,
+            quarter=1, clock=600.0, diff=0, defender=None):
+        nonlocal n
+        for i in range(k):
+            sid = f"{game}_{n}"
+            n += 1
+            shots.append(dict(shot_id=sid, game_id=game, player_id=player, season=season,
+                              shot_made=int(i < made), loc_x=0.0, loc_y=float(loc_y), zone=zone,
+                              playoff_flag=0, home_away=home, quarter=quarter, time_remaining=clock,
+                              score_diff=diff, defender_id=defender))
+            ctx.append(dict(shot_id=sid, game_id=game, shot_subtype=subtype))
+
+    # League: pull-ups from the top go in 30%, set jumpers 40%, rim layups 60%.
+    add("LG", 1000, 300, 255, "Above the Break 3", "Pullup Jump shot")
+    add("LG", 1000, 400, 255, "Above the Break 3", "Jump Shot")
+    add("LG", 1000, 600, 10, "Restricted Area", "Driving Layup Shot")
+    # A pull-up shooter: 100 at 40% — above league pull-ups, below set jumpers.
+    add("PULLER", 100, 40, 255, "Above the Break 3", "Pullup Jump shot")
+    # Clutch: league 40-for-100 at the rim in clutch time; CLOSER 30-for-40.
+    add("LG", 100, 40, 10, "Restricted Area", "Driving Layup Shot", quarter=4, clock=120, diff=-3)
+    add("CLOSER", 40, 30, 10, "Restricted Area", "Driving Layup Shot", quarter=4, clock=120, diff=2)
+    add("CLOSER", 60, 30, 10, "Restricted Area", "Driving Layup Shot")
+    # Defense: STOPPER's assignments go 20-for-80 at the rim.
+    add("LG", 80, 20, 10, "Restricted Area", "Driving Layup Shot", defender="STOPPER")
+    # Teams: BOS hosts NYK in G1, visits in G2. Rows above are all G1/home=1.
+    add("BOSP", 30, 15, 10, "Restricted Area", "Layup Shot", game="G2", home=0)
+    add("NYKP", 20, 5, 255, "Above the Break 3", "Jump Shot", game="G2", home=1)
+    # Change: MOVER went from the rim last season to the arc this season.
+    add("MOVER", 200, 100, 10, "Restricted Area", "Layup Shot", season="2024-25", game="G0")
+    add("MOVER", 200, 70, 255, "Above the Break 3", "Jump Shot")
+    with eng.begin() as conn:
+        conn.execute(Shot.__table__.insert(), shots)
+        conn.execute(ShotContext.__table__.insert(), ctx)
+        conn.execute(Game.__table__.insert(), [
+            dict(game_id="G0", date=date(2024, 11, 1), home_team="BOS", away_team="NYK", playoff_flag=0),
+            dict(game_id="G1", date=date(2025, 11, 1), home_team="BOS", away_team="NYK", playoff_flag=0),
+            dict(game_id="G2", date=date(2025, 11, 3), home_team="NYK", away_team="BOS", playoff_flag=0),
+        ])
+        conn.execute(TeamStats.__table__.insert(), [
+            dict(team_id="T_BOS", season=SEASON, team_abbrev="BOS"),
+        ])
+    return eng
+
+
+def test_shot_family_taxonomy():
+    assert shot_family("Pullup Jump shot") == "off_dribble"
+    assert shot_family("Step Back Bank Jump Shot") == "off_dribble"
+    assert shot_family("Jump Shot") == "set_jumpers"
+    assert shot_family("Driving Floating Jump Shot") == "floaters_hooks"
+    assert shot_family("Turnaround Hook Shot") == "floaters_hooks"
+    assert shot_family("Turnaround Fadeaway shot") == "fadeaways"
+    assert shot_family("Tip Layup Shot") == "dunks"
+    assert shot_family("Cutting Finger Roll Layup Shot") == "layups"
+    assert shot_family(None) is None
+
+
+def test_subsets_are_compared_with_the_same_subset_league_wide(league):
+    out = player_shot_maps(league, "PULLER", SEASON, "shot_types")
+    pull = next(m for m in out["maps"] if m["key"] == "off_dribble")
+    assert pull["attempts"] == 100 and pull["share"] == 1.0
+    # Expected is the league's pull-up rate from the top (340/1100), not the
+    # all-jumper rate there (740/2100): a 40% pull-up shooter is above par.
+    assert pull["expected_fg_pct"] == pytest.approx(340 / 1100, abs=1e-3)
+    assert pull["vs_expected"] > 0
+    assert next(m for m in out["maps"] if m["key"] == "layups")["attempts"] == 0
+
+
+def test_clutch_split(league):
+    out = player_shot_maps(league, "CLOSER", SEASON, "clutch")
+    clutch, rest = out["maps"]
+    assert (clutch["key"], clutch["attempts"], rest["attempts"]) == ("clutch", 40, 60)
+    # League clutch rim rate: 40 + 30 made of 140.
+    assert clutch["expected_fg_pct"] == pytest.approx(70 / 140, abs=1e-3)
+
+
+def test_defense_map_uses_his_assignments(league):
+    out = player_shot_maps(league, "STOPPER", SEASON, "defense")
+    m = out["maps"][0]
+    assert m["attempts"] == 80 and m["fg_pct"] == pytest.approx(0.25)
+    assert m["vs_expected"] < -0.2
+
+
+def test_change_since_last_season(league):
+    out = player_shot_change(league, "MOVER", SEASON)
+    assert out["previous_season"] == "2024-25"
+    z = {r["zone"]: r for r in out["zones"]}
+    assert z["Above the Break 3"]["share_change"] == pytest.approx(1.0)
+    assert z["Restricted Area"]["share_change"] == pytest.approx(-1.0)
+    change = _grid({"x": out["change"]}, "x")
+    assert _at(change, 0, 25) > 0 > _at(change, 0, 1)
+    # A wholesale move on 200 shots each season is far beyond noise.
+    confidence = _grid({"x": out["confidence"]}, "x")
+    assert _at(confidence, 0, 25) == 1.0 and _at(confidence, 0, 1) == 1.0
+    assert player_shot_change(league, "PULLER", SEASON) is None  # no previous season
+
+
+def test_team_offense_and_defense(league):
+    off = team_shot_map(league, "T_BOS", SEASON, "offense")
+    dfn = team_shot_map(league, "T_BOS", SEASON, "defense")
+    # BOS shots: everything at home in G1 plus BOSP's 30 away in G2.
+    g1_home = 3000 + 100 + 100 + 80 + 200 + 100
+    assert off["team_abbrev"] == "BOS" and off["attempts"] == g1_home + 30
+    assert dfn["attempts"] == 20  # NYK's shots in G2
+    assert team_shot_map(league, "T_NONE", SEASON) is None

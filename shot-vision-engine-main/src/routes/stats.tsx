@@ -6,7 +6,7 @@ import { ComparePlayers } from "../components/stat-engine/ComparePlayers";
 import {
   ArchetypeCard, DefenseCategoryChart, PlayTypeBars, StrengthsChart,
 } from "../components/stat-engine/Visuals";
-import { ShotMapCard } from "../components/stat-engine/ShotMap";
+import { ShotMapCard, ShotMapGallery, TeamShotMapCard } from "../components/stat-engine/ShotMap";
 import { RadarChart, RADAR_W } from "../components/stat-engine/ComparePlayers";
 import {
   C, F, NUM, Bar, Card, DEFAULT_ACCENT, EmptyState,
@@ -867,11 +867,13 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
       </div>
 
       <AdvancedToggle open={advanced} onToggle={toggleAdvanced}
-                      contents="Profile shape · strengths & weaknesses · shot difficulty · play types · creation · hustle · defense" />
+                      contents="Shot maps by shot type, clutch, defense and vs last season · profile shape · strengths & weaknesses · shot difficulty · play types · creation · hustle · defense" />
 
       {/* ── ADVANCED ──────────────────────────────────────────────────── */}
       {advanced && (
         <div className="se-rise">
+          <ShotMapGallery playerId={playerId} season={profile.season} defaultMode={chartDefault} />
+
           {radarAxes.length >= 3 && (
             <Card style={{ padding: "18px 22px 20px", marginBottom: 16 }}>
               <ChartHeader title="Profile shape" mode={radarMode} onChange={setRadarMode} />
@@ -1139,6 +1141,7 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
 }) {
   const [profile, setProfile] = useState<TeamProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [advanced, toggleAdvanced] = useAdvancedOpen();
 
   useEffect(() => {
     let cancelled = false;
@@ -1222,13 +1225,49 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
         <SeasonAverages kind="team" id={teamId} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(290px, 1fr) minmax(330px, 1.25fr)", gap: 16, alignItems: "start" }}>
-        <div>
+      <div className="se-rise" style={riseDelay(1)}>
+        <TeamShotMapCard teamId={teamId} season={profile.season} />
+      </div>
+
+      <Card style={{ padding: "15px 19px 12px", marginBottom: 16 }}>
+        <div style={{ marginBottom: 12 }}><SectionLabel>Roster</SectionLabel></div>
+        <table className="se-table" style={{ marginTop: -2 }}>
+          <thead>
+            <tr>
+              <th className="se-left" style={{ cursor: "default", position: "static" }}>Player</th>
+              <th style={{ cursor: "default", position: "static" }}>Pos</th>
+              <th style={{ cursor: "default", position: "static" }}>Off</th>
+              <th style={{ cursor: "default", position: "static" }}>Def</th>
+            </tr>
+          </thead>
+          <tbody>
+            {profile.roster.map((p) => (
+              <tr key={p.player_id} onClick={() => onOpenPlayer(p.player_id)}>
+                <td className="se-name se-left" style={{ padding: "7px 12px" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
+                    <PlayerAvatar playerId={p.player_id} teamAbbrev={profile.team_abbrev} size={24} />
+                    {p.name}
+                  </span>
+                </td>
+                <td style={{ color: C.muted, fontSize: 11, padding: "7px 12px" }}>{p.position ?? "—"}</td>
+                <RosterRating value={p.off_rating} sorted={rosterDistributions.get("off_rating") ?? []} statKey="off_rating" />
+                <RosterRating value={p.def_rating_ours} sorted={rosterDistributions.get("def_rating_ours") ?? []} statKey="def_rating_ours" />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {profile.roster.length === 0 && <EmptyState>NO ROSTERED PLAYERS THIS SEASON</EmptyState>}
+      </Card>
+
+      <AdvancedToggle open={advanced} onToggle={toggleAdvanced} contents="Team offense and defense ratings, ranked against the league" />
+
+      {advanced && (
+        <div className="se-rise" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
           {(["offense", "defense"] as const).map((side) => {
             const cols = teamCols.filter((c) => c.side === side);
             if (cols.length === 0) return null;
             return (
-              <Card key={side} style={{ padding: "15px 19px 9px", marginBottom: 14 }}>
+              <Card key={side} style={{ padding: "15px 19px 9px" }}>
                 <div style={{ marginBottom: 12 }}><SectionLabel>Team {side}</SectionLabel></div>
                 {cols.map((c) => (
                   <StatRow
@@ -1246,37 +1285,7 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
             );
           })}
         </div>
-
-        <Card style={{ padding: "15px 19px 12px" }}>
-          <div style={{ marginBottom: 12 }}><SectionLabel>Roster</SectionLabel></div>
-          <table className="se-table" style={{ marginTop: -2 }}>
-            <thead>
-              <tr>
-                <th className="se-left" style={{ cursor: "default", position: "static" }}>Player</th>
-                <th style={{ cursor: "default", position: "static" }}>Pos</th>
-                <th style={{ cursor: "default", position: "static" }}>Off</th>
-                <th style={{ cursor: "default", position: "static" }}>Def</th>
-              </tr>
-            </thead>
-            <tbody>
-              {profile.roster.map((p) => (
-                <tr key={p.player_id} onClick={() => onOpenPlayer(p.player_id)}>
-                  <td className="se-name se-left" style={{ padding: "7px 12px" }}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
-                      <PlayerAvatar playerId={p.player_id} teamAbbrev={profile.team_abbrev} size={24} />
-                      {p.name}
-                    </span>
-                  </td>
-                  <td style={{ color: C.muted, fontSize: 11, padding: "7px 12px" }}>{p.position ?? "—"}</td>
-                  <RosterRating value={p.off_rating} sorted={rosterDistributions.get("off_rating") ?? []} statKey="off_rating" />
-                  <RosterRating value={p.def_rating_ours} sorted={rosterDistributions.get("def_rating_ours") ?? []} statKey="def_rating_ours" />
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {profile.roster.length === 0 && <EmptyState>NO ROSTERED PLAYERS THIS SEASON</EmptyState>}
-        </Card>
-      </div>
+      )}
     </>
   );
 }

@@ -78,6 +78,13 @@ async def lifespan(app: FastAPI):
         latest_season = row[0] if row else None
     print(f"  ✓ Latest ingested season: {latest_season}")
 
+    # League shot-map baselines take a second or two each to compute; doing
+    # it now, off the request path, keeps the first profile anyone opens fast.
+    import threading
+
+    from src.inference.shot_maps import warm_league_cache
+    threading.Thread(target=warm_league_cache, args=(db_engine,), daemon=True).start()
+
     yield
 
 

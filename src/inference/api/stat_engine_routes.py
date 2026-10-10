@@ -134,6 +134,23 @@ def stat_engine_team_seasons(team_id: str):
     return out
 
 
+def _shot_map_args(season_type: str, span: int = 1):
+    from src.inference.shot_maps import SEASON_TYPES
+
+    if season_type not in SEASON_TYPES:
+        raise HTTPException(status_code=422, detail=f"season_type must be one of {sorted(SEASON_TYPES)}.")
+    if span not in (1, 3):
+        raise HTTPException(status_code=422, detail="span must be 1 or 3 seasons.")
+
+
+def _latest_shot_season(player_id: str) -> Optional[str]:
+    from sqlalchemy import text
+
+    with _state.db_engine.connect() as conn:
+        return conn.execute(text("SELECT MAX(season) FROM shots WHERE player_id = :pid"),
+                            {"pid": player_id}).scalar()
+
+
 @router.get("/stats/player/{player_id}/shot-map")
 def stat_engine_player_shot_map(player_id: str, season: Optional[str] = None,
                                 season_type: str = "regular", span: int = 1):
@@ -142,19 +159,65 @@ def stat_engine_player_shot_map(player_id: str, season: Optional[str] = None,
     See shot_maps.py for why efficiency is by zone, and the shrinkage."""
     if _state.db_engine is None:
         raise HTTPException(status_code=503, detail="Database not loaded.")
-    from sqlalchemy import text
+    from src.inference.shot_maps import player_shot_map
 
-    from src.inference.shot_maps import SEASON_TYPES, player_shot_map
-
-    if season_type not in SEASON_TYPES:
-        raise HTTPException(status_code=422, detail=f"season_type must be one of {sorted(SEASON_TYPES)}.")
-    if span not in (1, 3):
-        raise HTTPException(status_code=422, detail="span must be 1 or 3 seasons.")
-    if season is None:
-        with _state.db_engine.connect() as conn:
-            season = conn.execute(text("SELECT MAX(season) FROM shots WHERE player_id = :pid"),
-                                  {"pid": player_id}).scalar()
+    _shot_map_args(season_type, span)
+    season = season or _latest_shot_season(player_id)
     out = player_shot_map(_state.db_engine, player_id, season, season_type, span) if season else None
     if out is None:
         raise HTTPException(status_code=404, detail=f"No shots for player {player_id} in {season}.")
+    return out
+
+
+@router.get("/stats/player/{player_id}/shot-maps")
+def stat_engine_player_shot_maps(player_id: str, group: str, season: Optional[str] = None,
+                                 season_type: str = "regular", span: int = 1):
+    """The advanced view's extra maps: by shot type, clutch vs the rest, or
+    the shots his defensive assignments took (group = shot_types | clutch |
+    defense). Each subset is compared with the league's rate for the same
+    subset."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.shot_maps import MAP_GROUPS, player_shot_maps
+
+    _shot_map_args(season_type, span)
+    if group not in MAP_GROUPS:
+        raise HTTPException(status_code=422, detail=f"group must be one of {list(MAP_GROUPS)}.")
+    season = season or _latest_shot_season(player_id)
+    out = player_shot_maps(_state.db_engine, player_id, season, group, season_type, span) if season else None
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No shots for player {player_id} in {season}.")
+    return out
+
+
+@router.get("/stats/player/{player_id}/shot-map/change")
+def stat_engine_player_shot_change(player_id: str, season: Optional[str] = None, season_type: str = "regular"):
+    """How a player's shot diet moved from the previous season to this one."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.shot_maps import player_shot_change
+
+    _shot_map_args(season_type)
+    season = season or _latest_shot_season(player_id)
+    out = player_shot_change(_state.db_engine, player_id, season, season_type) if season else None
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Need shots in both {season} and the season before.")
+    return out
+
+
+@router.get("/stats/team/{team_id}/shot-map")
+def stat_engine_team_shot_map(team_id: str, season: str, side: str = "offense",
+                              season_type: str = "regular", span: int = 1):
+    """A team's shots (side=offense) or its opponents' (side=defense): where
+    from, and how well vs the league by zone."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.shot_maps import team_shot_map
+
+    _shot_map_args(season_type, span)
+    if side not in ("offense", "defense"):
+        raise HTTPException(status_code=422, detail="side must be offense or defense.")
+    out = team_shot_map(_state.db_engine, team_id, season, side, season_type, span)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No shots for team {team_id} in {season}.")
     return out
