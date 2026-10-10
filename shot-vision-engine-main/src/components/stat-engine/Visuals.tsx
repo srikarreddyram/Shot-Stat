@@ -3,7 +3,7 @@ import {
   ArchetypeDetail, PlayerProfile, formatStat, isRankable, numericValue, percentileOf, rankOf,
 } from "../../lib/stat-engine";
 import {
-  Bar, C, ChartHeader, F, MiniTable, NUM, Card, SectionLabel, ViewMode, tierColor, useViewMode,
+  Bar, C, ChartHeader, F, MiniTable, NUM, Card, RankPill, SectionLabel, ViewMode, tierColor, useViewMode,
 } from "./ui";
 
 // Three season-view visuals, replacing what used to be three more rows in a
@@ -19,6 +19,15 @@ function findStat(profile: PlayerProfile, key: string) {
   return null;
 }
 
+/** League rank pill for one value, or nothing when it cannot be ranked. */
+function leagueRank(value: number | null, key: string, distributions?: Map<string, number[]>) {
+  if (value == null || !distributions) return null;
+  const sorted = distributions.get(key) ?? [];
+  const pct = percentileOf(value, sorted, key);
+  const rank = rankOf(value, sorted, key);
+  return rank && pct != null ? <RankPill rank={rank.rank} outOf={rank.outOf} pct={pct} /> : null;
+}
+
 // ── Shot chart by zone ───────────────────────────────────────────────────────
 // Court geometry duplicated from EnginePage.tsx's CourtCanvas / archetypes.tsx
 // on purpose (see those files' own notes) — a small amount of repetition here
@@ -28,7 +37,7 @@ function findStat(profile: PlayerProfile, key: string) {
 const FT = {
   courtWidth: 50, hoopFromBaseline: 5.25, rimRadius: 0.75, restrictedRadius: 4,
   laneWidth: 16, laneDepth: 19, ftCircleRadius: 6, cornerThreeX: 22,
-  arcRadius: 23.75, visibleDepth: 32,
+  arcRadius: 23.75, visibleDepth: 35,
 };
 const CORNER_JOIN_Y = Math.sqrt(FT.arcRadius ** 2 - FT.cornerThreeX ** 2);
 const COURT_CW = 420;
@@ -44,7 +53,8 @@ const COURT_LINE = "rgba(92, 58, 30, 0.5)";
 const COURT_LINE_STRONG = "rgba(58, 35, 16, 0.85)";
 const COURT_RIM = "#B4491C";
 
-// Where each zone's badge sits on the court, in feet from the hoop.
+// Where each zone's badge sits on the court, in feet from the hoop. The
+// court is drawn 35 ft deep so the above-the-break badge clears the top edge.
 const ZONE_BADGE_POS: Record<string, [number, number]> = {
   rim: [0, 3.2],
   paint: [0, 11],
@@ -58,7 +68,9 @@ const ZONE_BADGE_LABEL: Record<string, string> = {
   right_corner3: "R CORNER", above_break3: "3PT",
 };
 
-export function ShotZoneCourt({ profile, defaultMode = "chart" }: { profile: PlayerProfile; defaultMode?: ViewMode }) {
+export function ShotZoneCourt({ profile, distributions, defaultMode = "chart" }: {
+  profile: PlayerProfile; distributions?: Map<string, number[]>; defaultMode?: ViewMode;
+}) {
   const [mode, setMode] = useViewMode(defaultMode);
   const zones = Object.keys(ZONE_BADGE_POS).map((slug) => {
     const pctStat = findStat(profile, `zone_fg_pct_${slug}`);
@@ -95,10 +107,11 @@ export function ShotZoneCourt({ profile, defaultMode = "chart" }: { profile: Pla
       </div>
       {mode === "table" ? (
         <MiniTable
-          headers={["Zone", "FG%", "Attempts"]}
+          headers={["Zone", "FG%", "League rank", "Attempts"]}
           rows={zones.map((z) => [
             ZONE_BADGE_LABEL[z.slug],
             <span style={{ color: fixedTier(z.pct) }}>{formatStat(z.pct, "pct")}</span>,
+            leagueRank(z.pct, `zone_fg_pct_${z.slug}`, distributions) ?? "—",
             z.fga == null ? "—" : z.fga.toFixed(0),
           ])}
         />
@@ -182,13 +195,16 @@ function pppColor(ppp: number | null): string {
   return "#DC2626";
 }
 
-export function PlayTypeBars({ profile, defaultMode = "chart" }: { profile: PlayerProfile; defaultMode?: ViewMode }) {
+export function PlayTypeBars({ profile, distributions, defaultMode = "chart" }: {
+  profile: PlayerProfile; distributions?: Map<string, number[]>; defaultMode?: ViewMode;
+}) {
   const [mode, setMode] = useViewMode(defaultMode);
   const rows = PLAY_TYPE_SLUGS.map((slug) => {
     const possPct = numericValue(findStat(profile, `playtype_${slug}_poss_pct`)?.value);
     const poss = numericValue(findStat(profile, `playtype_${slug}_poss`)?.value);
     const ppp = numericValue(findStat(profile, `playtype_${slug}_ppp`)?.value);
-    return { slug, possPct, poss, ppp };
+    const fgPct = numericValue(findStat(profile, `playtype_${slug}_fg_pct`)?.value);
+    return { slug, possPct, poss, ppp, fgPct };
   })
     .filter((r) => r.possPct != null && r.possPct > 0)
     .sort((a, b) => (b.possPct ?? 0) - (a.possPct ?? 0));
@@ -206,12 +222,14 @@ export function PlayTypeBars({ profile, defaultMode = "chart" }: { profile: Play
       </div>
       {mode === "table" ? (
         <MiniTable
-          headers={["Play type", "Share", "Poss", "PPP"]}
+          headers={["Play type", "Share", "Poss", "PPP", "PPP rank", "FG%"]}
           rows={rows.map((r) => [
             PLAY_TYPE_LABEL[r.slug],
             formatStat(r.possPct, "pct"),
             r.poss == null ? "—" : r.poss.toFixed(0),
             <span style={{ color: pppColor(r.ppp) }}>{formatStat(r.ppp, "num")}</span>,
+            leagueRank(r.ppp, `playtype_${r.slug}_ppp`, distributions) ?? "—",
+            formatStat(r.fgPct, "pct"),
           ])}
         />
       ) : rows.map((r) => {
@@ -260,7 +278,9 @@ function pmColor(pm: number | null): string {
   return "#DC2626";
 }
 
-export function DefenseCategoryChart({ profile, defaultMode = "chart" }: { profile: PlayerProfile; defaultMode?: ViewMode }) {
+export function DefenseCategoryChart({ profile, distributions, defaultMode = "chart" }: {
+  profile: PlayerProfile; distributions?: Map<string, number[]>; defaultMode?: ViewMode;
+}) {
   const [mode, setMode] = useViewMode(defaultMode);
   const rows = DEF_CATEGORIES.map((c) => {
     const fgPct = numericValue(findStat(profile, `def_${c.slug}_fg_pct`)?.value);
@@ -281,13 +301,14 @@ export function DefenseCategoryChart({ profile, defaultMode = "chart" }: { profi
       </div>
       {mode === "table" ? (
         <MiniTable
-          headers={["Shot type", "FG% allowed", "vs normal", "FGA faced"]}
+          headers={["Shot type", "FG% allowed", "vs normal", "League rank", "FGA faced"]}
           rows={rows.map((r) => [
             r.label,
             formatStat(r.fgPct, "pct"),
             <span style={{ color: pmColor(r.pm) }}>
               {r.pm != null ? `${r.pm > 0 ? "+" : ""}${formatStat(r.pm, "pct")}` : "—"}
             </span>,
+            leagueRank(r.pm, `def_${r.slug}_pm`, distributions) ?? "—",
             r.fga == null ? "—" : r.fga.toFixed(0),
           ])}
         />

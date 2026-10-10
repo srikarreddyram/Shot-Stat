@@ -19,7 +19,7 @@ import {
   PlayerArchetype, Row, Stat, PlayerProfile, TeamProfile,
   buildDistributions, formatStat, isRankable, matchesQuery, numericValue,
   percentileOf, rankOf, foldAccents, sortRows, meetsQualifier, LOWER_IS_BETTER,
-  RADAR_AXES, axisScore,
+  RADAR_AXES, axisScore, chartOwnedKey,
 } from "../lib/stat-engine";
 
 // Stat Engine — browse every stat this project has collected, for every
@@ -669,6 +669,8 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
   const [density, setDensity] = useState<"visual" | "list">("visual");
   const chartDefault = density === "visual" ? "chart" : "table";
   const [radarMode, setRadarMode] = useViewMode(chartDefault);
+  const [advanced, toggleAdvanced] = useAdvancedOpen();
+  const columnsByKey = useMemo(() => new Map(leagueColumns.map((c) => [c.key, c])), [leagueColumns]);
 
   useEffect(() => {
     let cancelled = false;
@@ -746,7 +748,26 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
     .filter((x): x is NonNullable<typeof x> => x != null);
 
   const infoSections = profile.sections.filter((s) => s.side === "info");
-  const sideSections = profile.sections.filter((s) => s.side === side);
+  // A stat a chart already shows in full is left out of the lists below it.
+  const sideSections = profile.sections
+    .filter((s) => s.side === side)
+    .map((s) => ({ ...s, stats: s.stats.filter((x) => !chartOwnedKey(x.key, side)) }))
+    .filter((s) => s.stats.length > 0);
+
+  const sectionCard = (section: (typeof profile.sections)[number], key: string, i: number) => (
+    <div key={key} className="se-rise" style={{ breakInside: "avoid", marginBottom: 16, ...riseDelay(i) }}>
+      <Card style={{ padding: "15px 19px 9px" }}>
+        <div style={{ marginBottom: 12 }}><SectionLabel>{section.label}</SectionLabel></div>
+        {density === "visual" && section.stats.length > COMPACT_THRESHOLD ? (
+          <CompactStatBars rows={foldVolumes(section.stats, columnsByKey)} distributions={distributions} />
+        ) : (
+          foldVolumes(section.stats, columnsByKey).map(({ stat, volume }) => (
+            <StatRow key={stat.key} stat={stat} volume={volume} sorted={distributions.get(stat.key) ?? []} />
+          ))
+        )}
+      </Card>
+    </div>
+  );
 
   return (
     <>
@@ -755,6 +776,10 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
         <span style={{ ...NUM, fontSize: 10, color: C.muted, letterSpacing: "0.25em" }}>{profile.season}</span>
       </div>
 
+      {/* ── BASIC ─────────────────────────────────────────────────────────
+          What most visits are for: who he is, his box score season by
+          season, and where he shoots. Everything else sits behind the
+          ADVANCED STATS button below. */}
       <div className="se-rise">
       <Card accent={accent} style={{ padding: "22px 26px", marginBottom: 16, position: "relative", overflow: "hidden" }}>
         <TeamBackdrop teamId={profile.team_id} abbrev={teamLabel} height={260} />
@@ -812,140 +837,207 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
         <SeasonAverages kind="player" id={playerId} />
       </div>
 
-      {radarAxes.length >= 3 && (
-        <div className="se-rise" style={riseDelay(1)}>
-        <Card style={{ padding: "18px 22px 20px", marginBottom: 16 }}>
-          <ChartHeader title="Profile shape" mode={radarMode} onChange={setRadarMode} />
-          <div style={{ fontSize: 11.5, color: C.faint, margin: "8px 0 14px", lineHeight: 1.55, maxWidth: 720 }}>
-            Each axis is the league percentile of this player's measured stats in that area — a
-            summary of the sections below, not a separate rating. Further out is better on every axis.
-          </div>
-          {radarMode === "table" ? (
-            <MiniTable
-              headers={["Area", "League percentile"]}
-              rows={radarAxes.map((a) => [
-                a.axis.label,
-                <span style={{ color: tierColor(a.value) }}>{Math.round(a.value * 100)}</span>,
-              ])}
-            />
-          ) : (
-            <div style={{ display: "flex", justifyContent: "center" }}>
-              <div style={{ maxWidth: RADAR_W, width: "100%" }}>
-                <RadarChart
-                  axes={radarAxes.map((a) => a.axis.label)}
-                  series={[{ color: accent, values: radarAxes.map((a) => a.value) }]}
-                />
-              </div>
-            </div>
-          )}
-        </Card>
-        </div>
-      )}
-
       <div className="se-rise" style={riseDelay(2)}>
-        <StrengthsChart profile={profile} distributions={distributions} defaultMode={chartDefault} />
+        <ShotZoneCourt profile={profile} distributions={distributions} defaultMode={chartDefault} />
       </div>
 
       {/* "Info" sections (Overview, Ratings) belong to neither side of the
           ball — shown once here, above the split, rather than duplicated
           into both tabs or hidden behind either one. */}
-      <div style={{ columnWidth: 320, columnGap: 16, marginBottom: 16 }}>
-        <div style={{ breakInside: "avoid" }}>
+      <div style={{ columnWidth: 320, columnGap: 16 }}>
+        <div style={{ breakInside: "avoid", marginBottom: 16 }}>
           <ArchetypeCard playerId={playerId} />
         </div>
-        {infoSections.map((section, i) => (
-            <div key={section.group} className="se-rise" style={{ breakInside: "avoid", marginBottom: 16, ...riseDelay(i + 3) }}>
-              <Card style={{ padding: "15px 19px 9px" }}>
-                <div style={{ marginBottom: 12 }}><SectionLabel>{section.label}</SectionLabel></div>
-                {density === "visual" && section.stats.length > COMPACT_THRESHOLD ? (
-                  <CompactStatBars stats={section.stats} distributions={distributions} />
-                ) : (
-                  section.stats.map((stat) => (
-                    <StatRow key={stat.key} stat={stat} sorted={distributions.get(stat.key) ?? []} />
-                  ))
-                )}
-              </Card>
+        {infoSections.map((section, i) => sectionCard(section, section.group, i + 3))}
+      </div>
+
+      <AdvancedToggle open={advanced} onToggle={toggleAdvanced}
+                      contents="Profile shape · strengths & weaknesses · shot difficulty · play types · creation · hustle · defense" />
+
+      {/* ── ADVANCED ──────────────────────────────────────────────────── */}
+      {advanced && (
+        <div className="se-rise">
+          {radarAxes.length >= 3 && (
+            <Card style={{ padding: "18px 22px 20px", marginBottom: 16 }}>
+              <ChartHeader title="Profile shape" mode={radarMode} onChange={setRadarMode} />
+              <div style={{ fontSize: 11.5, color: C.faint, margin: "8px 0 14px", lineHeight: 1.55, maxWidth: 720 }}>
+                Each axis is the league percentile of this player's measured stats in that area — a
+                summary of the sections below, not a separate rating. Further out is better on every axis.
+              </div>
+              {radarMode === "table" ? (
+                <MiniTable
+                  headers={["Area", "League percentile"]}
+                  rows={radarAxes.map((a) => [
+                    a.axis.label,
+                    <span style={{ color: tierColor(a.value) }}>{Math.round(a.value * 100)}</span>,
+                  ])}
+                />
+              ) : (
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  <div style={{ maxWidth: RADAR_W, width: "100%" }}>
+                    <RadarChart
+                      axes={radarAxes.map((a) => a.axis.label)}
+                      series={[{ color: accent, values: radarAxes.map((a) => a.value) }]}
+                    />
+                  </div>
+                </div>
+              )}
+            </Card>
+          )}
+
+          <StrengthsChart profile={profile} distributions={distributions} defaultMode={chartDefault} />
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+            <Segmented
+              value={side}
+              onChange={(v) => setSide(v as "offense" | "defense")}
+              options={[
+                { value: "offense", label: "OFFENSE" },
+                { value: "defense", label: "DEFENSE" },
+              ]}
+            />
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <Segmented
+                value={density}
+                onChange={(v) => setDensity(v as "visual" | "list")}
+                options={[
+                  { value: "visual", label: "VISUAL" },
+                  { value: "list", label: "LIST" },
+                ]}
+              />
+              <Segmented
+                value={view}
+                onChange={(v) => setView(v as "season" | "career")}
+                options={[
+                  { value: "season", label: "THIS SEASON" },
+                  { value: "career", label: "CAREER" },
+                ]}
+              />
             </div>
-          ))}
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
-        <Segmented
-          value={side}
-          onChange={(v) => setSide(v as "offense" | "defense")}
-          options={[
-            { value: "offense", label: "OFFENSE" },
-            { value: "defense", label: "DEFENSE" },
-          ]}
-        />
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-          <Segmented
-            value={density}
-            onChange={(v) => setDensity(v as "visual" | "list")}
-            options={[
-              { value: "visual", label: "VISUAL" },
-              { value: "list", label: "LIST" },
-            ]}
-          />
-          <Segmented
-            value={view}
-            onChange={(v) => setView(v as "season" | "career")}
-            options={[
-              { value: "season", label: "THIS SEASON" },
-              { value: "career", label: "CAREER" },
-            ]}
-          />
-        </div>
-      </div>
-
-      {view === "career" ? (
-        <CareerPanel playerId={playerId} side={side} defaultMode={chartDefault} />
-      ) : (
-        <>
-          <div style={{ fontSize: 11.5, color: C.faint, marginBottom: 16, lineHeight: 1.6, maxWidth: 780 }}>
-            Bars and ranks place this player against everyone the stat is measured for, and are coloured
-            by tier — green is top of the league, red is bottom. A dash means no measurement, not a zero.
-            Stats with no better-or-worse direction (height, shot-diet shares) are shown without a rank.
           </div>
 
-          {sideSections.length === 0 ? (
-            <EmptyState>NO {side.toUpperCase()} STATS FOR THIS PLAYER</EmptyState>
+          {view === "career" ? (
+            <CareerPanel playerId={playerId} side={side} defaultMode={chartDefault} />
           ) : (
             <>
-              <div key={side} className="se-rise">
-                {side === "offense" && <ShotZoneCourt profile={profile} defaultMode={chartDefault} />}
-                {side === "offense" && <PlayTypeBars profile={profile} defaultMode={chartDefault} />}
-                {side === "defense" && <DefenseCategoryChart profile={profile} defaultMode={chartDefault} />}
+              <div style={{ fontSize: 11.5, color: C.faint, marginBottom: 16, lineHeight: 1.6, maxWidth: 780 }}>
+                Bars and ranks place this player against everyone the stat is measured for, and are coloured
+                by tier — green is top of the league, red is bottom. A dash means no measurement, not a zero.
+                Stats with no better-or-worse direction (height, shot-diet shares) are shown without a rank.
               </div>
 
-              {/* Columns, not grid: the sections are wildly different heights
-                  (Shooting has 16 rows, Overview 6) and a grid leaves a tall
-                  hole under the short ones. CSS columns pack them. */}
-              <div style={{ columnWidth: 350, columnGap: 16 }}>
-                {sideSections.map((section, i) => (
-                  <div key={`${side}-${section.group}`} className="se-rise" style={{ breakInside: "avoid", marginBottom: 16, ...riseDelay(i) }}>
-                    <Card style={{ padding: "15px 19px 9px" }}>
-                      <div style={{ marginBottom: 12 }}><SectionLabel>{section.label}</SectionLabel></div>
-                      {density === "visual" && section.stats.length > COMPACT_THRESHOLD ? (
-                        <CompactStatBars stats={section.stats} distributions={distributions} />
-                      ) : (
-                        section.stats.map((stat) => (
-                          <StatRow key={stat.key} stat={stat} sorted={distributions.get(stat.key) ?? []} />
-                        ))
-                      )}
-                    </Card>
-                  </div>
-                ))}
+              <div key={side} className="se-rise">
+                {side === "offense" && <PlayTypeBars profile={profile} distributions={distributions} defaultMode={chartDefault} />}
+                {side === "defense" && <DefenseCategoryChart profile={profile} distributions={distributions} defaultMode={chartDefault} />}
               </div>
+
+              {sideSections.length === 0 ? (
+                <EmptyState>NO {side.toUpperCase()} STATS FOR THIS PLAYER</EmptyState>
+              ) : (
+                /* Columns, not grid: the sections are wildly different heights
+                   (Shooting has 16 rows, Overview 6) and a grid leaves a tall
+                   hole under the short ones. CSS columns pack them. */
+                <div style={{ columnWidth: 350, columnGap: 16 }}>
+                  {sideSections.map((section, i) => sectionCard(section, `${side}-${section.group}`, i))}
+                </div>
+              )}
             </>
           )}
-        </>
+        </div>
       )}
     </>
   );
 }
 
-function StatRow({ stat, sorted }: { stat: Stat; sorted: number[] }) {
+// ── Basic / advanced ─────────────────────────────────────────────────────────
+// A profile opens on the basics; the long tail of advanced and tracking stats
+// is one click away rather than five screens of scrolling. Whether it was
+// left open is remembered per viewer, so someone who always wants the
+// advanced view does not have to keep asking for it.
+const ADVANCED_KEY = "se-profile-advanced";
+
+function useAdvancedOpen() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    try { setOpen(window.localStorage.getItem(ADVANCED_KEY) === "1"); } catch { /* storage unavailable */ }
+  }, []);
+  const toggle = () => {
+    setOpen((was) => {
+      try { window.localStorage.setItem(ADVANCED_KEY, was ? "0" : "1"); } catch { /* storage unavailable */ }
+      return !was;
+    });
+  };
+  return [open, toggle] as const;
+}
+
+function AdvancedToggle({ open, onToggle, contents }: { open: boolean; onToggle: () => void; contents: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={open}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
+        background: open || hover ? C.hover : C.surface, cursor: "pointer", textAlign: "left",
+        border: `1px solid ${open || hover ? C.edgeStrong : C.edge}`, borderRadius: 6,
+        padding: "14px 20px", marginBottom: 16, transition: "all 200ms", color: C.text,
+      }}
+    >
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: "block", fontFamily: F.display, fontSize: 22, letterSpacing: "0.06em", color: C.gold, lineHeight: 1.1 }}>
+          {open ? "HIDE ADVANCED STATS" : "ADVANCED STATS"}
+        </span>
+        <span style={{ display: "block", fontSize: 11.5, color: C.faint, marginTop: 4 }}>{contents}</span>
+      </span>
+      <span aria-hidden style={{
+        fontFamily: F.mono, fontSize: 16, color: C.gold, flexShrink: 0,
+        transform: open ? "rotate(180deg)" : "none", transition: "transform 250ms",
+      }}>▾</span>
+    </button>
+  );
+}
+
+// A rate and the attempts behind it used to be two rows ("Pull-up — FG%",
+// then "Pull-up — attempts"), which doubled the length of every shooting
+// list. When a rate's qualifying volume (Column.qualify_key) is in the same
+// section, it is printed under the rate instead of on a row of its own.
+type FoldedRow = { stat: Stat; volume?: Stat };
+
+function foldVolumes(stats: Stat[], columns: Map<string, Column>): FoldedRow[] {
+  const byKey = new Map(stats.map((s) => [s.key, s]));
+  const folded = new Set<string>();
+  const rows: FoldedRow[] = [];
+  for (const stat of stats) {
+    const volumeKey = columns.get(stat.key)?.qualify_key;
+    const volume = volumeKey && volumeKey !== stat.key ? byKey.get(volumeKey) : undefined;
+    if (volume && !folded.has(volume.key)) {
+      folded.add(volume.key);
+      rows.push({ stat, volume });
+    } else {
+      rows.push({ stat });
+    }
+  }
+  return rows.filter((r) => !folded.has(r.stat.key));
+}
+
+/** "Pull-up — attempts" → "attempts"; "Rim (< 6 ft) — shots defended" →
+ *  "shots defended"; "Restricted area attempts" → "attempts". */
+function volumeNoun(label: string): string {
+  return label.includes(" — ") ? label.split(" — ").pop()! : label.split(" ").pop()!;
+}
+
+function VolumeNote({ volume }: { volume?: Stat }) {
+  if (!volume || volume.value == null || volume.value === "") return null;
+  return (
+    <span style={{ ...NUM, display: "block", fontSize: 9.5, color: C.muted, marginTop: 2 }}>
+      {formatStat(volume.value, volume.fmt)} {volumeNoun(volume.label)}
+    </span>
+  );
+}
+
+function StatRow({ stat, sorted, volume }: { stat: Stat; sorted: number[]; volume?: Stat }) {
   const numeric = numericValue(stat.value);
   const rankable = isRankable(stat.key, stat.fmt);
   const pct = rankable && numeric != null ? percentileOf(numeric, sorted, stat.key) : null;
@@ -955,7 +1047,10 @@ function StatRow({ stat, sorted }: { stat: Stat; sorted: number[] }) {
   return (
     <div style={{ padding: "8px 0", borderBottom: `1px solid ${C.rule}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-        <div style={{ fontSize: 12.5, color: missing ? C.faint : C.dim }}>{stat.label}</div>
+        <div style={{ fontSize: 12.5, color: missing ? C.faint : C.dim }}>
+          {stat.label}
+          <VolumeNote volume={volume} />
+        </div>
         <div style={{ ...NUM, fontSize: 13, color: missing ? C.muted : C.text, whiteSpace: "nowrap", fontWeight: missing ? 400 : 500 }}>
           {formatStat(stat.value, stat.fmt)}
         </div>
@@ -981,10 +1076,10 @@ const COMPACT_THRESHOLD = 8;
 // its own row below) — same bar, same rank pill, same every underlying
 // number, just laid out so a 20-stat section reads as one glance down a
 // column of thin bars rather than a page and a half of scrolling.
-function CompactStatBars({ stats, distributions }: { stats: Stat[]; distributions: Map<string, number[]> }) {
+function CompactStatBars({ rows, distributions }: { rows: FoldedRow[]; distributions: Map<string, number[]> }) {
   return (
     <div>
-      {stats.map((stat) => {
+      {rows.map(({ stat, volume }) => {
         const numeric = numericValue(stat.value);
         const rankable = isRankable(stat.key, stat.fmt);
         const sorted = distributions.get(stat.key) ?? [];
@@ -999,6 +1094,7 @@ function CompactStatBars({ stats, distributions }: { stats: Stat[]; distribution
           >
             <div style={{ flex: "1.3 1 0", minWidth: 0, fontSize: 11, color: missing ? C.faint : C.dim, lineHeight: 1.3 }}>
               {stat.label}
+              <VolumeNote volume={volume} />
             </div>
             <div style={{ flex: "1 1 0", minWidth: 36 }}>
               {pct != null && <Bar pct={pct} height={5} />}

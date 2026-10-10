@@ -248,6 +248,19 @@ export function meetsQualifier(row: Row, column: Column): boolean {
   return volume != null && volume >= column.qualify_min!;
 }
 
+// ── Chart-owned stats ───────────────────────────────────────────────────────
+const DEF_CATEGORY_KEY = /^def_(rim|paint|two_pt|mid_long|perimeter)_(fg_pct|pm|fga)$/;
+
+/** Stats a chart on the profile already shows in full (value, volume and
+ *  league rank), so the stat lists leave them out instead of repeating them:
+ *  zone shooting belongs to the shot chart, play types to the play-type
+ *  chart, and FG% allowed by category to the defense chart. */
+export function chartOwnedKey(key: string, side: "offense" | "defense"): boolean {
+  if (key.startsWith("zone_fg_pct_") || key.startsWith("zone_fga_")) return true;
+  if (side === "offense") return key.startsWith("playtype_");
+  return DEF_CATEGORY_KEY.test(key);
+}
+
 // ── Search ──────────────────────────────────────────────────────────────────
 // Names in the database carry real diacritics and people type them without.
 // NFD splits a letter from its accent and the combining-mark range is then
