@@ -247,7 +247,25 @@ export default function EnginePage({ onBack }: Props) {
           very top of the page. Shared with every other page in the app —
           see NBAEdgeBezel in stat-engine/ui.tsx. */}
       <NBAEdgeBezel />
-      <header style={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(10,10,15,0.92)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderBottom: "1px solid rgba(201,168,76,0.1)", padding: "16px 32px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      {/* Below 900px the form and the results stack (results full width, so
+          the court is not a thumbnail), and the game-state pair goes one per
+          row. Classes rather than inline styles so the breakpoint can win. */}
+      <style>{`
+        .sv-engine-grid { display: grid; grid-template-columns: 52% 48%; gap: 32px; padding: 32px; }
+        .sv-engine-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 900px) {
+          .sv-engine-grid { grid-template-columns: minmax(0, 1fr); gap: 28px; padding: 20px 16px; }
+        }
+        @media (max-width: 520px) {
+          .sv-engine-pair { grid-template-columns: minmax(0, 1fr); }
+        }
+        /* Wrapped onto three rows, a sticky header would cover a quarter of
+           a phone screen for the whole page. */
+        @media (max-width: 640px) {
+          .sv-engine-header { position: static !important; }
+        }
+      `}</style>
+      <header className="sv-engine-header" style={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(10,10,15,0.92)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)", borderBottom: "1px solid rgba(201,168,76,0.1)", padding: "16px clamp(16px, 2.4vw, 32px)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px 24px" }}>
         {/* A full-strength red/white/blue stripe under the header — the one
             place on this page that borrows the league's wordmark colours
             directly rather than mixing them into a gradient, so the "NBA"
@@ -262,7 +280,7 @@ export default function EnginePage({ onBack }: Props) {
         {/* Status and nav sit together on the right. Under space-between the
             status pill landed dead-centre with nothing on its axis, reading as
             a stray element rather than as chrome. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px 24px", flexWrap: "wrap" }}>
           <HealthIndicator status={health} />
           <SiteNav active="engine" />
           <button onClick={onBack} style={{ background: "transparent", border: "none", color: "#64748b", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.3em", cursor: "pointer", transition: "color 200ms" }} onMouseEnter={(e) => (e.currentTarget.style.color = "#C9A84C")} onMouseLeave={(e) => (e.currentTarget.style.color = "#64748b")}>
@@ -271,7 +289,7 @@ export default function EnginePage({ onBack }: Props) {
         </div>
       </header>
 
-      <div style={{ display: "grid", gridTemplateColumns: "52% 48%", gap: 32, padding: "32px", maxWidth: 1440, margin: "0 auto", alignItems: "start" }}>
+      <div className="sv-engine-grid" style={{ maxWidth: 1440, margin: "0 auto", alignItems: "start" }}>
         {/* LEFT COL
             Deliberately NOT position:sticky. Pinning it fills the empty space
             beside the taller results column, but sticky opens a stacking
@@ -369,7 +387,7 @@ export default function EnginePage({ onBack }: Props) {
           </div>
 
           <InputSection label="GAME STATE">
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+            <div className="sv-engine-pair">
               <div>
                 <MiniLabel>QUARTER</MiniLabel>
                 <div style={{ display: "flex", gap: 6, marginTop: 8 }}>

@@ -41,7 +41,7 @@ export function MatchupEdge({ attacker, defender, data, loading, error }: {
       <div style={{ marginBottom: 12 }}>
         <Disclosure
           label={
-            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ display: "flex", alignItems: "center", columnGap: 10, rowGap: 4, flexWrap: "wrap", minWidth: 0 }}>
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#C9A84C", letterSpacing: "0.4em" }}>MATCHUP EDGE</span>
               {data?.size_mismatch && (
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#DC2626", letterSpacing: "0.15em" }}>⚠ SIZE MISMATCH</span>
@@ -92,7 +92,7 @@ export function MatchupEdge({ attacker, defender, data, loading, error }: {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {physicalRows.map((r) => (
               <div key={r.key}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b", letterSpacing: "0.2em" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", columnGap: 8, fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#64748b", letterSpacing: "0.2em" }}>
                   <span>{r.label}</span>
                   <span style={{ color: r.diff && r.diff > 0 ? "#C9A84C" : r.diff && r.diff < 0 ? "#DC2626" : "#64748b" }}>{r.advLabel}</span>
                 </div>
@@ -138,8 +138,10 @@ export function MatchupEdge({ attacker, defender, data, loading, error }: {
                     dense
                     tone={z.exploit ? "#16A34A" : "#64748b"}
                     label={
-                      <span style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
-                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#F0F0F0", flex: 1 }}>{z.zone}</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                        {/* minWidth 0 lets a long zone name wrap on a phone
+                            instead of pushing the row past the screen. */}
+                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#F0F0F0", flex: 1, minWidth: 0 }}>{z.zone}</span>
                         <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#64748b" }}>
                           {pct(z.attacker_fg_pct)} vs {pct(z.defender_fg_pct_allowed)}
                         </span>

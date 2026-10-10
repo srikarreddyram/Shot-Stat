@@ -234,11 +234,14 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
       <RankingToggle view={view} setView={setView} />
 
       <div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
+        {/* Wraps, and the zone name scales down, so "ABOVE THE BREAK 3"
+            plus its distance and the EP/% toggle fit a phone instead of
+            forcing the whole page wider than the screen. */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: view === "best" ? "#C9A84C" : "#DC2626", letterSpacing: "0.4em" }}>{palette.label}</div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, color: "#F0F0F0", lineHeight: 1.05, marginTop: 4 }}>{hero.zone.label}</div>
+            <div style={{ display: "flex", alignItems: "baseline", columnGap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: "clamp(28px, 8vw, 38px)", color: "#F0F0F0", lineHeight: 1.05, marginTop: 4 }}>{hero.zone.label}</div>
               {hero.shotDistance != null ? (
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "#64748b" }}>
                   {hero.shotDistance.toFixed(1)} FT
@@ -249,8 +252,8 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
           <MetricToggle />
         </div>
 
-        <div style={{ display: "flex", alignItems: "baseline", gap: 20, marginTop: 8 }}>
-          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 64, color: palette.heroValue, lineHeight: 1 }}>
+        <div style={{ display: "flex", alignItems: "baseline", columnGap: 20, rowGap: 4, flexWrap: "wrap", marginTop: 8 }}>
+          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: "clamp(48px, 14vw, 64px)", color: palette.heroValue, lineHeight: 1 }}>
             {showProb ? `${Math.round(hero.makeProb * 100)}%` : hero.ep.toFixed(2)}
           </div>
           <div>
@@ -290,8 +293,8 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
               onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.8"; }}
               onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "baseline", columnGap: 12, rowGap: 2, flexWrap: "wrap", minWidth: 0 }}>
                   <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, color }}>#{i + 1}</span>
                   <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: 15, color: "#F0F0F0" }}>{r.zone.label}</span>
                   {r.shotDistance != null ? (

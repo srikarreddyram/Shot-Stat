@@ -416,7 +416,11 @@ export function SiteNav({ active, onEngine }: { active?: SiteSection; onEngine?:
  *  lockup with this page's name under it, and the site navigation. */
 export function AppHeader({ sub, active, right }: { sub: ReactNode; active: SiteSection; right?: ReactNode }) {
   return (
-    <header style={{
+    <>
+    {/* On a phone the header wraps to two rows; sticky, it would hold a
+        fifth of the screen for the whole page. */}
+    <style>{`@media (max-width: 640px) { .sv-app-header { position: static !important; } }`}</style>
+    <header className="sv-app-header" style={{
       position: "sticky", top: 0, zIndex: 30, background: "rgba(10,10,15,0.92)",
       backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderBottom: `1px solid ${C.edge}`,
       padding: "14px 28px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 20,
@@ -434,6 +438,7 @@ export function AppHeader({ sub, active, right }: { sub: ReactNode; active: Site
         <SiteNav active={active} />
       </div>
     </header>
+    </>
   );
 }
 
