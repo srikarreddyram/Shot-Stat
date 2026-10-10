@@ -4,6 +4,12 @@ Shot chart data ingestion from nba_api.
 Pulls ShotChartDetail for every player who played in each season.
 Uses `shots_fetched_reg` and `shots_fetched_ply` flags in the Player table
 for perfectly safe resuming.
+
+Those flags mark a player-season as done for good, which is right for a
+finished season and wrong for one in progress: a player pulled in week one
+would never be re-checked. `--refresh` ignores the flags and re-pulls every
+player in the given seasons; shots are inserted with ON CONFLICT DO NOTHING,
+so only the new ones are added.
 """
 import sys
 import time
@@ -87,7 +93,7 @@ def _api_call_with_retry(player_id: int, season: str, season_type: str = "Regula
                 return None
     return None
 
-def ingest_shots(seasons: list[str]):
+def ingest_shots(seasons: list[str], refresh: bool = False):
     engine = get_engine()
     Session = get_session_factory(engine)
     total_shots = 0
@@ -131,7 +137,7 @@ def ingest_shots(seasons: list[str]):
                 existing = session.execute(
                     select(Player.player_id).where(Player.season == season).where(flag_col == True)
                 ).scalars().all()
-                existing_set = set(str(p) for p in existing)
+                existing_set = set() if refresh else set(str(p) for p in existing)
 
             print(f"\n  Pulling {season_type} shots... (Skipping {len(existing_set)} already done)")
 
@@ -216,6 +222,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest NBA shot data.")
     parser.add_argument("--seasons", nargs="+", default=None, help="Specific seasons to process. Default: TEST_SEASONS. Use --full for all.")
     parser.add_argument("--full", action="store_true", help="Process all seasons defined in config.")
+    parser.add_argument("--refresh", action="store_true",
+                        help="Re-pull players already marked done (for a season in progress).")
     args = parser.parse_args()
 
     if args.seasons:
@@ -225,5 +233,5 @@ if __name__ == "__main__":
     else:
         seasons = config.TEST_SEASONS
 
-    ingest_shots(seasons)
+    ingest_shots(seasons, refresh=args.refresh)
 

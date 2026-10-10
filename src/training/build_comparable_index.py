@@ -30,6 +30,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="shot-quality-v20",
                         help="Model whose feature_cols/feature_bounds/seasons to match")
+    parser.add_argument("--add-season", action="append", default=[], metavar="SEASON",
+                        help="Also index this season's shots (repeatable) — e.g. the "
+                             "season in progress, which the model never trained on")
     parser.add_argument("--max-rows", type=int, default=250_000,
                         help="Cap on indexed shots (uniform sample) — keeps "
                              "k-NN query latency bounded as history grows")
@@ -38,7 +41,7 @@ def main() -> None:
     metadata_path = MODEL_DIR / f"metadata_{args.model}.json"
     metadata = json.loads(metadata_path.read_text())
 
-    seasons = metadata["seasons"]
+    seasons = metadata["seasons"] + [s for s in args.add_season if s not in metadata["seasons"]]
     feature_cols = metadata["feature_cols"]
     feature_bounds = metadata["feature_bounds"]
     # train.py fits build_matrix's priors through `val_season` (see

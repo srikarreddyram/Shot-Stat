@@ -88,4 +88,4 @@ def init_db(engine=None, echo=False):
 
 
 if __name__ == "__main__":
-    init_db(echo=True)
+    init_db(echo="--echo" in sys.argv)

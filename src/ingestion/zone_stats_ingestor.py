@@ -131,7 +131,8 @@ def _upsert_zone_rows(session, rows: list[dict]) -> int:
     return len(rows)
 
 
-def ingest_zone_stats(seasons: list[str] | None = None, season_type: str = "Regular Season"):
+def ingest_zone_stats(seasons: list[str] | None = None, season_type: str = "Regular Season",
+                      refresh: bool = False):
     """
     Main entry point. Fetches zone-level shooting splits for every unique
     player-season in the Players table and upserts into PlayerZoneStats.
@@ -139,6 +140,7 @@ def ingest_zone_stats(seasons: list[str] | None = None, season_type: str = "Regu
     Args:
         seasons:     If given, only process these seasons. Otherwise all seasons.
         season_type: "Regular Season" or "Playoffs".
+        refresh:     Re-fetch player-seasons that already have rows.
     """
     engine  = get_engine()
     Session = get_session_factory(engine)
@@ -168,7 +170,11 @@ def ingest_zone_stats(seasons: list[str] | None = None, season_type: str = "Regu
             for row in session.execute(existing_q).all()
         }
 
-    # Filter to only players missing zone stats
+    # Filter to only players missing zone stats — unless refreshing a season
+    # in progress, where every player's splits have moved since the last pull
+    # (rows are upserted, so re-fetching overwrites rather than duplicates).
+    if refresh:
+        existing = set()
     todo = [(pid, season, name) for pid, season, name in all_players
             if (pid, season) not in existing]
 
@@ -258,5 +264,7 @@ if __name__ == "__main__":
         dest="season_type",
         help="Season type. Default: Regular Season."
     )
+    parser.add_argument("--refresh", action="store_true",
+                        help="Re-fetch player-seasons that already have zone stats (for a season in progress).")
     args = parser.parse_args()
-    ingest_zone_stats(seasons=args.seasons, season_type=args.season_type)
+    ingest_zone_stats(seasons=args.seasons, season_type=args.season_type, refresh=args.refresh)

@@ -68,6 +68,12 @@ def ingest_team_stats(seasons=None):
     print("Done!")
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Ingest team defensive ratings.")
+    parser.add_argument("--seasons", nargs="+", default=None,
+                        help="Specific seasons. Default: every season from 2016-17 in config.ALL_SEASONS.")
+    args = parser.parse_args()
     # We only really need from 2016-17 onward since matchup data starts then
-    seasons_to_use = [s for s in config.ALL_SEASONS if s >= "2016-17"]
+    seasons_to_use = args.seasons or [s for s in config.ALL_SEASONS if s >= "2016-17"]
     ingest_team_stats(seasons_to_use)

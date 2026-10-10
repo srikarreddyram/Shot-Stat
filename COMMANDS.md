@@ -116,6 +116,24 @@ python -m src.training.attainability --no-cast --name attainability-nocast
 uvicorn src.inference.api:app --reload --port 8000
 ```
 
+### Refreshing the season in progress
+
+One command runs every ingestion step for a season in dependency order, then
+rebuilds the comparable-shots index to include it:
+
+```bash
+python scripts/refresh_season.py --dry-run          # the 24 steps and their commands
+python scripts/refresh_season.py                    # the season in progress
+python scripts/refresh_season.py --season 2026-27 --from pbp   # resume after a failure
+python scripts/refresh_season.py --only game_logs   # just the box scores
+```
+
+Every step is safe to re-run. Per-game steps skip games already stored, so
+after the first run of a season (hours, mostly play-by-play) a refresh only
+fetches games played since. Shots and zone splits are pulled with `--refresh`,
+since their normal resume flags would mark a player done after his first week.
+Restart the API afterwards so it loads the new comparable index.
+
 ### Keeping the laptop cool
 
 Training defaults to every core, which on a laptop is a real thermal event.

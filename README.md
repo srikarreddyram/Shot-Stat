@@ -196,10 +196,13 @@ python -m src.training.build_comparable_index --model shot-quality-v20
 
 # Run it
 ./scripts/dev.sh
+
+# During the season: pull every game since the last refresh, in one step
+python scripts/refresh_season.py
 ```
 
 `./scripts/dev.sh` starts the FastAPI backend and the React frontend on fresh
-ports, wires them together, and prints the URLs. Tests: `pytest` (267 tests;
+ports, wires them together, and prints the URLs. Tests: `pytest` (271 tests;
 `pytest -m "not slow"` skips the ones that need trained models and the full
 database). See [`COMMANDS.md`](COMMANDS.md) for every ingestion step, ablation
 flag and evaluation tool.
