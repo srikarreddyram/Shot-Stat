@@ -763,6 +763,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
     .filter((x): x is NonNullable<typeof x> => x != null);
 
   const infoSections = profile.sections.filter((s) => s.side === "info");
+  const officialAdvanced = profile.sections.find((s) => s.side === "advanced" && s.stats.length > 0);
   // A stat a chart already shows in full is left out of the lists below it.
   const sideSections = profile.sections
     .filter((s) => s.side === side)
@@ -867,11 +868,33 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
       </div>
 
       <AdvancedToggle open={advanced} onToggle={toggleAdvanced}
-                      contents="Shot maps by shot type, clutch, defense and vs last season · profile shape · strengths & weaknesses · shot difficulty · play types · creation · hustle · defense" />
+                      contents="Official NBA advanced stats · shot maps by shot type, clutch, defense and vs last season · profile shape · strengths & weaknesses · shot difficulty · play types · creation · hustle · defense" />
 
       {/* ── ADVANCED ──────────────────────────────────────────────────── */}
       {advanced && (
         <div className="se-rise">
+          {officialAdvanced && (
+            <Card style={{ padding: "15px 19px 9px", marginBottom: 16 }}>
+              <div style={{ marginBottom: 6 }}><SectionLabel>{officialAdvanced.label}</SectionLabel></div>
+              <div style={{ fontSize: 11.5, color: C.faint, marginBottom: 10, lineHeight: 1.55, maxWidth: 780 }}>
+                {profile.season} regular season, as the NBA publishes them, ranked among players with 1,000+
+                possessions. The on-court ratings are his team's points scored and allowed per 100 possessions
+                while he plays — not this page's 0-99 offense and defense ratings.
+              </div>
+              {density === "visual" ? (
+                <div style={{ columnWidth: 300, columnGap: 28 }}>
+                  <CompactStatBars rows={foldVolumes(officialAdvanced.stats, columnsByKey)} distributions={rankDistributions} />
+                </div>
+              ) : (
+                foldVolumes(officialAdvanced.stats, columnsByKey).map(({ stat, volume }) => (
+                  <StatRow key={stat.key} stat={stat} volume={volume} sorted={rankDistributions.get(stat.key) ?? []} />
+                ))
+              )}
+            </Card>
+          )}
+
+          <SeasonAverages kind="player" id={playerId} set="advanced" />
+
           <ShotMapGallery playerId={playerId} season={profile.season} defaultMode={chartDefault} />
 
           {radarAxes.length >= 3 && (
@@ -1040,9 +1063,12 @@ function foldVolumes(stats: Stat[], columns: Map<string, Column>): FoldedRow[] {
 }
 
 /** "Pull-up — attempts" → "attempts"; "Rim (< 6 ft) — shots defended" →
- *  "shots defended"; "Restricted area attempts" → "attempts". */
+ *  "shots defended"; "Restricted area attempts" → "attempts";
+ *  "Possessions played" → "possessions". */
 function volumeNoun(label: string): string {
-  return label.includes(" — ") ? label.split(" — ").pop()! : label.split(" ").pop()!;
+  if (label.includes(" — ")) return label.split(" — ").pop()!;
+  const noun = label.match(/attempts|possessions|shots/i);
+  return noun ? noun[0].toLowerCase() : label.split(" ").pop()!;
 }
 
 function VolumeNote({ volume }: { volume?: Stat }) {
@@ -1259,16 +1285,19 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
         {profile.roster.length === 0 && <EmptyState>NO ROSTERED PLAYERS THIS SEASON</EmptyState>}
       </Card>
 
-      <AdvancedToggle open={advanced} onToggle={toggleAdvanced} contents="Team offense and defense ratings, ranked against the league" />
+      <AdvancedToggle open={advanced} onToggle={toggleAdvanced}
+                      contents="Official NBA advanced stats, season by season · team overall, offense and defense, ranked against the league" />
 
       {advanced && (
-        <div className="se-rise" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
-          {(["offense", "defense"] as const).map((side) => {
-            const cols = teamCols.filter((c) => c.side === side);
+        <div className="se-rise">
+        <SeasonAverages kind="team" id={teamId} set="advanced" />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16, alignItems: "start" }}>
+          {(["info", "offense", "defense"] as const).map((side) => {
+            const cols = teamCols.filter((c) => c.side === side && c.key !== "roster_size");
             if (cols.length === 0) return null;
             return (
               <Card key={side} style={{ padding: "15px 19px 9px" }}>
-                <div style={{ marginBottom: 12 }}><SectionLabel>Team {side}</SectionLabel></div>
+                <div style={{ marginBottom: 12 }}><SectionLabel>{side === "info" ? "Team overall" : `Team ${side}`}</SectionLabel></div>
                 {cols.map((c) => (
                   <StatRow
                     key={c.key}
@@ -1284,6 +1313,7 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
               </Card>
             );
           })}
+        </div>
         </div>
       )}
     </>

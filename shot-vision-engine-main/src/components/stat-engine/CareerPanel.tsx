@@ -45,6 +45,7 @@ const HEADLINE_TRENDS: Record<Side, { key: string; color: string }[]> = {
     { key: "deflections", color: "#E0793C" },
   ],
   info: [],
+  advanced: [],
 };
 
 export function CareerPanel({ playerId, side, defaultMode = "chart" }: {

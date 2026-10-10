@@ -13,14 +13,14 @@ from .players import build_player_stat_table
 
 def build_team_stat_table(engine, season: str | None = None) -> pd.DataFrame:
     """
-    One row per team: the one real team-level stat this project tracks
-    (def_rating), plus honest ROSTER-DERIVED aggregates — the mean of each
-    roster's own player-level stats, not a separately-collected team number,
-    since team_stats.def_rating is genuinely the only team-specific column
-    this project ingests (see TeamStats' own docstring). Fabricating more
-    "team stats" that are secretly just player averages under a different
-    name would be the same mistake the old frontend rating formula made —
-    presenting an invented number as if it were measured.
+    One row per team: the measured team-level stats this project tracks —
+    def_rating from team_stats, and the NBA's own team advanced stats
+    (adv_*, from team_advanced_stats) — plus honest ROSTER-DERIVED
+    aggregates: the mean of each roster's own player-level stats, labelled
+    roster_avg_ because they are not separately-collected team numbers.
+    Fabricating "team stats" that are secretly just player averages under a
+    different name would be the same mistake the old frontend rating
+    formula made — presenting an invented number as if it were measured.
     """
     season = resolve_rating_season(engine, season or "2026-27")
 
@@ -43,6 +43,15 @@ def build_team_stat_table(engine, season: str | None = None) -> pd.DataFrame:
     agg["roster_size"] = players.groupby("team_id").size()
 
     teams = teams.merge(agg, left_on="team_id", right_index=True, how="left")
+
+    advanced = pd.read_sql(
+        "SELECT team_id, off_rating AS adv_off_rating, net_rating AS adv_net_rating, pace AS adv_pace, "
+        "pie AS adv_pie, ts_pct AS adv_ts_pct, efg_pct AS adv_efg_pct, ast_pct AS adv_ast_pct, "
+        "tov_pct AS adv_tov_pct, oreb_pct AS adv_oreb_pct, dreb_pct AS adv_dreb_pct "
+        "FROM team_advanced_stats WHERE season = ? AND season_type = 'Regular Season'",
+        engine, params=(season,),
+    )
+    teams = teams.merge(advanced, on="team_id", how="left")
     teams["season"] = season
     return teams
 

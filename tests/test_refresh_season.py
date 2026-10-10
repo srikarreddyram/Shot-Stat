@@ -24,6 +24,7 @@ def test_steps_run_after_what_they_read():
         assert before("shots", per_game)
     assert before("matchups", "defenders")
     assert before("games", "schedule")
+    assert "advanced_stats" in order
     assert order[-1] == "comparable"  # indexes the finished shot data
 
 

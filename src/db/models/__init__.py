@@ -28,6 +28,7 @@ from .live import LiveShotScore
 from .ratings import PlayerTwoKRating
 from .play_type import PlayerPlayType
 from .game_logs import PlayerGameLog, TeamGameLog
+from .advanced_stats import PlayerAdvancedStats, TeamAdvancedStats
 
 __all__ = [
     "Base",
@@ -40,6 +41,7 @@ __all__ = [
     "Matchup",
     "LiveShotScore",
     "PlayerGameLog", "TeamGameLog",
+    "PlayerAdvancedStats", "TeamAdvancedStats",
     "PlayerTwoKRating",
     "PlayerPlayType",
 ]

@@ -183,6 +183,18 @@ def build_player_stat_table(engine, season: str | None = None) -> pd.DataFrame:
     )
     players = players.merge(activity_counts, on="player_id", how="left")
 
+    # ── The NBA's own advanced stats, regular season ────────────────────
+    advanced = pd.read_sql(
+        "SELECT player_id, usg_pct AS adv_usg_pct, ts_pct AS adv_ts_pct, efg_pct AS adv_efg_pct, "
+        "ast_pct AS adv_ast_pct, ast_to AS adv_ast_to, ast_ratio AS adv_ast_ratio, "
+        "tov_pct AS adv_tov_pct, oreb_pct AS adv_oreb_pct, dreb_pct AS adv_dreb_pct, "
+        "reb_pct AS adv_reb_pct, off_rating AS adv_off_rating, def_rating AS adv_def_rating, "
+        "net_rating AS adv_net_rating, pie AS adv_pie, pace AS adv_pace, poss AS adv_poss "
+        "FROM player_advanced_stats WHERE season = ? AND season_type = 'Regular Season'",
+        engine, params=(season,),
+    )
+    players = players.merge(advanced, on="player_id", how="left")
+
     # ── FG%-allowed, per defensive category ─────────────────────────────
     # Overall keeps its original column names, which other consumers already
     # read (api.py's player card, the frontend's mapBackendPlayer). The other

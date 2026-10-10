@@ -7,6 +7,8 @@ import { formatStat } from "../../lib/stat-engine";
 // (one row per season, newest first, with the career line under it); CHART
 // draws any one stat across seasons. Each column's best season is picked out
 // in the accent colour; team cells also carry the league rank that season.
+// set="advanced" shows the NBA's own advanced stats the same way (no career
+// line: those rates cannot be combined across seasons from averages).
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -16,7 +18,13 @@ type Row = {
   [key: string]: string | number | null | undefined | Record<string, number>;
 };
 type Block = { seasons: Row[]; career: Row | null };
-type Response = { columns: Col[]; regular: Block; playoffs: Block; lower_is_better?: string[] };
+type Response = {
+  columns: Col[]; regular: Block; playoffs: Block;
+  /** Columns where fewer is better, and columns with no better or worse at
+   *  all (pace, games). Sent by the advanced endpoint; the box-score one
+   *  falls back to the defaults below. */
+  lower_is_better?: string[]; no_best?: string[];
+};
 
 // A short season (a 9-game rookie stint, a first-round sweep) shouldn't be
 // able to claim "best season" in a column.
@@ -29,7 +37,7 @@ const ordinal = (n: number) => {
   return `${n}${suffix}`;
 };
 
-export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: string }) {
+export function SeasonAverages({ kind, id, set = "box" }: { kind: "player" | "team"; id: string; set?: "box" | "advanced" }) {
   const [data, setData] = useState<Response | null>(null);
   const [missing, setMissing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -42,7 +50,7 @@ export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: stri
     setData(null);
     setMissing(false);
     setErr(null);
-    fetch(`${API_BASE}/stats/${kind}/${encodeURIComponent(id)}/seasons`)
+    fetch(`${API_BASE}/stats/${kind}/${encodeURIComponent(id)}/seasons${set === "advanced" ? "?set=advanced" : ""}`)
       .then((r) => {
         if (r.status === 404) { if (!cancelled) setMissing(true); return null; }
         if (!r.ok) throw new Error(`engine returned ${r.status}`);
@@ -51,13 +59,14 @@ export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: stri
       .then((d: Response | null) => { if (!cancelled && d) setData(d); })
       .catch((e) => { if (!cancelled) setErr(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [kind, id]);
+  }, [kind, id, set]);
 
   const block = data?.[type];
   const lowerBetter = useMemo(
-    () => (kind === "team" ? new Set(data?.lower_is_better ?? []) : PLAYER_LOWER_IS_BETTER),
+    () => (data?.lower_is_better ? new Set(data.lower_is_better) : kind === "team" ? new Set<string>() : PLAYER_LOWER_IS_BETTER),
     [kind, data],
   );
+  const noBest = useMemo(() => (data?.no_best ? new Set(data.no_best) : NO_BEST), [data]);
 
   // The season each column peaks in, among seasons with enough games.
   const best = useMemo(() => {
@@ -66,7 +75,7 @@ export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: stri
     const eligible = block.seasons.filter((r) => Number(r.gp ?? 0) >= MIN_GAMES_FOR_BEST[type]);
     if (eligible.length < 2) return out;
     for (const c of data.columns) {
-      if (NO_BEST.has(c.key)) continue;
+      if (noBest.has(c.key)) continue;
       let pick: Row | null = null;
       for (const r of eligible) {
         const v = r[c.key];
@@ -77,16 +86,17 @@ export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: stri
       if (pick) out[c.key] = pick.season;
     }
     return out;
-  }, [data, block, type, lowerBetter]);
+  }, [data, block, type, lowerBetter, noBest]);
 
   if (missing) return null;
   if (err) return <Card style={{ padding: 16, marginBottom: 16, color: C.red, fontSize: 12.5 }}>{err}</Card>;
   if (!data || !block) {
-    return <Card style={{ padding: "18px 20px", marginBottom: 16, color: C.muted, fontSize: 12 }}>Loading season averages…</Card>;
+    return <Card style={{ padding: "18px 20px", marginBottom: 16, color: C.muted, fontSize: 12 }}>Loading {set === "advanced" ? "advanced stats" : "season averages"}…</Card>;
   }
 
   const cols = data.columns;
-  const chartCol = cols.find((c) => c.key === stat) ?? cols.find((c) => c.key === "pts")!;
+  const chartCol =
+    cols.find((c) => c.key === stat) ?? cols.find((c) => c.key === "pts") ?? cols.find((c) => !noBest.has(c.key)) ?? cols[0];
   const points = block.seasons
     .filter((r) => typeof r[chartCol.key] === "number")
     .map((r) => ({ season: r.season, value: r[chartCol.key] as number }))
@@ -110,11 +120,21 @@ export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: stri
 
   return (
     <Card style={{ padding: "16px 20px 14px", marginBottom: 16 }}>
-      <ChartHeader title="Season averages" mode={mode} onChange={setMode} />
+      <ChartHeader title={set === "advanced" ? "Advanced stats by season (official NBA)" : "Season averages"} mode={mode} onChange={setMode} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", margin: "10px 0 12px" }}>
         <div style={{ fontSize: 11, color: C.faint, lineHeight: 1.5, maxWidth: 640 }}>
-          Per game, every season in the data. Shooting percentages are total makes over total
-          attempts; eFG% counts a three as 1.5 makes and TS% also credits free throws.{" "}
+          {set === "advanced" ? (
+            <>
+              The NBA's own advanced numbers, every season in the data: usage, true shooting, assist,
+              rebound and turnover rates, and {kind === "team" ? "points scored and allowed" : "the team's points scored and allowed while he plays"},{" "}
+              per 100 possessions. No career line — these rates can't be combined across seasons from averages.{" "}
+            </>
+          ) : (
+            <>
+              Per game, every season in the data. Shooting percentages are total makes over total
+              attempts; eFG% counts a three as 1.5 makes and TS% also credits free throws.{" "}
+            </>
+          )}
           <span style={{ color: C.gold }}>Gold</span> marks the best season in each column
           {kind === "team" ? "; the small number under each value is the league rank that season." : "."}
         </div>
@@ -130,7 +150,7 @@ export function SeasonAverages({ kind, id }: { kind: "player" | "team"; id: stri
         <div className="se-rise">
           <div style={{ marginBottom: 12 }}>
             <Chips value={chartCol.key} onChange={setStat}
-                   options={cols.filter((c) => !NO_BEST.has(c.key)).map((c) => ({ value: c.key, label: c.label }))} />
+                   options={cols.filter((c) => !noBest.has(c.key)).map((c) => ({ value: c.key, label: c.label }))} />
           </div>
           {points.length >= 2 ? (
             <div style={{ maxWidth: 760 }}>

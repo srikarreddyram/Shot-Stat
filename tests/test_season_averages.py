@@ -87,3 +87,61 @@ def test_team_record_margin_opponent_line_and_rank(engine):
 def test_unknown_ids_return_none(engine):
     assert player_seasons(engine, "nobody") is None
     assert team_seasons(engine, "nobody") is None
+
+
+# ── Advanced (official NBA) ─────────────────────────────────────────────────
+from src.db.models import PlayerAdvancedStats, TeamAdvancedStats  # noqa: E402
+from src.inference.season_averages import player_advanced_seasons, team_advanced_seasons  # noqa: E402
+from src.ingestion.advanced_stats_ingestor import _tov_scale, _value  # noqa: E402
+
+
+@pytest.fixture()
+def adv_engine():
+    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(eng, tables=[PlayerAdvancedStats.__table__, TeamAdvancedStats.__table__])
+    with eng.begin() as conn:
+        conn.execute(PlayerAdvancedStats.__table__.insert(), [
+            dict(player_id="P", season="2024-25", season_type="Regular Season", player_name="Pat",
+                 team_abbrev="AAA", gp=70, usg_pct=0.30, ts_pct=0.62, def_rating=110.0, pace=99.0),
+            dict(player_id="P", season="2025-26", season_type="Regular Season", player_name="Pat",
+                 team_abbrev="BBB", gp=60, usg_pct=0.28, ts_pct=0.65, def_rating=108.0, pace=101.0),
+        ])
+        conn.execute(TeamAdvancedStats.__table__.insert(), [
+            dict(team_id="T1", season="2025-26", season_type="Regular Season", gp=82, net_rating=8.0,
+                 def_rating=106.0, pace=97.0, tov_pct=0.12),
+            dict(team_id="T2", season="2025-26", season_type="Regular Season", gp=82, net_rating=-3.0,
+                 def_rating=114.0, pace=103.0, tov_pct=0.15),
+        ])
+    return eng
+
+
+def test_player_advanced_seasons_newest_first_without_a_career_line(adv_engine):
+    out = player_advanced_seasons(adv_engine, "P")
+    rows = out["regular"]["seasons"]
+    assert [r["season"] for r in rows] == ["2025-26", "2024-25"]
+    assert rows[0]["team"] == "BBB" and rows[0]["ts_pct"] == pytest.approx(0.65)
+    assert out["regular"]["career"] is None and out["playoffs"]["seasons"] == []
+    assert "def_rating" in out["lower_is_better"] and "pace" in out["no_best"]
+    assert player_advanced_seasons(adv_engine, "nobody") is None
+
+
+def test_team_advanced_ranks_respect_direction_and_skip_pace(adv_engine):
+    t1 = team_advanced_seasons(adv_engine, "T1")["regular"]["seasons"][0]
+    assert t1["ranks"]["net_rating"] == 1
+    assert t1["ranks"]["def_rating"] == 1   # allowing fewer points ranks better
+    assert t1["ranks"]["tov_pct"] == 1      # fewer turnovers ranks better
+    assert "pace" not in t1["ranks"] and t1["of"] == 2
+    assert team_advanced_seasons(adv_engine, "nobody") is None
+
+
+def test_turnover_rate_is_stored_as_a_fraction_whatever_the_endpoint_sends():
+    import pandas as pd
+    # Players' endpoint: per 100 plays. Teams' endpoint: already a fraction.
+    players, teams = pd.DataFrame({"TM_TOV_PCT": [10.0, 12.5]}), pd.DataFrame({"TM_TOV_PCT": [0.13, 0.15]})
+    assert _tov_scale(players) == 100.0 and _tov_scale(teams) == 1.0
+
+    class Row:
+        TM_TOV_PCT, TS_PCT, GP = 12.5, 0.61, 70
+    assert _value(Row, "TM_TOV_PCT", "tov_pct", 100.0) == pytest.approx(0.125)
+    assert _value(Row, "TS_PCT", "ts_pct", 100.0) == pytest.approx(0.61)  # only TOV is rescaled
+    assert _value(Row, "GP", "gp") == 70

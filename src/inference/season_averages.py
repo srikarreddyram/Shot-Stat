@@ -183,3 +183,77 @@ def team_seasons(engine, team_id: str) -> dict | None:
         out[key] = {"seasons": rows, "career": None}
         out["team"] = rows[0]["team"]
     return out if found else None
+
+
+# ── Advanced (the NBA's own numbers) ───────────────────────────────────────
+# Season by season from player_advanced_stats / team_advanced_stats
+# (src/ingestion/advanced_stats_ingestor.py). These are official, possession-
+# based figures, shown as the NBA publishes them. There is no career line:
+# a career usage or on-court rating needs every season's possessions and
+# on-court totals, which the per-season averages alone cannot reconstruct.
+ADVANCED_PLAYER_COLUMNS = [
+    ("gp", "GP", "count"), ("min", "MIN", "num"), ("usg_pct", "USG%", "pct"), ("ts_pct", "TS%", "pct"),
+    ("efg_pct", "eFG%", "pct"), ("ast_pct", "AST%", "pct"), ("ast_to", "AST/TO", "num"),
+    ("oreb_pct", "OREB%", "pct"), ("dreb_pct", "DREB%", "pct"), ("reb_pct", "REB%", "pct"),
+    ("tov_pct", "TOV%", "pct"), ("off_rating", "ORTG", "num"), ("def_rating", "DRTG", "num"),
+    ("net_rating", "NETRTG", "num"), ("pie", "PIE", "pct"), ("pace", "PACE", "num"),
+]
+ADVANCED_TEAM_COLUMNS = [
+    ("gp", "GP", "count"), ("w", "W", "count"), ("l", "L", "count"), ("off_rating", "ORTG", "num"),
+    ("def_rating", "DRTG", "num"), ("net_rating", "NETRTG", "num"), ("pace", "PACE", "num"),
+    ("ts_pct", "TS%", "pct"), ("efg_pct", "eFG%", "pct"), ("ast_pct", "AST%", "pct"),
+    ("ast_to", "AST/TO", "num"), ("oreb_pct", "OREB%", "pct"), ("dreb_pct", "DREB%", "pct"),
+    ("reb_pct", "REB%", "pct"), ("tov_pct", "TOV%", "pct"), ("pie", "PIE", "pct"),
+]
+ADVANCED_LOWER_IS_BETTER = {"def_rating", "tov_pct", "l"}
+# Style, not quality: a fast team is not a better team. No rank, no "best".
+ADVANCED_NO_BEST = {"gp", "w", "l", "min", "pace"}
+
+
+def _advanced_payload(columns, key_col, key, frames, team_ranks=False) -> dict | None:
+    keys = [k for k, _, _ in columns]
+    out = {key_col: str(key), "columns": [{"key": k, "label": lab, "fmt": f} for k, lab, f in columns],
+           "lower_is_better": sorted(ADVANCED_LOWER_IS_BETTER), "no_best": sorted(ADVANCED_NO_BEST)}
+    found = False
+    for block, stype in SEASON_TYPES.items():
+        league = frames.get(stype)
+        mine = league[league[key_col] == str(key)] if league is not None and not league.empty else pd.DataFrame()
+        if mine.empty:
+            out[block] = {"seasons": [], "career": None}
+            continue
+        found = True
+        mine = mine.set_index("season").sort_index(ascending=False)
+        extra = ("team",) if "team" in mine.columns else ()
+        rows = _rows(mine, keys, extra)
+        if team_ranks:
+            ranked = league.set_index(["season", key_col])[[k for k in keys if k not in ADVANCED_NO_BEST]]
+            for r in rows:
+                season_rows = ranked.xs(r["season"], level="season")
+                r["ranks"] = {
+                    k: int(season_rows[k].rank(ascending=k in ADVANCED_LOWER_IS_BETTER, method="min")[str(key)])
+                    for k in season_rows.columns if pd.notna(season_rows.loc[str(key), k])
+                }
+                r["of"] = int(len(season_rows))
+        out[block] = {"seasons": rows, "career": None}
+    return out if found else None
+
+
+def player_advanced_seasons(engine, player_id: str) -> dict | None:
+    df = pd.read_sql(text("SELECT *, team_abbrev AS team FROM player_advanced_stats WHERE player_id = :pid"),
+                     engine, params={"pid": str(player_id)})
+    if df.empty:
+        return None
+    frames = {stype: df[df["season_type"] == stype] for stype in SEASON_TYPES.values()}
+    out = _advanced_payload(ADVANCED_PLAYER_COLUMNS, "player_id", player_id, frames)
+    if out is not None:
+        out["name"] = str(df["player_name"].iloc[0])
+    return out
+
+
+def team_advanced_seasons(engine, team_id: str) -> dict | None:
+    # League-wide, so each season's league rank can be computed.
+    df = pd.read_sql(text("SELECT * FROM team_advanced_stats"), engine)
+    if df.empty or str(team_id) not in set(df["team_id"]):
+        return None
+    frames = {stype: df[df["season_type"] == stype] for stype in SEASON_TYPES.values()}
+    return _advanced_payload(ADVANCED_TEAM_COLUMNS, "team_id", team_id, frames, team_ranks=True)

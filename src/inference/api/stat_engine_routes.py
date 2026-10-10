@@ -10,7 +10,7 @@ this module is only the thin HTTP layer over them.
 from typing import Optional
 
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from src.inference import api as _state
 
@@ -107,28 +107,36 @@ def stat_engine_player_career(player_id: str, season: Optional[str] = None):
 
 
 @router.get("/stats/player/{player_id}/seasons")
-def stat_engine_player_seasons(player_id: str):
+def stat_engine_player_seasons(player_id: str, stat_set: str = Query("box", alias="set")):
     """Season-by-season averages of the major box-score stats, regular
-    season and playoffs, plus a career line. See season_averages.py."""
+    season and playoffs, plus a career line — or, with set=advanced, the
+    NBA's own advanced stats season by season. See season_averages.py."""
     if _state.db_engine is None:
         raise HTTPException(status_code=503, detail="Database not loaded.")
-    from src.inference.season_averages import player_seasons
+    from src.inference.season_averages import player_advanced_seasons, player_seasons
 
-    out = player_seasons(_state.db_engine, player_id)
+    if stat_set not in ("box", "advanced"):
+        raise HTTPException(status_code=422, detail="set must be box or advanced.")
+    fn = player_advanced_seasons if stat_set == "advanced" else player_seasons
+    out = fn(_state.db_engine, player_id)
     if out is None:
         raise HTTPException(status_code=404, detail=f"No box scores for player {player_id}.")
     return out
 
 
 @router.get("/stats/team/{team_id}/seasons")
-def stat_engine_team_seasons(team_id: str):
+def stat_engine_team_seasons(team_id: str, stat_set: str = Query("box", alias="set")):
     """A team's season-by-season averages, its opponents' line, and its
-    league rank in each stat that season."""
+    league rank in each stat that season — or, with set=advanced, its
+    official advanced stats and their league ranks."""
     if _state.db_engine is None:
         raise HTTPException(status_code=503, detail="Database not loaded.")
-    from src.inference.season_averages import team_seasons
+    from src.inference.season_averages import team_advanced_seasons, team_seasons
 
-    out = team_seasons(_state.db_engine, team_id)
+    if stat_set not in ("box", "advanced"):
+        raise HTTPException(status_code=422, detail="set must be box or advanced.")
+    fn = team_advanced_seasons if stat_set == "advanced" else team_seasons
+    out = fn(_state.db_engine, team_id)
     if out is None:
         raise HTTPException(status_code=404, detail=f"No box scores for team {team_id}.")
     return out

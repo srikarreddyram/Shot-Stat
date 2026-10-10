@@ -118,6 +118,13 @@ QUALIFIERS: dict[str, tuple[str, int]] = {
        for slug in PLAY_TYPE_SLUG.values()},
     **{f"playtype_{slug}_fg_pct": (f"playtype_{slug}_poss", 25)
        for slug in PLAY_TYPE_SLUG.values()},
+    # Rates over a few hundred possessions swing wildly (a garbage-time
+    # regular tops the PIE leaderboard); 1,000 possessions is roughly 10
+    # games of starter's minutes.
+    **{f"adv_{stat}": ("adv_poss", 1000)
+       for stat in ("usg_pct", "ts_pct", "efg_pct", "ast_pct", "ast_to", "ast_ratio", "tov_pct",
+                    "oreb_pct", "dreb_pct", "reb_pct", "off_rating", "def_rating", "net_rating",
+                    "pie", "pace")},
 }
 
 # One entry per stat column this module can emit, keyed by the column name
@@ -262,6 +269,27 @@ STAT_GROUPS: dict[str, dict] = {
     "contested_shots": {"group": "hustle_defense", "label": "Shots contested per game", "fmt": "num"},
     "contested_shots_2pt": {"group": "hustle_defense", "label": "2PT shots contested per game", "fmt": "num"},
     "contested_shots_3pt": {"group": "hustle_defense", "label": "3PT shots contested per game", "fmt": "num"},
+    # ── The NBA's own advanced stats (advanced_stats_ingestor.py) ───────
+    # Official, possession-based numbers for the regular season, shown as the
+    # NBA publishes them. The "on-court" ratings are the team's points scored
+    # and allowed per 100 possessions while he plays — not to be confused
+    # with this project's own 0-99 offensive/defensive ratings in Overview.
+    "adv_usg_pct": {"group": "advanced", "label": "Usage rate (USG%)", "fmt": "pct"},
+    "adv_ts_pct": {"group": "advanced", "label": "True shooting (TS%)", "fmt": "pct"},
+    "adv_efg_pct": {"group": "advanced", "label": "Effective FG% (eFG%)", "fmt": "pct"},
+    "adv_ast_pct": {"group": "advanced", "label": "Assist rate (AST%)", "fmt": "pct"},
+    "adv_ast_to": {"group": "advanced", "label": "Assist-to-turnover ratio", "fmt": "num"},
+    "adv_ast_ratio": {"group": "advanced", "label": "Assists per 100 plays", "fmt": "num"},
+    "adv_tov_pct": {"group": "advanced", "label": "Turnover rate (TOV%)", "fmt": "pct"},
+    "adv_oreb_pct": {"group": "advanced", "label": "Offensive rebound rate (OREB%)", "fmt": "pct"},
+    "adv_dreb_pct": {"group": "advanced", "label": "Defensive rebound rate (DREB%)", "fmt": "pct"},
+    "adv_reb_pct": {"group": "advanced", "label": "Rebound rate (REB%)", "fmt": "pct"},
+    "adv_off_rating": {"group": "advanced", "label": "On-court offensive rating (pts per 100)", "fmt": "num"},
+    "adv_def_rating": {"group": "advanced", "label": "On-court defensive rating (allowed per 100)", "fmt": "num"},
+    "adv_net_rating": {"group": "advanced", "label": "On-court net rating", "fmt": "num"},
+    "adv_pie": {"group": "advanced", "label": "Player impact estimate (PIE)", "fmt": "pct"},
+    "adv_pace": {"group": "advanced", "label": "Pace while on court", "fmt": "num"},
+    "adv_poss": {"group": "advanced", "label": "Possessions played", "fmt": "count"},
     # ── Ratings & the outside opinion ───────────────────────────────────
     "rating_source": {"group": "ratings", "label": "Rating source", "fmt": "text"},
     "two_k_overall": {"group": "ratings", "label": "NBA 2K overall", "fmt": "num"},
@@ -288,11 +316,12 @@ DEF_CATEGORY_LABEL = {
 }
 
 GROUP_ORDER = [
-    "overview", "shooting", "shot_difficulty", "play_type", "creation",
+    "overview", "advanced", "shooting", "shot_difficulty", "play_type", "creation",
     "hustle_offense", "defense", "hustle_defense", "ratings",
 ]
 GROUP_LABELS = {
     "overview": "Overview",
+    "advanced": "Advanced (official NBA)",
     "shooting": "Shooting",
     "shot_difficulty": "Shot Difficulty & Diet",
     "play_type": "Play Type (Synergy)",
@@ -309,6 +338,10 @@ GROUP_LABELS = {
 # them in a persistent header instead of inside either tab.
 GROUP_SIDE: dict[str, str] = {
     "overview": "info",
+    # Both ends of the floor at once (usage and net rating, rebound rates on
+    # both glass): its own side, shown in the profile's advanced view above
+    # the offense/defense split.
+    "advanced": "advanced",
     "ratings": "info",
     "shooting": "offense",
     "shot_difficulty": "offense",
@@ -365,6 +398,18 @@ TEAM_STAT_LABELS: dict[str, dict] = {
     "roster_avg_blk_per_min": {"label": "Avg blocks/min", "fmt": "num", "derived": True, "side": "defense"},
     "roster_avg_stl_per_min": {"label": "Avg steals/min", "fmt": "num", "derived": True, "side": "defense"},
     "roster_avg_deflections_per_min": {"label": "Avg deflections/min", "fmt": "num", "derived": True, "side": "defense"},
+    # The NBA's own team advanced stats (advanced_stats_ingestor.py) —
+    # measured team numbers, not roster averages.
+    "adv_off_rating": {"label": "Offensive rating (pts per 100)", "fmt": "num", "derived": False, "side": "offense"},
+    "adv_net_rating": {"label": "Net rating", "fmt": "num", "derived": False, "side": "info"},
+    "adv_pace": {"label": "Pace", "fmt": "num", "derived": False, "side": "info"},
+    "adv_pie": {"label": "Team impact estimate (PIE)", "fmt": "pct", "derived": False, "side": "info"},
+    "adv_ts_pct": {"label": "True shooting (TS%)", "fmt": "pct", "derived": False, "side": "offense"},
+    "adv_efg_pct": {"label": "Effective FG% (eFG%)", "fmt": "pct", "derived": False, "side": "offense"},
+    "adv_ast_pct": {"label": "Assist rate (AST%)", "fmt": "pct", "derived": False, "side": "offense"},
+    "adv_tov_pct": {"label": "Turnover rate (TOV%)", "fmt": "pct", "derived": False, "side": "offense"},
+    "adv_oreb_pct": {"label": "Offensive rebound rate", "fmt": "pct", "derived": False, "side": "offense"},
+    "adv_dreb_pct": {"label": "Defensive rebound rate", "fmt": "pct", "derived": False, "side": "defense"},
 }
 
 

@@ -98,6 +98,8 @@ def plan(season: str, model: str = DEFAULT_MODEL) -> list[Step]:
              "src.ingestion.career_stats_backfill"),
         Step("game_logs", "box scores, for season averages",
              "src.ingestion.game_log_ingestor", ("--season", s)),
+        Step("advanced_stats", "the NBA's own advanced stats: usage, ratings, PIE",
+             "src.ingestion.advanced_stats_ingestor", ("--seasons", s)),
         Step("comparable", "comparable-shots index, now including this season",
              "src.training.build_comparable_index", ("--model", model, "--add-season", s)),
     ]

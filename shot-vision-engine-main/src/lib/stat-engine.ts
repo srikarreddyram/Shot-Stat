@@ -11,7 +11,9 @@
  *  a persistent header rather than inside either tab — sent by the API
  *  (stat_engine.GROUP_SIDE / career_stats.GROUP_SIDE) so the split is
  *  defined once, not guessed independently by every view that needs it. */
-export type Side = "offense" | "defense" | "info";
+/** "advanced" is the NBA's own advanced stats: both ends of the floor at
+ *  once, shown in the profile's advanced view above the offense/defense split. */
+export type Side = "offense" | "defense" | "info" | "advanced";
 
 export type Column = {
   key: string;
@@ -148,6 +150,9 @@ export const LOWER_IS_BETTER = new Set([
   // holding shooters further below league normal, is better defence.
   ...DEF_SLUGS.map((s) => `def_${s}_fg_pct`),
   ...DEF_SLUGS.map((s) => `def_${s}_pm`),
+  // The NBA's advanced stats: points allowed per 100 and turnovers per play.
+  "adv_def_rating",
+  "adv_tov_pct",
 ]);
 
 // Stats with no meaningful better/worse direction at all. Being tall is not
@@ -157,6 +162,8 @@ export const DIRECTIONLESS = new Set([
   "height", "weight", "wingspan",
   "catch_shoot_share", "pullup_share", "open_share", "tight_share",
   "roster_size",
+  // Pace is style, not quality: playing fast is not better or worse.
+  "adv_pace",
 ]);
 
 export function isRankable(key: string, fmt: string): boolean {

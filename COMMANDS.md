@@ -122,7 +122,7 @@ One command runs every ingestion step for a season in dependency order, then
 rebuilds the comparable-shots index to include it:
 
 ```bash
-python scripts/refresh_season.py --dry-run          # the 24 steps and their commands
+python scripts/refresh_season.py --dry-run          # the 25 steps and their commands
 python scripts/refresh_season.py                    # the season in progress
 python scripts/refresh_season.py --season 2026-27 --from pbp   # resume after a failure
 python scripts/refresh_season.py --only game_logs   # just the box scores
