@@ -142,3 +142,14 @@
     color: var(--color-foreground);
   }
 }
+
+/* Keyboard focus. Most controls here are custom buttons with their borders
+   removed, which also removed any visible sign of where keyboard focus is.
+   :focus-visible only shows for keyboard (not mouse) focus, so clicking
+   looks exactly as before. Inputs that set outline: none keep their own
+   focus treatment (a highlighted border). */
+:where(button, a, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid #c9a84c;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
