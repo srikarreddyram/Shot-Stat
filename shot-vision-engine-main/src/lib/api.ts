@@ -1,4 +1,4 @@
-import { Player, HeatmapResponse, MatchupResponse, HealthStatus, AttainabilityExplanation, MatchupExplanation, Team } from "./shot-vision-data";
+import { Player, HeatmapResponse, MatchupResponse, HealthStatus, AttainabilityExplanation, MatchupExplanation, Team, GameContext } from "./shot-vision-data";
 
 // Ratings are computed by the backend (src/inference/player_ratings.py) as
 // percentile ranks over the whole league, from measured data.
@@ -206,14 +206,18 @@ export async function getMatchupExplanationAPI(
   locX: number,
   locY: number,
   season: string,
-  defenderId?: string | null,
-  secondaryDefenderId?: string | null
+  defenderId: string | null,
+  context: GameContext
 ): Promise<MatchupExplanation> {
   const params = new URLSearchParams({
     zone, loc_x: String(locX), loc_y: String(locY), season,
+    quarter: String(context.quarter),
+    time_remaining: String(context.timeRemaining),
+    score_diff: String(context.scoreDiff),
+    home_away: String(context.homeAway),
   });
   if (defenderId) params.set("defender_id", defenderId);
-  if (secondaryDefenderId) params.set("secondary_defender_id", secondaryDefenderId);
+  if (context.secondaryDefenderId) params.set("secondary_defender_id", context.secondaryDefenderId);
   const res = await fetch(`${API_BASE}/explain/matchup/${playerId}?${params.toString()}`);
   if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to explain matchup"));
   return res.json();

@@ -678,3 +678,31 @@ def test_defender_tendency_note_is_neutral_within_the_negligible_band():
     )
     assert note is not None
     assert "MORE" not in note and "LESS" not in note
+
+
+def test_mixture_explanation_reports_the_weighted_average_that_is_served(toy_classifier):
+    """
+    The engine serves a weighted average over the ways a player takes a shot
+    (mechanics.marginalize). The explanation must report that same number —
+    explaining only the likeliest shot type put a "96%" paragraph under an
+    "83%" headline.
+    """
+    model, cols = toy_classifier
+    rows = pd.DataFrame([
+        {"zone_rate": 0.65, "def_fg_pct_zone": 0.22, "matchup_advantage": 0.43, "score_diff": 0},
+        {"zone_rate": 0.25, "def_fg_pct_zone": 0.68, "matchup_advantage": -0.43, "score_diff": 0},
+    ])
+    weights = [0.3, 0.7]
+    probs = model.predict_proba(rows[cols])[:, 1]
+    out = explain_shot_quality(model, cols, rows, weights=weights, labels=["dunk", "floater"])
+
+    assert out["make_probability"] == pytest.approx(0.3 * probs[0] + 0.7 * probs[1], abs=1e-4)
+    assert out["make_probability"] != pytest.approx(max(probs), abs=1e-3)
+    assert [t["shot_type"] for t in out["shot_types"]] == ["floater", "dunk"]
+    assert out["shot_types"][0]["make_probability"] == pytest.approx(probs[1], abs=1e-4)
+
+
+def test_single_row_explanation_is_unchanged_by_the_mixture_support(toy_classifier):
+    model, cols = toy_classifier
+    row = pd.DataFrame([{"zone_rate": 0.4, "def_fg_pct_zone": 0.5, "matchup_advantage": 0.1, "score_diff": 2}])
+    assert explain_shot_quality(model, cols, row) == explain_shot_quality(model, cols, row, weights=[1.0])

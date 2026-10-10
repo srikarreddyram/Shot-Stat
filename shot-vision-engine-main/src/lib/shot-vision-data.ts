@@ -281,6 +281,11 @@ export interface ShotQualityBreakdown {
   comparable_shots?: {
     count: number;
     historical_make_rate: number | null;
+    /** How many went in. */
+    hits?: number;
+    /** False only when the record contradicts the model by more than
+     *  chance would explain (two-sided binomial test at 5%). */
+    agrees?: boolean;
     examples: {
       player_name: string;
       game_date: string | null;
@@ -289,6 +294,16 @@ export interface ShotQualityBreakdown {
       made: boolean;
     }[];
   };
+}
+
+/** The game situation a set of results was computed for. Explanations are
+ *  requested with the same values, or they'd describe a different shot. */
+export interface GameContext {
+  quarter: number;
+  timeRemaining: number;
+  scoreDiff: number;
+  homeAway: number;
+  secondaryDefenderId: string | null;
 }
 
 /** The full matchup narrative, from GET /explain/matchup. */

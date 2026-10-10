@@ -173,7 +173,7 @@ SQ_FEATURE_COPY: dict[str, dict[str, str]] = {
     # that part out. Confirmed real gap the caller flagged directly.
     "score_diff": {"label": "Score margin", "fmt": "signed_int",
                   "high": "team comfortably ahead", "low": "team behind or tied"},
-    "clutch_flag": {"label": "Clutch situation (4th, under 2min, within 5)", "fmt": "bool",
+    "clutch_flag": {"label": "Clutch time (last 5 min of 4th/OT, within 5)", "fmt": "bool",
                     "high": "a clutch-time possession", "low": "not a clutch situation"},
     # The game clock. `seconds_remaining_in_game` is the single derived
     # feature the model leans on most for this (one number instead of
@@ -236,86 +236,84 @@ def explain_shot_quality(
     feature_row: pd.DataFrame,
     reference: dict | None = None,
     top_n: int = 3,
+    weights: list[float] | np.ndarray | None = None,
+    labels: list[str] | None = None,
 ) -> dict:
     """
-    Decompose one shot-quality (make-probability) prediction by side of the
+    Decompose a shot-quality (make-probability) prediction by side of the
     matchup: offense, defense, matchup interaction, and shot/game context.
 
-    `feature_row` must already be the exact single row that was scored
-    (post `apply_hierarchy`/`derive_features`, one specific mechanic — not a
-    marginalised mixture, which has no single feature vector to attribute a
-    contribution to). Built via `ShotRecommender._build_feature_frame`, the
-    same assembly logic `recommend()` uses, so the explanation always
-    describes the number that was actually served.
+    `feature_row` is the exact model input that was scored (post
+    `apply_hierarchy`/`derive_features`, clipped to the training range) —
+    one row, or one row per shot type (mechanic) with `weights` giving how
+    often the player takes each. With several rows this explains the same
+    weighted average `recommend()` serves (mechanics.marginalize), not just
+    the single likeliest shot type — explaining one row while the UI shows
+    the average is how a "96%" paragraph ended up under an "83%" headline.
 
     TreeSHAP contributions for a `binary:logistic` model are additive in
     LOG-ODDS, not in probability: they sum to the margin, which has to go
     through a sigmoid to become the number the model actually predicts.
     Treating that sum as a probability directly — which this function did
     until it was caught — silently reports the margin as if it were a rate.
-    It looks merely wrong when the margin lands inside [0, 1] (a rim shot
-    read 0.48 when the model said 0.62) and absurd when it doesn't (Stephen
-    Curry above the break clipped to 0%, because his margin was -0.30).
 
-    So: group effects are summed in log-odds, and every number reported to a
-    caller is converted to probability. Per-feature `impact` is a MARGINAL
-    effect — how far the probability moves when that one feature's
-    contribution is taken out — which is interpretable in percentage points
-    but, unlike the log-odds contributions underneath it, does NOT sum
-    exactly to the total. That is a property of a logistic model, not a bug
-    to reconcile away.
+    So each row is decomposed exactly in log-odds and converted to
+    probability on its own, and only then averaged with the weights:
+    `make_probability` and `offense_only_probability` are the weighted
+    averages of the per-row probabilities (matching what was served), and a
+    feature's `impact` is the weighted average of its per-row MARGINAL effect
+    — how far the probability moves when that feature's contribution is taken
+    out. Marginal effects in probability don't sum exactly to the total; that
+    is a property of a logistic model, not a bug to reconcile away.
     """
     X = feature_row[feature_cols].astype(float)
+    n = len(X)
+    w = np.ones(n) if weights is None else np.asarray(weights, dtype=float)
+    w = w / w.sum()
     booster = model.get_booster()
-    contribs = booster.predict(
-        xgb.DMatrix(X, missing=np.nan), pred_contribs=True
-    )[0]
+    contribs = booster.predict(xgb.DMatrix(X, missing=np.nan), pred_contribs=True)
 
-    bias = float(contribs[-1])
-    per_feature = {col: float(contribs[i]) for i, col in enumerate(feature_cols)}
     sides = _side_columns(feature_cols)
-
-    effects = {"offense": 0.0, "defense": 0.0, "matchup": 0.0, "context": 0.0}
-    for col, contribution in per_feature.items():
-        effects[sides[col]] += contribution
-
-    margin = bias + sum(effects.values())
-    predicted = _sigmoid(margin)
+    side_idx = {side: [i for i, c in enumerate(feature_cols) if sides[c] == side]
+                for side in ("offense", "defense", "matchup", "context")}
+    bias = contribs[:, -1]
+    effects = {side: contribs[:, idx].sum(axis=1) if idx else np.zeros(n) for side, idx in side_idx.items()}
+    margins = contribs.sum(axis=1)
+    probs = 1.0 / (1.0 + np.exp(-margins))
+    predicted = float(w @ probs)
     # What this shooter would be projected at from here against a LEAGUE
     # AVERAGE defender: bias + context + offense, with the defense/matchup
     # terms (which describe the NAMED defender specifically) held out. This
     # is the number the defender's presence is measured against.
-    offense_only = _sigmoid(bias + effects["context"] + effects["offense"])
+    offense_only = float(w @ (1.0 / (1.0 + np.exp(-(bias + effects["context"] + effects["offense"])))))
 
     reference = reference or {}
+    # Displayed values come from the most common shot type's row; the
+    # features with a copy entry are the same across shot types anyway.
+    lead = int(np.argmax(w))
 
     def _factors_for(side: str) -> list[dict]:
         items = []
-        for col, contribution in per_feature.items():
-            if sides[col] != side or abs(contribution) < 1e-6:
+        for i in side_idx[side]:
+            col = feature_cols[i]
+            c = contribs[:, i]
+            if np.all(np.abs(c) < 1e-6):
                 continue
             copy = SQ_FEATURE_COPY.get(col) or FEATURE_COPY.get(col)
             if copy is None:
                 continue
-            value = feature_row.iloc[0].get(col)
+            value = feature_row.iloc[lead].get(col)
             value = None if pd.isna(value) else float(value)
             pct = _sq_percentile(value, reference.get(col, {}))
-            # Unlike attainability's model, shot-quality's metadata carries no
-            # feature_reference quantile grid — every percentile lookup here
-            # returns None. Defaulting to `copy["low"]` in that case (the
-            # naive `pct is not None and pct >= 50` reads as False when pct is
-            # None) would assert "this is a low value" for every single
-            # factor regardless of what the value actually is — a comparison
-            # this function cannot support without real reference data.
-            # Honest fallback: no percentile, no high/low claim.
+            # Shot-quality's metadata carries no feature_reference quantile
+            # grid, so pct is usually None. Defaulting to `copy["low"]` then
+            # would assert "this is a low value" for every factor regardless
+            # of the value. Honest fallback: no percentile, no high/low claim.
             trait = None
             if pct is not None:
                 trait = copy["high"] if pct >= 50 else copy["low"]
-            # Marginal effect in PROBABILITY, not the raw log-odds
-            # contribution: how far the estimate moves when this one
-            # feature's contribution is removed. The UI prints these as
-            # percentage points, which the log-odds number is not.
-            impact = predicted - _sigmoid(margin - contribution)
+            impact = float(w @ (probs - 1.0 / (1.0 + np.exp(-(margins - c)))))
+            contribution = float(w @ c)
             items.append({
                 "feature": col,
                 "label": copy["label"],
@@ -324,32 +322,43 @@ def explain_shot_quality(
                 "percentile": pct,
                 "impact": round(impact, 5),
                 "log_odds_contribution": round(contribution, 5),
-                "direction": "raises" if contribution > 0 else "lowers",
+                "direction": "raises" if impact > 0 else "lowers",
                 "detail": trait,
             })
         items.sort(key=lambda f: -abs(f["impact"]))
         return items[:top_n]
 
-    return {
+    out = {
         "make_probability": round(predicted, 4),
-        # Log-odds, explicitly named as such. These are the quantities that
-        # really are additive (they sum with `bias` to the margin); the
-        # probabilities above are what that margin becomes after a sigmoid.
-        "bias": round(bias, 5),
-        "offense_effect_log_odds": round(effects["offense"], 5),
-        "defense_effect_log_odds": round(effects["defense"], 5),
-        "matchup_effect_log_odds": round(effects["matchup"], 5),
-        "context_effect_log_odds": round(effects["context"], 5),
+        # Log-odds, explicitly named as such (weighted across shot types when
+        # there are several). These are what TreeSHAP makes additive; the
+        # probabilities above are what the margins become after a sigmoid.
+        "bias": round(float(w @ bias), 5),
+        "offense_effect_log_odds": round(float(w @ effects["offense"]), 5),
+        "defense_effect_log_odds": round(float(w @ effects["defense"]), 5),
+        "matchup_effect_log_odds": round(float(w @ effects["matchup"]), 5),
+        "context_effect_log_odds": round(float(w @ effects["context"]), 5),
         "offense_only_probability": round(offense_only, 4),
         "defender_swing": round(predicted - offense_only, 4),
         "offense_factors": _factors_for("offense"),
         "defense_factors": _factors_for("defense") + _factors_for("matchup"),
         "context_factors": _factors_for("context"),
     }
+    if labels is not None and n > 1:
+        order = np.argsort(-w)
+        out["shot_types"] = [{"shot_type": labels[i], "share": round(float(w[i]), 4),
+                              "make_probability": round(float(probs[i]), 4)} for i in order]
+    return out
 
 
 def _pct_points(p: float) -> str:
     return f"{p * 100:.0f}%"
+
+
+def _shot_type_words(shot_type: str) -> str:
+    """'driving layup' / 'spot_up jumper' -> 'driving layups' / 'spot-up jumpers'."""
+    words = shot_type.replace("_", "-").strip()
+    return words if words.endswith("s") else words + "s"
 
 
 def build_matchup_narrative(
@@ -411,6 +420,14 @@ def build_matchup_narrative(
                 f"moves {direction} {swing_pp} points to {make_pct}{drivers}."
             )
 
+    # ── 1a. The number is an average over how he takes this shot. Without
+    # this, a reader who knows he dunks at 90% wonders where 83% came from.
+    mix = [t for t in sq.get("shot_types", []) if t["share"] >= 0.1][:3]
+    if len(mix) > 1:
+        parts = ", ".join(f"{_shot_type_words(t['shot_type'])} {_pct_points(t['share'])} of the time "
+                          f"({_pct_points(t['make_probability'])})" for t in mix)
+        sentences.append(f"That is an average over how he actually gets this shot: {parts}.")
+
     # ── 1b. Why the baseline is what it is — the shooter's own profile plus
     # who else is on the floor with him (team_creation), the offense-side
     # half of the matchup the narrative previously never spoke about at
@@ -439,18 +456,28 @@ def build_matchup_narrative(
     # real signal TreeSHAP's internal decomposition cannot surface on its own.
     comparable = sq.get("comparable_shots")
     if comparable and comparable.get("count", 0) >= 5:
-        hist_pct = _pct_points(comparable["historical_make_rate"])
-        gap_pp = abs(round((comparable["historical_make_rate"] - sq["make_probability"]) * 100))
-        if gap_pp <= 8:
+        hist = comparable["historical_make_rate"]
+        hist_pct = _pct_points(hist)
+        hits = comparable.get("hits", round(hist * comparable["count"]))
+        # `agrees` is a chance test (see ShotRecommender.explain_matchup):
+        # a gap this few shots could produce by luck isn't worth flagging.
+        agrees = comparable.get("agrees")
+        if agrees is None:
+            agrees = abs(round((hist - sq["make_probability"]) * 100)) <= 8
+        if agrees:
             sentences.append(
-                f"The {comparable['count']} most similar shots in the data went in "
-                f"{hist_pct} of the time, in line with this projection."
+                f"Of the {comparable['count']} most similar shots in the data, {hits} went in "
+                f"({hist_pct}) — consistent with this projection."
             )
         else:
+            side = "below" if hist < sq["make_probability"] else "above"
             sentences.append(
-                f"Worth flagging: the {comparable['count']} most similar shots in the "
-                f"data only went in {hist_pct} of the time, notably {'below' if comparable['historical_make_rate'] < sq['make_probability'] else 'above'} "
-                f"this projection — this matchup may be thinner on real precedent than the model number alone suggests."
+                f"Worth flagging: of the {comparable['count']} most similar shots in the data, only {hits} went in "
+                f"({hist_pct}), well {side} this projection — more than chance would explain, so this matchup "
+                f"may be thinner on real precedent than the model number alone suggests."
+                if side == "below" else
+                f"Worth flagging: of the {comparable['count']} most similar shots in the data, {hits} went in "
+                f"({hist_pct}), well above this projection — more than chance would explain."
             )
 
     # ── 2. Double-team clause ───────────────────────────────────────────

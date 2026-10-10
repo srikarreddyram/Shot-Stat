@@ -677,27 +677,37 @@ class ShotRecommender:
             "shot_type": "3PT Field Goal" if ZONE_POINTS.get(zone) == 3 else "2PT Field Goal",
         }])
 
-        # Expand this ONE location over the player's mechanic mix — same as
-        # recommend() does for the whole grid — so "best mechanic here" is
-        # found rather than assumed, then pick that single row: TreeSHAP
-        # explains one feature vector, not a marginalised mixture of several.
+        # Expand this ONE location over the player's mechanic mix — exactly as
+        # recommend() does for the whole grid — and explain the same weighted
+        # average it serves, from the same clipped inputs `_predict` scores.
+        # Explaining only the likeliest shot type, from unclipped inputs, made
+        # the paragraph disagree with the number shown above it.
         raw, features, player, creation, defender = self._build_feature_frame(
             player_id, season, defender_id, secondary_defender_id,
             quarter, time_remaining, score_diff, home_away, playoff_flag,
             rest_days, is_back_to_back, opp_def_rating, as_of_date,
             grid=one_point, expand_mechanics=self.uses_mechanics,
         )
+        X = self._clip_to_training_range(as_model_matrix(features, self.feature_cols)).reset_index(drop=True)
+        if self.uses_mechanics and "_mech_weight" in raw.columns:
+            weights = raw["_mech_weight"].to_numpy(dtype=float)
+            labels = raw["_mechanic"].astype(str).tolist()
+        else:
+            weights, labels = np.ones(len(X)), None
 
-        probs = self._predict(as_model_matrix(features, self.feature_cols))
-        best_idx = int(np.argmax(probs))
-        best_feature_row = features.iloc[[best_idx]].reset_index(drop=True)
+        sq = explain_shot_quality(self.model, self.feature_cols, X, weights=weights, labels=labels)
 
-        sq = explain_shot_quality(self.model, self.feature_cols, best_feature_row)
-
-        comparable = None
         if self.comparable_shots is not None:
-            comparable = self.comparable_shots.query(best_feature_row, k=8)
-            sq["comparable_shots"] = comparable
+            comp = self._comparable_for_mix(X, weights)
+            if comp["count"]:
+                # Does the record actually contradict the model, or is the gap
+                # what this few shots would show by chance? Flag only the
+                # former (two-sided binomial test at 5%).
+                from scipy.stats import binomtest
+                hits = round(comp["historical_make_rate"] * comp["count"])
+                comp["hits"] = int(hits)
+                comp["agrees"] = bool(binomtest(hits, comp["count"], sq["make_probability"]).pvalue >= 0.05)
+            sq["comparable_shots"] = comp
 
         points = ZONE_POINTS.get(zone, 2)
         is_league_avg = bool(defender.get("_is_league_average"))
@@ -741,6 +751,27 @@ class ShotRecommender:
             "shot_quality": sq,
             "narrative": narrative,
         }
+
+    def _comparable_for_mix(self, X: pd.DataFrame, weights: np.ndarray, k: int = 20) -> dict:
+        """Comparable shots for a shot-type mix: the k neighbours are split
+        across shot types in proportion to how often he takes each, so the
+        historical rate is compared like-for-like with the averaged number."""
+        w = np.asarray(weights, dtype=float) / np.sum(weights)
+        alloc = np.floor(w * k).astype(int)
+        for i in np.argsort(-(w * k - alloc))[: k - alloc.sum()]:
+            alloc[i] += 1
+        count, made, examples = 0, 0.0, []
+        for i in np.argsort(-w):
+            if alloc[i] == 0:
+                continue
+            res = self.comparable_shots.query(X.iloc[[i]], k=int(alloc[i]))
+            if not res["count"]:
+                continue
+            count += res["count"]
+            made += res["historical_make_rate"] * res["count"]
+            examples += res["examples"]
+        return {"count": count, "historical_make_rate": round(made / count, 4) if count else None,
+                "examples": examples[:5]}
 
     def _build_feature_frame(
         self,

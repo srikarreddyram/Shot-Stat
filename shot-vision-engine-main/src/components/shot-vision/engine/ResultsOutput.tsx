@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { HeatmapPoint, MatchupResponse, Player, ZoneResult } from "@/lib/shot-vision-data";
+import type { GameContext, HeatmapPoint, MatchupResponse, Player, ZoneResult } from "@/lib/shot-vision-data";
 import { getMatchupAPI } from "@/lib/api";
 import { CourtCanvas } from "./court/CourtCanvas";
 import { MatchupEdge } from "./MatchupEdge";
@@ -106,7 +106,7 @@ const RANK_PALETTES = {
   worst: { colors: ["#DC2626", "#B91C1C", "#7F1D1D"], heroValue: "#DC2626", label: "WEAKEST ZONE", inspect: "TAP TO INSPECT ▸" },
 } as const;
 
-export function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDefender, season, projected }: { results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; attacker: Player; defender: Player; secondaryDefender?: Player | null; season: string; projected: { attacker: boolean; defender: boolean } }) {
+export function ResultsOutput({ results, heatmapPoints, attacker, defender, secondaryDefender, season, projected, context }: { results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; attacker: Player; defender: Player; secondaryDefender?: Player | null; season: string; projected: { attacker: boolean; defender: boolean }; context: GameContext }) {
   const [showProb, setShowProb] = useState(false);
   // BEST ranks results best-first (results is already sorted that way);
   // WORST reverses the bottom slice so its own #1 is the single worst zone —
@@ -229,7 +229,7 @@ export function ResultsOutput({ results, heatmapPoints, attacker, defender, seco
           </span>
         </div>
       )}
-      <CourtCanvas bestKey={hero.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} attacker={attacker} defender={defender} season={season} selected={selected} setSelected={setSelected} />
+      <CourtCanvas bestKey={hero.zone.key} results={results} heatmapPoints={heatmapPoints} showProb={showProb} attacker={attacker} defender={defender} season={season} context={context} selected={selected} setSelected={setSelected} />
 
       <RankingToggle view={view} setView={setView} />
 

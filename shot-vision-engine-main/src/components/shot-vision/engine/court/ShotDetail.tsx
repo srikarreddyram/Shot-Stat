@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AttainabilityExplanation, HeatmapPoint, MatchupExplanation, Player } from "@/lib/shot-vision-data";
+import type { AttainabilityExplanation, GameContext, HeatmapPoint, MatchupExplanation, Player } from "@/lib/shot-vision-data";
 import { getAttainabilityExplanationAPI, getMatchupExplanationAPI } from "@/lib/api";
 import { AttainabilityWhy } from "../explain/AttainabilityWhy";
 import { MatchupWhy } from "../explain/MatchupWhy";
@@ -7,7 +7,7 @@ import { formatAttainability } from "../explain/format";
 
 // One grid point, read out in full. The heat field can only show magnitude;
 // this is where the shot the model is actually scoring becomes legible.
-export function ShotDetail({ point, attacker, defender, showProb, season, onClose }: { point: HeatmapPoint; attacker: Player; defender: Player; showProb: boolean; season: string; onClose: () => void }) {
+export function ShotDetail({ point, attacker, defender, showProb, season, context, onClose }: { point: HeatmapPoint; attacker: Player; defender: Player; showProb: boolean; season: string; context: GameContext; onClose: () => void }) {
   // `shot_type` is only ever "2PT/3PT Field Goal". `best_mechanic` is the
   // actual shot — stepback, cutting, driving — so it leads.
   const mechanic = point.best_mechanic ? point.best_mechanic.toUpperCase() : null;
@@ -47,20 +47,23 @@ export function ShotDetail({ point, attacker, defender, showProb, season, onClos
   const [matchupWhy, setMatchupWhy] = useState<MatchupExplanation | null>(null);
   const [matchupWhyError, setMatchupWhyError] = useState<string | null>(null);
 
+  const contextKey = JSON.stringify(context);
   useEffect(() => {
     setMatchupWhyOpen(false);
     setMatchupWhy(null);
     setMatchupWhyError(null);
-  }, [point.zone, point.loc_x, point.loc_y, attacker.id, defender.id, season]);
+  }, [point.zone, point.loc_x, point.loc_y, attacker.id, defender.id, season, contextKey]);
 
   useEffect(() => {
     if (!matchupWhyOpen || matchupWhy || matchupWhyError) return;
     let cancelled = false;
-    getMatchupExplanationAPI(attacker.id, point.zone, point.loc_x, point.loc_y, season, defender.id)
+    getMatchupExplanationAPI(attacker.id, point.zone, point.loc_x, point.loc_y, season, defender.id, context)
       .then((res) => { if (!cancelled) setMatchupWhy(res); })
       .catch((e) => { if (!cancelled) setMatchupWhyError(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [matchupWhyOpen, matchupWhy, matchupWhyError, attacker.id, defender.id, point.zone, point.loc_x, point.loc_y, season]);
+    // contextKey stands in for `context`, a fresh object on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchupWhyOpen, matchupWhy, matchupWhyError, attacker.id, defender.id, point.zone, point.loc_x, point.loc_y, season, contextKey]);
 
   const band =
     point.ep_low != null && point.ep_high != null

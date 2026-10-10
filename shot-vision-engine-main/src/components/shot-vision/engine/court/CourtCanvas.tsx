@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ZONES, type HeatmapPoint, type Player, type ZoneResult } from "@/lib/shot-vision-data";
+import { ZONES, type GameContext, type HeatmapPoint, type Player, type ZoneResult } from "@/lib/shot-vision-data";
 import {
   COURT_AREA_H, COURT_CH, COURT_CW, COURT_LINE, COURT_LINE_STRONG, COURT_PLANK, COURT_GRAIN,
   COURT_RIM, COURT_SURFACE, CORNER_JOIN_Y, FIELD_REACH, FT, HEAT_RAMP, HOOP_X, HOOP_Y, LEGEND_BG,
@@ -8,7 +8,7 @@ import {
 import { drawMatchupBadge, useFontsReady, useHeadshot } from "./badgeDrawing";
 import { ShotDetail } from "./ShotDetail";
 
-export function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defender, season, selected, setSelected }: { bestKey: string; results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; showProb: boolean; attacker: Player; defender: Player; season: string; selected: number | null; setSelected: (i: number | null) => void }) {
+export function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defender, season, context, selected, setSelected }: { bestKey: string; results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; showProb: boolean; attacker: Player; defender: Player; season: string; context: GameContext; selected: number | null; setSelected: (i: number | null) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Click-to-inspect. Every grid point already carries its shot type,
@@ -502,6 +502,7 @@ export function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacke
         defender={defender}
         showProb={showProb}
         season={season}
+        context={context}
         onClose={() => setSelected(null)}
       />
       </div>

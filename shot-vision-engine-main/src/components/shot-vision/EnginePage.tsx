@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { ZONES, type Player, type ZoneResult, type HeatmapPoint, type Team } from "@/lib/shot-vision-data";
+import { ZONES, type Player, type ZoneResult, type HeatmapPoint, type Team, type GameContext } from "@/lib/shot-vision-data";
 import { getRecommendationHeatmapAPI, checkHealthAPI, getTeamsAPI, getTeamRosterAPI, API_BASE, API_BASE_IS_DEFAULT } from "@/lib/api";
 // Reusing the Stat Engine's team-identity building blocks rather than
 // re-deriving colours/logos here: one TEAM_COLORS map, one logo endpoint,
@@ -43,6 +43,10 @@ export default function EnginePage({ onBack }: Props) {
   const [heatmapPoints, setHeatmapPoints] = useState<HeatmapPoint[]>([]);
   // Which side(s) of the last run had no real NBA stats (position-projected).
   const [projected, setProjected] = useState<{ attacker: boolean; defender: boolean }>({ attacker: false, defender: false });
+  // The game situation the current results were run with — captured at run
+  // time, so editing the inputs afterwards can't make an explanation
+  // describe a different shot from the one on screen.
+  const [runContext, setRunContext] = useState<GameContext | null>(null);
   const [loadingIdx, setLoadingIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [health, setHealth] = useState<"checking" | "online" | "offline">("checking");
@@ -162,7 +166,11 @@ export default function EnginePage({ onBack }: Props) {
     setLoadingIdx(0);
     loadingIntervalRef.current = setInterval(() => setLoadingIdx((i) => (i + 1) % LOADING_LINES.length), 320);
 
-    getRecommendationHeatmapAPI(attacker.id, primaryDef.id, season, quarter, minutes * 60 + seconds, scoreDiff, home ? 1 : 0, doubleTeam ? secondaryDef?.id : null)
+    const context: GameContext = {
+      quarter, timeRemaining: minutes * 60 + seconds, scoreDiff, homeAway: home ? 1 : 0,
+      secondaryDefenderId: doubleTeam ? secondaryDef?.id ?? null : null,
+    };
+    getRecommendationHeatmapAPI(attacker.id, primaryDef.id, season, context.quarter, context.timeRemaining, context.scoreDiff, context.homeAway, context.secondaryDefenderId)
       .then((res) => {
         if (myRunId !== runIdRef.current) return; // superseded or killed — discard
         clearInterval(loadingIntervalRef.current!);
@@ -179,6 +187,7 @@ export default function EnginePage({ onBack }: Props) {
         }).sort((a, b) => b.ep - a.ep);
         setResults(mappedResults);
         setHeatmapPoints(res.heatmap || []);
+        setRunContext(context);
         setProjected({
           attacker: res.attacker_stats_source === "prior",
           defender: res.defender_stats_source === "prior",
@@ -451,7 +460,7 @@ export default function EnginePage({ onBack }: Props) {
           {!loading && error && <ErrorOutput message={error} onRetry={run} />}
           {!loading && !error && !results && <DefaultOutput />}
           {loading && <LoadingOutput idx={loadingIdx} />}
-          {!loading && !error && results && attacker && primaryDef && season && <ResultsOutput results={results} heatmapPoints={heatmapPoints} attacker={attacker} defender={primaryDef} secondaryDefender={doubleTeam ? secondaryDef : null} season={season} projected={projected} />}
+          {!loading && !error && results && attacker && primaryDef && season && runContext && <ResultsOutput results={results} heatmapPoints={heatmapPoints} attacker={attacker} defender={primaryDef} secondaryDefender={doubleTeam ? secondaryDef : null} season={season} projected={projected} context={runContext} />}
         </div>
       </div>
       <div style={{ height: 40 }} />

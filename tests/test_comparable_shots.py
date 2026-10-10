@@ -100,3 +100,16 @@ def test_save_and_load_round_trip_preserves_query_behavior(tmp_path: Path):
 
     result = loaded.query(_query_row(0.50, 0.45), k=1)
     assert result["examples"][0]["player_name"] == "A"
+
+
+def test_missing_query_values_are_filled_like_the_index_not_with_zero():
+    # Built with medians: a query missing a feature must be treated as the
+    # median, not as 0 — otherwise it lands next to the wrong shots.
+    index = _make_index([
+        _row("s1", 0.10, 0.45, made=0, name="Near zero"),
+        _row("s2", 0.50, 0.45, made=1, name="Median"),
+        _row("s3", 0.90, 0.45, made=1, name="High"),
+    ])
+    index.fill = np.array([0.50, 0.45], dtype="float32")
+    result = index.query(_query_row(float("nan"), 0.45), k=1)
+    assert result["examples"][0]["player_name"] == "Median"

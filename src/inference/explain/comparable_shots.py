@@ -39,6 +39,19 @@ class ComparableShotsIndex:
     scale: np.ndarray       # per-feature normalizer (train-set 1st-99th pctile width)
     meta: pd.DataFrame      # shot_id, player_id, player_name, game_date, zone, def_team, shot_made
     nn: NearestNeighbors    # fit on the scaled matrix; matrix itself isn't kept separately
+    # Per-feature fill for missing values: the column medians the index was
+    # built with. A query MUST fill the same way, or every missing lineup
+    # feature (~30% of shots) pulls it toward the wrong neighbours.
+    fill: np.ndarray | None = None
+
+    def _fill_values(self) -> np.ndarray:
+        if getattr(self, "fill", None) is not None:
+            return self.fill
+        # Indexes built before `fill` was stored: filling with the median
+        # leaves a column's median unchanged, so it can be recovered exactly
+        # from the fitted (scaled) matrix.
+        self.fill = np.median(self.nn._fit_X, axis=0) * self.scale
+        return self.fill
 
     def query(self, feature_row: pd.DataFrame, k: int = 8, exclude_shot_id=None) -> dict:
         """
@@ -48,7 +61,7 @@ class ComparableShotsIndex:
         in, not re-derived independently.
         """
         x = feature_row[self.feature_cols].astype(float).to_numpy()[0]
-        x = np.nan_to_num(x, nan=0.0)
+        x = np.where(np.isnan(x), self._fill_values(), x)
         x_scaled = (x / self.scale)[None, :]
 
         n_query = min(k + (1 if exclude_shot_id is not None else 0), len(self.meta))
@@ -141,7 +154,8 @@ def build_comparable_shots_index(
             if width > 1e-6:
                 scale[i] = width
 
-    X_filled = X.fillna(X.median()).to_numpy(dtype="float32")
+    medians = X.median()
+    X_filled = X.fillna(medians).to_numpy(dtype="float32")
     X_scaled = X_filled / scale
 
     nn = NearestNeighbors(metric="euclidean")
@@ -158,4 +172,5 @@ def build_comparable_shots_index(
     })
     meta["player_name"] = meta["player_id"].map(player_names).fillna(meta["player_id"].astype(str))
 
-    return ComparableShotsIndex(feature_cols=feature_cols, scale=scale, meta=meta, nn=nn)
+    return ComparableShotsIndex(feature_cols=feature_cols, scale=scale, meta=meta, nn=nn,
+                                fill=medians.fillna(0.0).to_numpy(dtype="float32"))

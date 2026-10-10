@@ -56,8 +56,11 @@ function ComparableShots({ comparable, makeProbability }: {
   makeProbability: number;
 }) {
   if (comparable.count < 5 || comparable.historical_make_rate == null) return null;
-  const gapPp = Math.round(Math.abs(comparable.historical_make_rate - makeProbability) * 100);
-  const diverges = gapPp > 8;
+  // `agrees` is the backend's chance test; the fixed-gap rule is only a
+  // fallback for responses that predate it.
+  const diverges = comparable.agrees != null
+    ? !comparable.agrees
+    : Math.round(Math.abs(comparable.historical_make_rate - makeProbability) * 100) > 8;
 
   return (
     <div style={{
