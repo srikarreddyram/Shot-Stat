@@ -328,6 +328,19 @@ export function StrengthsChart({ profile, distributions, defaultMode = "chart" }
 // it, not a verdict a reader has to take on faith.
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
+// Label chips by kind: a role (identity) gets the accent, a skill stays
+// neutral, a negative pattern is tinted red — the kind reads before the word.
+const TIER_CHIP: Record<string, React.CSSProperties> = {
+  identity: { color: C.text, background: "var(--se-hover)", border: "1px solid var(--se-edge-strong)" },
+  skill: { color: C.dim, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" },
+  pattern: { color: "#F2A3A3", background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,0.3)" },
+};
+const TIER_TITLE: Record<string, string> = {
+  identity: "Role on the floor",
+  skill: "Something he is elite at",
+  pattern: "A pattern worth flagging",
+};
+
 export function ArchetypeCard({ playerId }: { playerId: string }) {
   const [detail, setDetail] = useState<ArchetypeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -354,22 +367,31 @@ export function ArchetypeCard({ playerId }: { playerId: string }) {
 
   if (error || !detail) return null; // a missing archetype is not worth an error banner on the profile
 
-  if (!detail.eligible) {
+  if (!detail.primary && !detail.eligible) {
     return (
       <Card style={{ padding: "15px 19px", marginBottom: 16, breakInside: "avoid" }}>
         <div style={{ marginBottom: 4 }}><SectionLabel>Archetype</SectionLabel></div>
         <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
-          Not enough games played this season to assign an archetype yet.
+          Not enough games or minutes this season (or last) to assign an archetype yet.
         </div>
       </Card>
     );
   }
 
   const measuredTraits = detail.traits.filter((t) => t.percentile != null);
+  // Labels from his last full season, when injury kept him under the bar.
+  const fromEarlier = detail.based_on_season && detail.season && detail.based_on_season !== detail.season;
 
   return (
     <Card style={{ padding: "15px 19px 14px", marginBottom: 16, breakInside: "avoid" }}>
-      <div style={{ marginBottom: 10 }}><SectionLabel>Archetype</SectionLabel></div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
+        <SectionLabel>{detail.secondary.length > 0 ? "Archetypes" : "Archetype"}</SectionLabel>
+        {fromEarlier && (
+          <span style={{ ...NUM, fontSize: 9.5, color: C.muted }} title="Too few games this season to judge on its own">
+            from {detail.based_on_season} · {detail.games_this_season} games this season
+          </span>
+        )}
+      </div>
 
       {detail.primary ? (
         <button
@@ -410,11 +432,11 @@ export function ArchetypeCard({ playerId }: { playerId: string }) {
             <div key={s.key}>
               <button
                 onClick={() => setOpenBlurb((k) => (k === s.key ? null : s.key))}
-                title="Click for what this archetype means"
+                title={`${TIER_TITLE[s.tier ?? "identity"]} — click for what it means`}
                 style={{
-                  fontFamily: F.mono, fontSize: 10, color: C.dim, cursor: "pointer",
-                  background: openBlurb === s.key ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.05)",
-                  border: "none", borderRadius: 3, padding: "3px 8px",
+                  fontFamily: F.mono, fontSize: 10, cursor: "pointer", borderRadius: 3, padding: "3px 8px",
+                  ...TIER_CHIP[s.tier ?? "identity"],
+                  ...(openBlurb === s.key ? { background: "rgba(255,255,255,0.12)" } : null),
                 }}
               >
                 {s.label} · {s.score}
@@ -458,12 +480,11 @@ export function ArchetypeCard({ playerId }: { playerId: string }) {
               <Bar pct={(t.percentile ?? 0) / 100} />
             </div>
           ))}
-          {detail.qualified.length > 1 && (
-            <div style={{ fontSize: 10.5, color: C.faint, marginTop: 10, lineHeight: 1.5 }}>
-              Also qualified for: {detail.qualified.filter((q) => q.key !== detail.primary?.key)
-                .map((q) => `${q.label} (${q.score})`).join(", ")}
-            </div>
-          )}
+          <div style={{ fontSize: 10.5, color: C.faint, marginTop: 10, lineHeight: 1.5 }}>
+            A player carries every archetype he qualifies for. The headline is who he is on the floor —
+            the most complete description that fits — then what he's elite at, then any pattern worth
+            flagging. The number beside each is how strongly he fits it.
+          </div>
         </div>
       )}
     </Card>

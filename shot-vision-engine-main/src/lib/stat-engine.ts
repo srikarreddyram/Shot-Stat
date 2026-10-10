@@ -399,17 +399,32 @@ export const COMPARE_COLORS = ["#C9A84C", "#4C9ED9", "#5CB85C"];
 // Every label ships with the trait percentiles behind it, so a client can
 // always answer "why" rather than presenting the name as a bare verdict.
 
-export type ArchetypeCatalogueEntry = { key: string; label: string; category: string; blurb: string };
+/** "identity" — who he is on the floor; "skill" — something he is elite at;
+ *  "pattern" — an honest negative. A player's headline label is an identity. */
+export type ArchetypeTier = "identity" | "skill" | "pattern";
 
-export type SecondaryArchetype = { key: string; label: string; category: string; blurb: string; score: number };
+export type ArchetypeCatalogueEntry = { key: string; label: string; category: string; blurb: string; tier?: ArchetypeTier };
+
+export type SecondaryArchetype = {
+  key: string; label: string; category: string; blurb: string; score: number; tier?: ArchetypeTier;
+};
 
 export type PlayerArchetype = {
   player_id: string;
   archetype_key: string | null;
   archetype_label: string | null;
   archetype_score: number | null;
+  /** Every other label he carries, most descriptive first. */
   archetype_secondary: SecondaryArchetype[];
+  /** The season the labels come from — his last full one when injury kept
+   *  him under the games bar this season. */
+  archetype_season?: string | null;
 };
+
+/** Does this player carry this archetype at all — headline or not? */
+export function hasArchetype(a: PlayerArchetype | undefined, key: string): boolean {
+  return !!a && (a.archetype_key === key || a.archetype_secondary.some((s) => s.key === key));
+}
 
 export type ArchetypesResponse = {
   season: string | null;
@@ -426,4 +441,9 @@ export type ArchetypeDetail = {
   qualified: { key: string; label: string; category: string; blurb: string; score: number }[];
   traits: TraitScore[];
   eligible: boolean;
+  season?: string;
+  /** When this differs from `season`, the labels come from his last season
+   *  with enough games (he has played `games_this_season` this one). */
+  based_on_season?: string | null;
+  games_this_season?: number;
 };

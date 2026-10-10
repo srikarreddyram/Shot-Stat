@@ -42,6 +42,7 @@ or effort on the boards, only outcomes.
 """
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass
 
 import numpy as np
@@ -50,6 +51,10 @@ import pandas as pd
 from src.inference.stat_engine import build_player_stat_table
 
 MIN_GAMES = 20  # below this, a hot two-week stretch can lead the league in anything
+# And real minutes in those games: per-minute rates (steals, blocks,
+# deflections) from six-minute cameos top every defensive leaderboard —
+# the point-of-attack list was led by end-of-bench players before this.
+MIN_MINUTES_PER_GAME = 12.0
 
 
 def _pctile(series: pd.Series) -> pd.Series:
@@ -107,6 +112,14 @@ TRAITS: list[Trait] = [
     Trait("defensive_quality", "Defensive Quality (FG% allowed)", ["def_plus_minus"]),
     Trait("rim_protection", "Rim Protection", ["def_rim_pm", "blk_per_min"]),
     Trait("perimeter_defense", "Perimeter Defense", ["def_perimeter_pm", "stl_per_min"]),
+    # Point-of-attack defense needs both halves: the events a ball-hawk
+    # creates (steals, deflections) and the outcomes (FG% allowed on the
+    # perimeter and overall). perimeter_defense alone — one season of a noisy
+    # perimeter FG%-allowed number plus steals — called Luka Dončić a
+    # point-of-attack defender while missing Alex Caruso and the league's
+    # steals leader, Dyson Daniels.
+    Trait("point_of_attack", "Point-of-Attack Defense",
+          ["stl_per_min", "deflections_per_min", "def_perimeter_pm", "def_plus_minus"]),
     Trait("interior_defense", "Interior Defense (overall)", ["def_paint_pm", "def_two_pt_pm"]),
     Trait("rim_efficiency", "Finishing Efficiency (Rim)", ["zone_fg_pct_rim"]),
     Trait("midrange_efficiency", "Mid-Range Efficiency", ["zone_fg_pct_midrange"]),
@@ -129,6 +142,24 @@ def compute_traits(table: pd.DataFrame) -> pd.DataFrame:
     not one per (archetype, stat) pair."""
     out = table.copy()
     stat_pctile: dict[str, pd.Series] = {}
+
+    # A player's own three-point diet, for raw gates (Stretch Big): attempts
+    # from the three three-point zones, and their share of all his zone
+    # attempts.
+    zone_cols = [c for c in out.columns if c.startswith("zone_fga_")]
+    if zone_cols:
+        zones = out[zone_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+        threes = zones[[c for c in zone_cols if c.endswith(("_corner3", "_break3"))]].sum(axis=1)
+        total = zones.sum(axis=1)
+        out["three_point_attempts"] = threes
+        out["three_point_rate"] = np.where(total > 0, threes / total.where(total > 0, 1), np.nan)
+        games = pd.to_numeric(out.get("games_played"), errors="coerce")
+        games = games.where(games > 0)
+        out["three_fga_pg"] = threes / games
+        if "zone_fga_rim" in out:
+            out["rim_fga_pg"] = pd.to_numeric(out["zone_fga_rim"], errors="coerce") / games
+        if "zone_fga_midrange" in out:
+            out["midrange_fga_pg"] = pd.to_numeric(out["zone_fga_midrange"], errors="coerce") / games
 
     def pctile_of(stat: str) -> pd.Series:
         if stat not in stat_pctile:
@@ -182,6 +213,30 @@ class ArchetypeDef:
     # off the same trait numbers a legitimate 6'5"+ wing would need. Height is
     # the one measured fact that actually distinguishes the two.
     min_height: float | None = None
+    # Minimum height (inches) for EVERY position string, for archetypes whose
+    # name is itself a claim about size ("Big Guard": a ball-handler with a
+    # forward's frame). Unlike min_height above, a combo position does not
+    # waive it.
+    min_height_any: float | None = None
+    # Gates on a raw (not percentile) value, as (column, minimum). For
+    # claims that are about a player's own shot diet rather than his rank in
+    # the league: a center who takes a third of his shots from three is a
+    # stretch big however many guards out-attempt him.
+    min_raw: tuple[tuple[str, float], ...] = ()
+    # Maximum height (inches), every position — the mirror of min_height_any,
+    # for labels that are a claim about guarding SMALLER players. A bare "F"
+    # can be a 6'5" wing or a 6'10" big; without this, bigs listed "F" with
+    # big-man steal and deflection rates were "Point-of-Attack Defenders".
+    max_height: float | None = None
+    # What kind of label this is, which decides the headline one:
+    #   "identity" — who he is on the floor (Point Center, Big Guard, 3&D Wing)
+    #   "skill"    — something he is elite at (Three-Level Scorer, Rim Protector)
+    #   "pattern"  — an honest negative (Chucker, Traffic Cone)
+    # A player's headline label is his best IDENTITY; skills and patterns
+    # are shown alongside it. Ranking every label on one scale let skills
+    # with several checks crowd out the role they belong to — Nikola Jokić
+    # headlined as a "Three-Level Scorer" rather than a Point Center.
+    tier: str = "identity"
 
 
 # Position groups, from the `position` string already carried on every
@@ -201,8 +256,15 @@ class ArchetypeDef:
 # they could plausibly mean, rather than picking one and guessing wrong for
 # the other half of the players who hold it.
 GUARD_POS = {"G", "G-F", "F-G"}
-WING_POS = {"G", "G-F", "F-G", "F", "F-C", "C-F"}
+# No "F-C"/"C-F": a forward-center or center-forward is a big, and calling
+# one a "Wing" was wrong every time it happened (Myles Turner as a "3&D
+# Wing", Bam Adebayo as a "Two-Way Wing").
+WING_POS = {"G", "G-F", "F-G", "F"}
 BIG_POS = {"F", "F-C", "C-F", "C"}
+# Forwards only, for Point Forward: a bare "F" is the one position string
+# that is neither a listed guard (Big Guard covers those) nor a listed big
+# (Point Center covers those).
+FORWARD_POS = frozenset({"F"})
 # A stricter big-man gate for archetypes whose NAME specifically claims
 # "Big" as in "traditional back-to-the-basket size" (Stretch Big) rather than
 # "any frontcourt player" (which BIG_POS above correctly covers for
@@ -254,11 +316,17 @@ ARCHETYPES: list[ArchetypeDef] = [
                  requires=[("pnr_hub", 0.80)],
                  rank_traits=["pnr_hub", "playmaking"],
                  positions=GUARD_POS),
+    ArchetypeDef("big_guard", "Big Guard", "Guards",
+                 "A primary ball-handler with a forward's frame — runs the offense and creates his own shot from 6'6\" or taller.",
+                 requires=[("playmaking", 0.70), ("self_creation", 0.60)],
+                 rank_traits=["playmaking", "self_creation", "rebounding"],
+                 positions=GUARD_POS, min_height_any=78.0),
     ArchetypeDef("rim_pressure_guard", "Rim-Pressure Guard", "Guards",
                  "Lives downhill: high drive volume and rim-attempt share for a guard-sized player.",
                  requires=[("rim_pressure", 0.80)],
                  rank_traits=["rim_pressure"],
-                 positions=GUARD_POS),
+                 positions=GUARD_POS,
+                 tier="skill"),
 
     # ── Shooting (position-agnostic on purpose — any body type can be
     #     one of these) ────────────────────────────────────────────────
@@ -273,7 +341,8 @@ ARCHETYPES: list[ArchetypeDef] = [
     ArchetypeDef("shot_creator", "Shot Creator", "Shooting",
                  "Manufactures his own difficult looks — isolation and pull-up heavy, and scores well doing it.",
                  requires=[("shot_creation", 0.80), ("self_creation", 0.70)],
-                 rank_traits=["shot_creation", "self_creation"]),
+                 rank_traits=["shot_creation", "self_creation"],
+                 tier="skill"),
     ArchetypeDef("three_level_scorer", "Three-Level Scorer", "Shooting",
                  "Real efficiency at the rim, in the mid-range, and from three — not just one of the three.",
                  # Gates each zone INDIVIDUALLY rather than an average of two
@@ -285,9 +354,21 @@ ARCHETYPES: list[ArchetypeDef] = [
                  # above-average at all three individual levels, which is
                  # exactly what "not just one of the three" is supposed to
                  # require, and the blended version failed to enforce.
+                 # scoring_load: efficiency at every level only makes a
+                 # three-level SCORER when there is real volume behind it.
+                 # Without it, a low-usage defender who shoots well on few
+                 # attempts (Alex Caruso) had this as his only label.
                  requires=[("rim_efficiency", 0.55), ("midrange_efficiency", 0.55),
-                           ("three_point_efficiency", 0.55)],
-                 rank_traits=["rim_efficiency", "midrange_efficiency", "three_point_efficiency"]),
+                           ("three_point_efficiency", 0.55), ("scoring_load", 0.60)],
+                 # Volume at each level too: a zone FG% percentile ignores
+                 # attempts, so a big who takes two threes a game at a good
+                 # rate (Domantas Sabonis) cleared the three-point bar.
+                 # Floors low enough for a scorer who rarely goes all the way
+                 # to the rim (Kevin Durant: 1.6 a game at 89th-percentile
+                 # efficiency) and high enough from three to mean it.
+                 min_raw=(("rim_fga_pg", 1.5), ("midrange_fga_pg", 1.5), ("three_fga_pg", 3.0)),
+                 rank_traits=["rim_efficiency", "midrange_efficiency", "three_point_efficiency", "scoring_load"],
+                 tier="skill"),
 
     # ── Wings & Forwards ─────────────────────────────────────────────────
     ArchetypeDef("three_and_d_wing", "3&D Wing", "Wings",
@@ -319,6 +400,11 @@ ARCHETYPES: list[ArchetypeDef] = [
                  requires=[("self_creation", 0.55), ("defensive_quality", 0.55)],
                  rank_traits=["self_creation", "defensive_quality"],
                  positions=WING_POS, min_height=MIN_WING_HEIGHT_BARE_G),
+    ArchetypeDef("point_forward", "Point Forward", "Wings",
+                 "A forward the offense runs through — initiates, reads the floor and creates for others from the frontcourt.",
+                 requires=[("playmaking", 0.75)],
+                 rank_traits=["playmaking", "passing_hub"],
+                 positions=FORWARD_POS, min_height_any=78.0),
     ArchetypeDef("glue_guy", "Glue Guy", "Wings",
                  "Screens, boxes out, dives for loose balls — value that shows up everywhere except his own shot total.",
                  requires=[("hustle", 0.75), ("self_creation", -0.50)],
@@ -331,9 +417,17 @@ ARCHETYPES: list[ArchetypeDef] = [
                  rank_traits=["rim_finishing"],
                  positions=BIG_POS),
     ArchetypeDef("stretch_big", "Stretch Big", "Bigs",
-                 "Spaces the floor from three at a size that would traditionally camp in the paint.",
-                 requires=[("floor_spacing", 0.70)],
-                 rank_traits=["floor_spacing", "shooting_efficiency"],
+                 "Spaces the floor from three at a size that would traditionally camp in the paint — at least a quarter of his shots are threes.",
+                 # His OWN three-point rate, not a league percentile: guards
+                 # take most of the league's threes, so a center launching
+                 # five a game (Karl-Anthony Towns) only reached the ~60th
+                 # percentile on volume and was never called a Stretch Big.
+                 # A quarter: in 2025-26 the rotation centers who space the
+                 # floor run from ~26% (Jokić) to ~70% (Love), and the ones
+                 # who don't sit under 23%, most of them near zero.
+                 requires=[],
+                 min_raw=(("three_point_rate", 0.25), ("three_point_attempts", 150)),
+                 rank_traits=["three_point_efficiency", "floor_spacing"],
                  # TRUE_BIG_POS, not BIG_POS: this archetype's name is a claim
                  # about SIZE ("...at a size that would traditionally camp in
                  # the paint"), and a bare "F" in this dataset is just as
@@ -345,14 +439,18 @@ ARCHETYPES: list[ArchetypeDef] = [
                  "Real, efficient volume operating with his back to the basket.",
                  requires=[("post_game", 0.75)],
                  rank_traits=["post_game"],
-                 positions=BIG_POS),
-    ArchetypeDef("passing_big", "Passing Big / Offensive Hub", "Bigs",
-                 "Runs real offense through a big man's hands — elbow and post touches turned into shots for others.",
-                 requires=[("passing_hub", 0.75)],
-                 rank_traits=["passing_hub"],
-                 positions=BIG_POS),
+                 positions=BIG_POS,
+                 tier="skill"),
+    ArchetypeDef("passing_big", "Point Center", "Bigs",
+                 "A center the offense runs through — elbow and post touches turned into shots for others.",
+                 requires=[("passing_hub", 0.75), ("rebounding", 0.60)],
+                 rank_traits=["passing_hub", "rebounding"],
+                 # TRUE_BIG_POS: a bare "F" here made LeBron, Durant and
+                 # Giannis "Passing Bigs". Playmaking forwards are Point
+                 # Forwards (above).
+                 positions=TRUE_BIG_POS),
     ArchetypeDef("paint_anchor", "Paint Anchor", "Bigs",
-                 "Lives in the restricted area and the paint on offense, defends the rim, controls the defensive glass.",
+                 "Owns the paint: protects the rim and controls the glass — the big a defense is built around inside.",
                  requires=[("rim_protection", 0.65), ("rebounding", 0.65)],
                  rank_traits=["rim_protection", "rebounding"],
                  positions=BIG_POS),
@@ -360,19 +458,21 @@ ARCHETYPES: list[ArchetypeDef] = [
                  "Elite on the glass on both ends, independent of everything else his box score shows.",
                  requires=[("rebounding", 0.85)],
                  rank_traits=["rebounding"],
-                 positions=BIG_POS),
+                 positions=BIG_POS,
+                 tier="skill"),
 
     # ── Defense ─────────────────────────────────────────────────────────
     ArchetypeDef("rim_protector", "Rim Protector", "Defense",
                  "Elite shot-blocking and rim-area FG% suppression.",
                  requires=[("rim_protection", 0.80)],
                  rank_traits=["rim_protection"],
-                 positions=BIG_POS),
+                 positions=BIG_POS,
+                 tier="skill"),
     ArchetypeDef("poa_defender", "Point-of-Attack Defender", "Defense",
-                 "Guards the ball with real steal and perimeter-defense numbers, at a guard/wing size.",
-                 requires=[("perimeter_defense", 0.75)],
-                 rank_traits=["perimeter_defense", "defensive_quality"],
-                 positions=GUARD_POS | WING_POS),
+                 "Guards the ball: forces turnovers and deflections and holds his man below his usual shooting, at a guard/wing size.",
+                 requires=[("point_of_attack", 0.70), ("defensive_quality", 0.50)],
+                 rank_traits=["point_of_attack", "defensive_quality"],
+                 positions=GUARD_POS | WING_POS, max_height=80.0),
     ArchetypeDef("defensive_anchor", "Defensive Anchor", "Defense",
                  "The defense is built around him — elite across rim protection, activity, and rebounding together.",
                  requires=[("rim_protection", 0.70), ("defensive_activity", 0.65), ("rebounding", 0.55)],
@@ -388,16 +488,19 @@ ARCHETYPES: list[ArchetypeDef] = [
     ArchetypeDef("chucker", "Chucker", "Notable patterns",
                  "High shot volume without the efficiency or the playmaking to justify it.",
                  requires=[("scoring_load", 0.75), ("shooting_efficiency", -0.35), ("playmaking", -0.40)],
-                 rank_traits=["scoring_load"]),
+                 rank_traits=["scoring_load"],
+                 tier="pattern"),
     ArchetypeDef("black_hole", "Black Hole", "Notable patterns",
                  "The ball goes in, and a pass rarely comes back out — high usage, low ball movement.",
                  requires=[("self_creation", 0.70), ("connective", -0.35), ("ball_security", -0.35)],
-                 rank_traits=["self_creation"]),
+                 rank_traits=["self_creation"],
+                 tier="pattern"),
     ArchetypeDef("foul_machine", "Foul Machine", "Notable patterns",
                  "Racks up personal fouls at a rate that puts him in constant foul trouble.",
                  requires=[],
                  rank_traits=[],
-                 min_stat=("pf", 0.85)),
+                 min_stat=("pf", 0.85),
+                 tier="pattern"),
     ArchetypeDef("traffic_cone", "Traffic Cone", "Notable patterns",
                  "Bottom quarter of the league on both defensive quality and perimeter defense — genuinely hunted, not just unremarkable.",
                  # rim_protection is deliberately NOT one of these gates: it
@@ -412,7 +515,8 @@ ARCHETYPES: list[ArchetypeDef] = [
                  # (Nesmith's case) is not, and activity alone can't tell
                  # those two apart.
                  requires=[("defensive_quality", -0.25), ("perimeter_defense", -0.25)],
-                 rank_traits=["defensive_quality"]),
+                 rank_traits=["defensive_quality"],
+                 tier="pattern"),
 ]
 
 ARCHETYPE_BY_KEY = {a.key: a for a in ARCHETYPES}
@@ -437,6 +541,18 @@ def _qualifies(row: pd.Series, arch: ArchetypeDef) -> bool:
             height = row.get("height")
             if height is None or (isinstance(height, float) and np.isnan(height)) or height < arch.min_height:
                 return False
+    if arch.min_height_any is not None:
+        height = row.get("height")
+        if height is None or (isinstance(height, float) and np.isnan(height)) or height < arch.min_height_any:
+            return False
+    if arch.max_height is not None:
+        height = row.get("height")
+        if height is None or (isinstance(height, float) and np.isnan(height)) or height > arch.max_height:
+            return False
+    for column, minimum in arch.min_raw:
+        val = row.get(column)
+        if val is None or (isinstance(val, float) and np.isnan(val)) or val < minimum:
+            return False
     for trait_key, threshold in arch.requires:
         val = row.get(f"trait_{trait_key}")
         if val is None or (isinstance(val, float) and np.isnan(val)):
@@ -482,36 +598,61 @@ def _match_score(row: pd.Series, arch: ArchetypeDef) -> float:
     return float(np.mean(vals)) if vals else 0.0
 
 
-MAX_SECONDARY = 3
-# Up to this many archetypes may share one category across primary+secondary.
-# A hard 1-per-category cap (an earlier version of this rule) hid genuinely
-# distinct, informative labels behind whichever same-category archetype
-# happened to score highest — confirmed real case: Dončić and Durant both
-# clearly qualify for Three-Level Scorer (a genuinely different claim from
-# Shot Creator: efficiency at every level, not shot-manufacturing method),
-# but it never appeared anywhere because Shot Creator already occupied
-# "Shooting"'s only slot. 2 still prevents the list from being ALL one
-# category, and works together with the trait-footprint check below.
-MAX_PER_CATEGORY = 2
+# A player carries every archetype he qualifies for — a dominant two-way
+# center really is a Paint Anchor AND a Rim Protector AND a Rebounding
+# Specialist — up to this many, the most descriptive first.
+MAX_LABELS = 6
+MAX_SECONDARY = MAX_LABELS - 1
 
 
-def _trait_footprint(arch: ArchetypeDef) -> set[str]:
-    """Which traits (or the min_stat gate) an archetype's `requires` actually
-    tests, used to detect when a second archetype adds zero new information
-    rather than a genuinely different fact about the player."""
-    footprint = {trait_key for trait_key, _ in arch.requires}
-    if arch.min_stat is not None:
-        footprint.add(f"__stat_{arch.min_stat[0]}")
-    return footprint
+TIER_ORDER = {"identity": 0, "skill": 1, "pattern": 2}
 
 
-def compute_archetypes(engine, season: str | None = None) -> pd.DataFrame:
-    """One row per player rostered in `season`, with every trait percentile,
-    a primary archetype, and up to MAX_SECONDARY secondary archetypes (at
-    most MAX_PER_CATEGORY per category, primary included). Players under
-    MIN_GAMES games are traited (so their numbers are visible) but never
-    assigned an archetype at all — a two-week call-up should not get crowned
-    "Rim Protector" off a hot stretch."""
+def ranked_matches(row: pd.Series) -> list[tuple[ArchetypeDef, float]]:
+    """Every archetype this player qualifies for, in display order: identity
+    labels before skills before patterns, then the most specific, then the
+    best fit. The first is his headline label."""
+    matches = [(arch, _match_score(row, arch)) for arch in ARCHETYPES if _qualifies(row, arch)]
+    matches.sort(key=lambda m: (-TIER_ORDER[m[0].tier], _specificity(m[0]), m[1]), reverse=True)
+    return matches
+
+
+def _specificity(arch: ArchetypeDef) -> int:
+    """How many separate things an archetype asserts about a player: its
+    floors (a trait he must be good at), its stat and raw-value gates, and a
+    size requirement. Ceilings ("not primarily a scorer") are exclusions,
+    not claims, and do not count.
+
+    Within a tier (identity, skill, pattern — see ArchetypeDef.tier), this
+    orders a player's labels and picks the headline one. Ranking by fit
+    alone let a one-trait label beat the fuller description it is part of:
+    Rudy Gobert's 99th-percentile rebounding made him a "Rebounding
+    Specialist" ahead of "Paint Anchor" (rim protection AND rebounding,
+    95.5 averaged), though Paint Anchor says everything Rebounding
+    Specialist says and more. The most specific true label leads; fit
+    breaks ties."""
+    # Raw gates count only when they ARE the archetype's claim (Stretch Big's
+    # three-point rate); where they back up trait floors as volume minimums
+    # (Three-Level Scorer) they are qualifiers, not extra claims.
+    raw = len(arch.min_raw) if not any(t >= 0 for _, t in arch.requires) else 0
+    return (sum(1 for _, threshold in arch.requires if threshold >= 0)
+            + (1 if arch.min_stat else 0)
+            + raw
+            + (1 if arch.min_height_any is not None else 0))
+
+
+_LABEL_CACHE: "weakref.WeakKeyDictionary[object, dict]" = weakref.WeakKeyDictionary()
+# How many seasons back a player under MIN_GAMES this season is looked up.
+FALLBACK_SEASONS = 2
+
+
+def _previous_season(season: str) -> str:
+    start = int(season[:4]) - 1
+    return f"{start}-{str(start + 1)[-2:]}"
+
+
+def _label_season(engine, season: str | None) -> pd.DataFrame:
+    """Traits and labels for one season, players under MIN_GAMES unlabelled."""
     table = build_player_stat_table(engine, season)
     if table.empty:
         return table
@@ -526,68 +667,77 @@ def compute_archetypes(engine, season: str | None = None) -> pd.DataFrame:
         table[f"__gate_pctile_{stat_key}"] = (1 - p) if stat_key in LOWER_IS_BETTER else p
 
     games = pd.to_numeric(table.get("games_played"), errors="coerce")
-    eligible_for_any = games.fillna(0) >= MIN_GAMES
+    minutes = pd.to_numeric(table.get("min_per_game"), errors="coerce")
+    eligible_for_any = (games.fillna(0) >= MIN_GAMES) & (minutes.fillna(0) >= MIN_MINUTES_PER_GAME)
 
-    primary_keys, primary_labels, primary_scores = [], [], []
-    secondary_lists = []
-
+    primary_keys, primary_labels, primary_scores, secondary_lists = [], [], [], []
     for idx, row in table.iterrows():
-        if not eligible_for_any.loc[idx]:
-            primary_keys.append(None); primary_labels.append(None); primary_scores.append(None)
-            secondary_lists.append([])
-            continue
-
-        matches = []
-        for arch in ARCHETYPES:
-            if _qualifies(row, arch):
-                matches.append((arch, _match_score(row, arch)))
-        matches.sort(key=lambda m: m[1], reverse=True)
-
+        matches = ranked_matches(row) if eligible_for_any.loc[idx] else []
         if not matches:
             primary_keys.append(None); primary_labels.append(None); primary_scores.append(None)
             secondary_lists.append([])
             continue
-
         primary_arch, primary_score = matches[0]
         primary_keys.append(primary_arch.key)
         primary_labels.append(primary_arch.label)
         primary_scores.append(round(primary_score * 100))
-
-        secondary = []
-        category_counts: dict[str, int] = {primary_arch.category: 1}
-        seen_traits: set[str] = set(_trait_footprint(primary_arch))
-        for arch, score in matches[1:]:
-            if category_counts.get(arch.category, 0) >= MAX_PER_CATEGORY:
-                continue
-            footprint = _trait_footprint(arch)
-            # Skip only when EVERY trait this archetype tests is already
-            # covered by an archetype already shown — real bug this fixes:
-            # a dominant two-way big (confirmed real case: Victor
-            # Wembanyama) cleared Rim Protector, Paint Anchor, Rebounding
-            # Specialist AND Defensive Anchor at once, but Rebounding
-            # Specialist's entire gate (rebounding alone) was already
-            # implied by Paint Anchor's (rim_protection + rebounding) —
-            # showing it added a fourth badge with zero new information.
-            # A candidate that shares SOME traits with what's shown but also
-            # tests something new (e.g. Two-Way Wing sharing defensive_
-            # quality with 3&D Wing but adding self_creation) still passes.
-            if footprint and footprint <= seen_traits:
-                continue
-            secondary.append({
-                "key": arch.key, "label": arch.label, "category": arch.category,
-                "blurb": arch.blurb, "score": round(score * 100),
-            })
-            category_counts[arch.category] = category_counts.get(arch.category, 0) + 1
-            seen_traits |= footprint
-            if len(secondary) == MAX_SECONDARY:
-                break
-        secondary_lists.append(secondary)
+        secondary_lists.append([
+            {"key": arch.key, "label": arch.label, "category": arch.category,
+             "blurb": arch.blurb, "score": round(score * 100), "tier": arch.tier}
+            for arch, score in matches[1:MAX_LABELS]
+        ])
 
     table["archetype_key"] = primary_keys
     table["archetype_label"] = primary_labels
     table["archetype_score"] = primary_scores
     table["archetype_secondary"] = secondary_lists
+    table["archetype_season"] = np.where(table["archetype_key"].notna(), table["season"], None)
     return table
+
+
+def compute_archetypes(engine, season: str | None = None) -> pd.DataFrame:
+    """One row per player rostered in `season`, with every trait percentile,
+    a primary archetype, and every other archetype he qualifies for (up to
+    MAX_SECONDARY more, the most specific first).
+
+    A player under MIN_GAMES games this season — a two-week call-up, or a
+    starter out injured (Walker Kessler: 5 games) — takes his labels and
+    traits from his most recent season with MIN_GAMES, at most
+    FALLBACK_SEASONS back, and `archetype_season` says which. A hot fortnight
+    should not crown anyone, and an injury should not erase who a player is.
+
+    Cached per engine and season: the stat table behind it takes seconds to
+    build, and it only changes when data is ingested (followed by a restart).
+    """
+    per_engine = _LABEL_CACHE.setdefault(engine, {})
+    if season in per_engine:
+        return per_engine[season].copy()
+
+    table = _label_season(engine, season)
+    if not table.empty:
+        current = table["season"].iloc[0]
+        lookback = current
+        for _ in range(FALLBACK_SEASONS):
+            # Only for players short on GAMES this season (injury, call-up) —
+            # a rotation player who simply fits no archetype stays unlabelled.
+            missing = table["archetype_key"].isna() & (
+                pd.to_numeric(table.get("games_played"), errors="coerce").fillna(0) < MIN_GAMES)
+            if not missing.any():
+                break
+            lookback = _previous_season(lookback)
+            past = _label_season(engine, lookback)
+            if past.empty or past["season"].iloc[0] != lookback:
+                break
+            past = past[past["archetype_key"].notna()].set_index("player_id")
+            take = missing & table["player_id"].isin(past.index)
+            if not take.any():
+                continue
+            ids = table.loc[take, "player_id"]
+            carried = [c for c in past.columns if c.startswith("trait_") or c.startswith("archetype_")]
+            for column in carried:
+                table.loc[take, column] = ids.map(past[column]).values
+    per_engine[season] = table
+    return table.copy()
 
 
 def player_archetype_detail(engine, player_id: str, season: str | None = None) -> dict | None:
@@ -611,18 +761,18 @@ def player_archetype_detail(engine, player_id: str, season: str | None = None) -
             "stats": t.stats,
         })
 
-    qualified = []
-    if row.get("archetype_key") is not None:
-        for arch in ARCHETYPES:
-            if _qualifies(row, arch):
-                qualified.append({
-                    "key": arch.key, "label": arch.label, "category": arch.category,
-                    "blurb": arch.blurb, "score": round(_match_score(row, arch) * 100),
-                })
-        qualified.sort(key=lambda q: q["score"], reverse=True)
-
     primary_key = row.get("archetype_key")
     primary_arch = ARCHETYPE_BY_KEY.get(primary_key) if primary_key is not None else None
+    # Every label he carries, in display order — the same list as primary +
+    # secondary, kept for clients that still read `qualified`.
+    qualified = []
+    if primary_key is not None:
+        qualified = [{"key": primary_key, "label": row["archetype_label"],
+                      "category": primary_arch.category if primary_arch else None,
+                      "blurb": primary_arch.blurb if primary_arch else None,
+                      "score": row["archetype_score"]}] + list(row.get("archetype_secondary") or [])
+    based_on = row.get("archetype_season")
+    games = pd.to_numeric(pd.Series([row.get("games_played")]), errors="coerce").fillna(0).iloc[0]
 
     return {
         "player_id": str(player_id),
@@ -638,7 +788,12 @@ def player_archetype_detail(engine, player_id: str, season: str | None = None) -
         "secondary": row.get("archetype_secondary") or [],
         "qualified": qualified,
         "traits": traits,
-        "eligible": bool(pd.to_numeric(pd.Series([row.get("games_played")]), errors="coerce").fillna(0).iloc[0] >= MIN_GAMES),
+        "eligible": primary_key is not None or bool(games >= MIN_GAMES),
+        # The season the labels and traits come from: this one, or his last
+        # season with MIN_GAMES games when he has played fewer this season.
+        "season": row.get("season"),
+        "based_on_season": based_on if isinstance(based_on, str) else None,
+        "games_this_season": int(games),
     }
 
 
@@ -646,6 +801,6 @@ def archetype_catalogue() -> list[dict]:
     """Every archetype this module can assign, for a frontend filter list —
     grouped and ordered the same way TRAIT/ARCHETYPE definitions are."""
     return [
-        {"key": a.key, "label": a.label, "category": a.category, "blurb": a.blurb}
+        {"key": a.key, "label": a.label, "category": a.category, "blurb": a.blurb, "tier": a.tier}
         for a in ARCHETYPES
     ]

@@ -20,7 +20,7 @@ import {
   PlayerArchetype, Row, Stat, PlayerProfile, TeamProfile,
   buildDistributions, formatStat, isRankable, matchesQuery, numericValue,
   percentileOf, rankOf, foldAccents, sortRows, meetsQualifier, LOWER_IS_BETTER,
-  RADAR_AXES, axisScore, chartOwnedKey,
+  RADAR_AXES, axisScore, chartOwnedKey, hasArchetype,
 } from "../lib/stat-engine";
 
 // Stat Engine — browse every stat this project has collected, for every
@@ -447,7 +447,9 @@ function PlayerLeaderboard({ columns, rows, teamNames, archetypeCatalogue, arche
     const q = foldAccents(query.trim().toLowerCase());
     let base = q ? rows.filter((r) => matchesQuery(String(r.name ?? ""), q)) : rows;
     if (archetypeFilter) {
-      base = base.filter((r) => archetypeByPlayer.get(String(r.player_id))?.archetype_key === archetypeFilter);
+      // Any of his labels, not just the headline one: Wembanyama is a
+      // Defensive Anchor first, and still belongs in the Paint Anchor list.
+      base = base.filter((r) => hasArchetype(archetypeByPlayer.get(String(r.player_id)), archetypeFilter));
     }
     const gpFloor = minGames.trim() === "" ? null : Number(minGames);
     if (gpFloor != null && !Number.isNaN(gpFloor)) {
@@ -531,9 +533,7 @@ function PlayerLeaderboard({ columns, rows, teamNames, archetypeCatalogue, arche
                       <TeamChip abbrev={r.team_id != null ? teamNames.get(String(r.team_id)) : null} />
                     </td>
                     <td className="se-left" style={{ fontSize: 11, color: C.dim }}>
-                      {archetypeByPlayer.get(String(r.player_id))?.archetype_label ?? (
-                        <span style={{ color: C.muted }}>—</span>
-                      )}
+                      <ArchetypeCell archetype={archetypeByPlayer.get(String(r.player_id))} />
                     </td>
                     {shown.map((c) => {
                       // Only the ranked column is tinted. Colouring every cell
@@ -555,6 +555,19 @@ function PlayerLeaderboard({ columns, rows, teamNames, archetypeCatalogue, arche
         </div>
       </Card>
     </>
+  );
+}
+
+/** The headline label, and how many more he carries (all of them on hover). */
+function ArchetypeCell({ archetype }: { archetype?: PlayerArchetype }) {
+  if (!archetype?.archetype_label) return <span style={{ color: C.muted }}>—</span>;
+  const more = archetype.archetype_secondary.length;
+  const all = [archetype.archetype_label, ...archetype.archetype_secondary.map((s) => s.label)].join(" · ");
+  return (
+    <span title={all}>
+      {archetype.archetype_label}
+      {more > 0 && <span style={{ ...NUM, color: C.muted, marginLeft: 6, fontSize: 10 }}>+{more}</span>}
+    </span>
   );
 }
 

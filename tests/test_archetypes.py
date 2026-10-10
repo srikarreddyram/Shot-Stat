@@ -51,8 +51,11 @@ def test_position_gate_rejects_a_guard_from_a_big_only_archetype():
     guard_row = _row(position="G", trait_passing_hub=0.99)
     assert not arc._qualifies(guard_row, passing_big)
 
-    big_row = _row(position="C", trait_passing_hub=0.99)
+    big_row = _row(position="C", trait_passing_hub=0.99, trait_rebounding=0.90)
     assert arc._qualifies(big_row, passing_big)
+    # A playmaking forward is a Point Forward, not a Point Center.
+    forward_row = _row(position="F", trait_passing_hub=0.99, trait_rebounding=0.90)
+    assert not arc._qualifies(forward_row, passing_big)
 
 
 def test_bare_g_and_f_qualify_for_wing_archetypes():
@@ -159,11 +162,23 @@ def test_stretch_big_rejects_a_bare_forward_wing():
     stretch_big = arc.ARCHETYPE_BY_KEY["stretch_big"]
     assert stretch_big.positions == arc.TRUE_BIG_POS
 
-    wing = _row(position="F", trait_floor_spacing=0.95, trait_shooting_efficiency=0.90)
+    wing = _row(position="F", three_point_rate=0.50, three_point_attempts=300)
     assert not arc._qualifies(wing, stretch_big)
 
-    real_big = _row(position="C-F", trait_floor_spacing=0.95, trait_shooting_efficiency=0.90)
+    real_big = _row(position="C-F", three_point_rate=0.50, three_point_attempts=300)
     assert arc._qualifies(real_big, stretch_big)
+
+
+def test_stretch_big_is_a_bigs_own_three_point_rate_not_a_league_percentile():
+    """Karl-Anthony Towns took ~30% of his shots from three — clearly a
+    stretch big — but only reached the ~60th percentile of league-wide
+    three-point VOLUME, because guards take most threes. The gate is his own
+    shot diet: a quarter of his shots, with real volume behind it."""
+    stretch_big = arc.ARCHETYPE_BY_KEY["stretch_big"]
+    assert arc._qualifies(_row(position="C", three_point_rate=0.30, three_point_attempts=307), stretch_big)
+    assert not arc._qualifies(_row(position="C", three_point_rate=0.12, three_point_attempts=131), stretch_big)
+    # A good rate on a handful of attempts is not floor spacing.
+    assert not arc._qualifies(_row(position="C", three_point_rate=0.45, three_point_attempts=40), stretch_big)
 
 
 def test_three_level_scorer_requires_every_zone_individually():
@@ -175,13 +190,27 @@ def test_three_level_scorer_requires_every_zone_individually():
     blended season FG% because of shot difficulty) could fail. Each zone must
     now clear its own bar."""
     three_level = arc.ARCHETYPE_BY_KEY["three_level_scorer"]
+    volume = dict(trait_scoring_load=0.80, rim_fga_pg=3.0, midrange_fga_pg=3.0, three_fga_pg=5.0)
     all_three_good = _row(trait_rim_efficiency=0.60, trait_midrange_efficiency=0.60,
-                          trait_three_point_efficiency=0.60)
+                          trait_three_point_efficiency=0.60, **volume)
     assert arc._qualifies(all_three_good, three_level)
 
     weak_at_rim = _row(trait_rim_efficiency=0.10, trait_midrange_efficiency=0.90,
-                       trait_three_point_efficiency=0.90)
+                       trait_three_point_efficiency=0.90, **volume)
     assert not arc._qualifies(weak_at_rim, three_level)
+
+
+def test_three_level_scorer_needs_scoring_volume_and_attempts_at_every_level():
+    """Efficient everywhere on few shots is not a three-level SCORER: Alex
+    Caruso (low scoring load) had it as his only label, and Domantas Sabonis
+    (two threes a game at a good rate) cleared the three-point bar."""
+    three_level = arc.ARCHETYPE_BY_KEY["three_level_scorer"]
+    efficient = dict(trait_rim_efficiency=0.80, trait_midrange_efficiency=0.80, trait_three_point_efficiency=0.80)
+    volume = dict(rim_fga_pg=3.0, midrange_fga_pg=3.0, three_fga_pg=5.0)
+    assert not arc._qualifies(_row(trait_scoring_load=0.30, **efficient, **volume), three_level)
+    assert not arc._qualifies(_row(trait_scoring_load=0.90, **efficient, **{**volume, "three_fga_pg": 1.9}), three_level)
+    # Kevin Durant: rarely at the rim (1.6 a game) but a scorer at all three levels.
+    assert arc._qualifies(_row(trait_scoring_load=0.97, **efficient, **{**volume, "rim_fga_pg": 1.6}), three_level)
 
 
 def test_missing_trait_never_silently_qualifies():
@@ -257,25 +286,26 @@ def engine():
     return engine
 
 
-def _seed_rim_protector(session, player_id: str, games_played: int):
+def _seed_rim_protector(session, player_id: str, games_played: int, season: str = "2024-25",
+                        minutes: float = 30.0):
     """A center whose rim-defense numbers should clear Rim Protector's bar
     outright, at a controllable games-played count for the MIN_GAMES test."""
     session.add(Player(
-        player_id=player_id, season="2024-25", name=f"Big {player_id}",
+        player_id=player_id, season=season, name=f"Big {player_id}",
         position="C", team_id="T1", height=84.0, weight=250.0,
     ))
     session.add(DefenderStats(
-        player_id=player_id, season="2024-25", defense_category="Overall",
+        player_id=player_id, season=season, defense_category="Overall",
         season_type=REGULAR_SEASON, gp=games_played, freq=1.0,
         d_fgm=100, d_fga=250, d_fg_pct=0.40, normal_fg_pct=0.50, pct_plusminus=-0.10,
     ))
     session.add(DefenderStats(
-        player_id=player_id, season="2024-25", defense_category="Less Than 6Ft",
+        player_id=player_id, season=season, defense_category="Less Than 6Ft",
         season_type=REGULAR_SEASON, gp=games_played, freq=0.4,
         d_fgm=40, d_fga=110, d_fg_pct=0.36, normal_fg_pct=0.65, pct_plusminus=-0.29,
     ))
     session.add(PlayerDefensiveActivity(
-        player_id=player_id, season="2024-25", gp=games_played, min_per_game=30.0,
+        player_id=player_id, season=season, gp=games_played, min_per_game=minutes,
         blk=3.0, stl=0.8, deflections=1.5,
         # Elite rebounding too, deliberately, so this fixture also covers the
         # dominant-two-way-big case: qualifying for Rim Protector, Paint
@@ -285,12 +315,12 @@ def _seed_rim_protector(session, player_id: str, games_played: int):
         oreb=4.0, dreb=10.0,
     ))
     session.add(Shot(
-        shot_id=f"s-{player_id}", game_id="g1", player_id=player_id, season="2024-25",
+        shot_id=f"s-{player_id}-{season}", game_id="g1", player_id=player_id, season=season,
         shot_made=1, zone="Restricted Area",
     ))
 
 
-def _seed_role_players(session, count=6):
+def _seed_role_players(session, count=6, season: str = "2024-25"):
     """Percentile ranking against a league of one player is mathematically
     meaningless — every stat trivially ranks at the 100th percentile, and a
     trait mixing a LOWER_IS_BETTER input with a normal one then averages a
@@ -298,20 +328,20 @@ def _seed_role_players(session, count=6):
     that checks a specific archetype outcome needs a real comparison
     population, the same way the league-wide functions are actually used."""
     for i in range(count):
-        session.add(Player(player_id=f"ROLE{i}", season="2024-25",
+        session.add(Player(player_id=f"ROLE{i}", season=season,
                            name=f"Role {i}", position="G", team_id="T1"))
         session.add(DefenderStats(
-            player_id=f"ROLE{i}", season="2024-25", defense_category="Overall",
+            player_id=f"ROLE{i}", season=season, defense_category="Overall",
             season_type=REGULAR_SEASON, gp=70, freq=1.0,
             d_fgm=100, d_fga=200, d_fg_pct=0.50, normal_fg_pct=0.50, pct_plusminus=0.0,
         ))
         session.add(DefenderStats(
-            player_id=f"ROLE{i}", season="2024-25", defense_category="Less Than 6Ft",
+            player_id=f"ROLE{i}", season=season, defense_category="Less Than 6Ft",
             season_type=REGULAR_SEASON, gp=70, freq=0.2,
             d_fgm=50, d_fga=80, d_fg_pct=0.625, normal_fg_pct=0.65, pct_plusminus=-0.025,
         ))
         session.add(PlayerDefensiveActivity(
-            player_id=f"ROLE{i}", season="2024-25", gp=70, min_per_game=20.0,
+            player_id=f"ROLE{i}", season=season, gp=70, min_per_game=20.0,
             blk=0.3, stl=0.5, deflections=1.0,
             # Modest, not zero/missing — BIG1's oreb/dreb must rank against a
             # real distribution. Ranking against all-NaN role players would
@@ -326,20 +356,20 @@ def _seed_role_players(session, count=6):
     # 1.0), and a tie is resolved by ARCHETYPES list order rather than by
     # which archetype the player actually fits better. A real league always
     # has someone who boards better than even an elite rim protector.
-    session.add(Player(player_id="BOARDS_ONLY", season="2024-25",
+    session.add(Player(player_id="BOARDS_ONLY", season=season,
                        name="Boards Only", position="C", team_id="T1"))
     session.add(DefenderStats(
-        player_id="BOARDS_ONLY", season="2024-25", defense_category="Overall",
+        player_id="BOARDS_ONLY", season=season, defense_category="Overall",
         season_type=REGULAR_SEASON, gp=70, freq=1.0,
         d_fgm=100, d_fga=200, d_fg_pct=0.50, normal_fg_pct=0.50, pct_plusminus=0.0,
     ))
     session.add(DefenderStats(
-        player_id="BOARDS_ONLY", season="2024-25", defense_category="Less Than 6Ft",
+        player_id="BOARDS_ONLY", season=season, defense_category="Less Than 6Ft",
         season_type=REGULAR_SEASON, gp=70, freq=0.2,
         d_fgm=50, d_fga=80, d_fg_pct=0.625, normal_fg_pct=0.65, pct_plusminus=-0.025,
     ))
     session.add(PlayerDefensiveActivity(
-        player_id="BOARDS_ONLY", season="2024-25", gp=70, min_per_game=20.0,
+        player_id="BOARDS_ONLY", season=season, gp=70, min_per_game=20.0,
         blk=0.3, stl=0.5, deflections=1.0, oreb=6.0, dreb=14.0,
     ))
 
@@ -354,18 +384,19 @@ def test_compute_archetypes_end_to_end_assigns_a_real_rim_protector(engine):
 
     table = arc.compute_archetypes(engine, "2024-25")
     row = table[table["player_id"] == "BIG1"].iloc[0]
-    assert row["archetype_key"] == "rim_protector"
+    # Rim protection, activity and rebounding together: the most complete
+    # true description of him leads, and Rim Protector is among his labels.
+    assert row["archetype_key"] == "defensive_anchor"
+    assert "rim_protector" in {s["key"] for s in row["archetype_secondary"]}
     assert row["archetype_score"] is not None and row["archetype_score"] > 0
 
 
-def test_secondary_archetypes_drop_a_fully_redundant_one(engine):
-    """Confirmed real bug: a dominant two-way big (Victor Wembanyama)
-    qualified for Rim Protector, Paint Anchor, Rebounding Specialist AND
-    Defensive Anchor simultaneously, but Rebounding Specialist's entire gate
-    (rebounding alone) was already covered by Paint Anchor's (rim_protection
-    + rebounding) — showing it added a badge with zero new information.
-    Paint Anchor, which adds the new "rebounding" fact on top of Rim
-    Protector's "rim_protection", must still show."""
+def test_every_qualifying_label_is_shown_most_specific_first(engine):
+    """A player carries every archetype he qualifies for. A dominant two-way
+    big really is a Defensive Anchor AND a Paint Anchor AND a Rim Protector
+    AND a Rebounding Specialist; hiding the narrower ones as "redundant"
+    made Rudy Gobert read as a "Rebounding Specialist" with Paint Anchor
+    buried. The fuller description leads; the narrower ones follow it."""
     Session = sessionmaker(bind=engine)
     with Session() as session:
         _seed_rim_protector(session, "BIG1", games_played=70)
@@ -373,9 +404,62 @@ def test_secondary_archetypes_drop_a_fully_redundant_one(engine):
         session.commit()
 
     detail = arc.player_archetype_detail(engine, "BIG1", "2024-25")
-    secondary_keys = {s["key"] for s in detail["secondary"]}
-    assert "rebounding_specialist" not in secondary_keys
-    assert "paint_anchor" in secondary_keys
+    keys = [detail["primary"]["key"]] + [s["key"] for s in detail["secondary"]]
+    assert keys[:2] == ["defensive_anchor", "paint_anchor"]
+    assert {"rim_protector", "rebounding_specialist"} <= set(keys)
+
+
+def test_headline_is_an_identity_and_narrow_labels_follow_fuller_ones():
+    """Ranking by fit alone put a maxed one-trait label ahead of the fuller
+    description it belongs to (Gobert: Rebounding Specialist over Paint
+    Anchor), and a skill with several checks ahead of the player's role
+    (Nikola Jokić: Three-Level Scorer over Point Center)."""
+    gobert = _row(position="C", trait_rim_protection=0.92, trait_rebounding=0.99, trait_defensive_activity=0.40)
+    keys = [a.key for a, _ in arc.ranked_matches(gobert)]
+    assert keys[0] == "paint_anchor"
+    assert keys.index("paint_anchor") < keys.index("rebounding_specialist")
+
+    jokic = _row(position="C", trait_passing_hub=0.99, trait_rebounding=0.98,
+                 trait_rim_efficiency=0.82, trait_midrange_efficiency=0.89, trait_three_point_efficiency=0.71,
+                 trait_scoring_load=0.98, rim_fga_pg=5.0, midrange_fga_pg=1.8, three_fga_pg=4.5)
+    keys = [a.key for a, _ in arc.ranked_matches(jokic)]
+    assert keys[0] == "passing_big"
+    assert "three_level_scorer" in keys
+
+
+def test_wing_labels_never_go_to_centers():
+    """Myles Turner was a "3&D Wing" and Bam Adebayo a "Two-Way Wing"."""
+    for key in ("three_and_d_wing", "two_way_wing", "slasher", "three_no_d_wing"):
+        arch = arc.ARCHETYPE_BY_KEY[key]
+        for position in ("C", "C-F", "F-C"):
+            assert position not in arch.positions, (key, position)
+
+
+def test_big_guard_is_a_ball_handler_with_size():
+    big_guard = arc.ARCHETYPE_BY_KEY["big_guard"]
+    handler = dict(trait_playmaking=0.90, trait_self_creation=0.90)
+    assert arc._qualifies(_row(position="F-G", height=80.0, **handler), big_guard)   # Luka Dončić
+    assert not arc._qualifies(_row(position="G", height=74.0, **handler), big_guard)  # a 6'2" lead guard
+    assert not arc._qualifies(_row(position="C", height=83.0, **handler), big_guard)  # a passing center
+
+
+def test_point_forward_is_a_playmaking_forward():
+    point_forward = arc.ARCHETYPE_BY_KEY["point_forward"]
+    assert arc._qualifies(_row(position="F", height=81.0, trait_playmaking=0.90), point_forward)  # LeBron
+    assert not arc._qualifies(_row(position="G", height=81.0, trait_playmaking=0.90), point_forward)
+    assert not arc._qualifies(_row(position="C", height=83.0, trait_playmaking=0.90), point_forward)
+
+
+def test_point_of_attack_defender_is_a_perimeter_size():
+    """Bigs listed as a bare "F" were Point-of-Attack Defenders off big-man
+    steal and deflection rates."""
+    poa = arc.ARCHETYPE_BY_KEY["poa_defender"]
+    stopper = dict(trait_point_of_attack=0.85, trait_defensive_quality=0.70)
+    assert arc._qualifies(_row(position="F", height=79.0, **stopper), poa)   # Herbert Jones
+    assert not arc._qualifies(_row(position="F", height=82.0, **stopper), poa)
+    # Steals alone do not make one: a below-average defender overall fails.
+    assert not arc._qualifies(_row(position="G", height=78.0, trait_point_of_attack=0.85,
+                                   trait_defensive_quality=0.45), poa)
 
 
 def test_compute_archetypes_excludes_players_under_min_games(engine):
@@ -403,7 +487,8 @@ def test_player_archetype_detail_is_json_safe_and_transparent(engine):
     json.loads(encoded)
 
     assert detail["eligible"] is True
-    assert detail["primary"]["key"] == "rim_protector"
+    assert detail["primary"]["key"] == "defensive_anchor"
+    assert detail["based_on_season"] == "2024-25"
     # Every trait must appear, even ones this player has no data for, so a
     # client can render a full breakdown rather than a partial one.
     assert len(detail["traits"]) == len(arc.TRAITS)
@@ -427,3 +512,34 @@ def test_archetype_catalogue_covers_every_defined_archetype():
     assert len(catalogue) == len(arc.ARCHETYPES)
     assert all(c["label"] and c["category"] and c["blurb"] for c in catalogue)
     assert set(c["category"] for c in catalogue) <= set(arc.CATEGORY_ORDER)
+
+
+def test_a_player_short_on_games_takes_his_last_full_season(engine):
+    """Walker Kessler played 5 games this season (injury) and had no
+    archetype at all. He keeps the one his last full season earned, and the
+    payload says which season it came from."""
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        _seed_rim_protector(session, "BIG1", games_played=70, season="2023-24")
+        _seed_role_players(session, season="2023-24")
+        _seed_rim_protector(session, "BIG1", games_played=5, season="2024-25")
+        _seed_role_players(session, season="2024-25")
+        session.commit()
+
+    table = arc.compute_archetypes(engine, "2024-25")
+    row = table[table["player_id"] == "BIG1"].iloc[0]
+    assert row["archetype_key"] == "defensive_anchor"
+    assert row["archetype_season"] == "2023-24"
+    detail = arc.player_archetype_detail(engine, "BIG1", "2024-25")
+    assert detail["based_on_season"] == "2023-24" and detail["games_this_season"] == 5
+
+
+def test_garbage_time_minutes_earn_no_label(engine):
+    """Per-minute rates from six-minute cameos topped the defensive labels."""
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        _seed_rim_protector(session, "CAMEO", games_played=70, minutes=6.0)
+        _seed_role_players(session)
+        session.commit()
+    row = arc.compute_archetypes(engine, "2024-25").set_index("player_id").loc["CAMEO"]
+    assert row["archetype_key"] is None

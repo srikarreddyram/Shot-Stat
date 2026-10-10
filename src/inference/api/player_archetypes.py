@@ -27,7 +27,8 @@ def _clean_archetype_score(value):
 
 @router.get("/stats/archetypes")
 def stat_engine_archetypes(season: Optional[str] = None):
-    """Every rostered player's primary + secondary archetype.
+    """Every rostered player's labels: a primary archetype and every other
+    archetype he qualifies for, most descriptive first.
 
     Merge onto the already-fetched /stats/players rows by player_id rather
     than re-fetching the whole roster here — this endpoint exists so a
@@ -48,6 +49,9 @@ def stat_engine_archetypes(season: Optional[str] = None):
             "archetype_label": row["archetype_label"],
             "archetype_score": _clean_archetype_score(row["archetype_score"]),
             "archetype_secondary": row["archetype_secondary"],
+            # The season the labels come from: this one, or the player's last
+            # season with enough games when injury kept him under the bar.
+            "archetype_season": row.get("archetype_season") if isinstance(row.get("archetype_season"), str) else None,
         }
         for _, row in table.iterrows()
     ]
