@@ -59,23 +59,36 @@ against the league and colour-coded by tier.
 
 ![Stat Engine](docs/screenshots/04-stat-engine.png)
 
-Profiles carry **season-by-season averages** of the major stats: regular season
-and playoffs separately, a career line, and each column's best season picked out.
-Shooting percentages are total makes over total attempts, so they match the NBA's
-own numbers.
+A profile opens on the basics and keeps the rest one click away. **Basic**: the
+header, **season-by-season averages** (regular season and playoffs, a career line,
+each column's best season picked out, TS% and eFG% from season totals so they
+match the NBA's own numbers), a shot map, and the bio and rating cards.
 
 ![Player profile](docs/screenshots/05-player-profile.png)
 
-Team profiles add the opponents' line and the team's **league rank in every stat,
-every season**.
+The **shot map** draws every shot's real coordinates on the engine's hardwood
+court: where he shoots from, and how well in each zone against the league, for
+this season or the last three, regular season or playoffs.
+
+![Shot map](docs/screenshots/08-shot-map.png)
+
+**Advanced stats** opens the rest: the NBA's own advanced numbers (usage, true
+shooting, assist/rebound/turnover rates, on-court ratings, PIE) ranked against the
+league and season by season; more shot maps (by shot type, clutch time, the shots
+his defensive assignments took, and how his shot diet moved since last season);
+a radar of the player's shape, a strengths-and-weaknesses chart, career trend
+lines, play-type and defense-by-category charts, and every tracking stat.
+
+![More shot maps](docs/screenshots/09-shot-map-gallery.png)
+
+Team profiles follow the same split, with the team's shots and its opponents'
+on the shot map, and the team's **league rank in every stat, every season**.
 
 ![Team profile](docs/screenshots/06-team-profile.png)
 
-Also on player profiles: a radar of the player's shape across six areas, a
-strengths-and-weaknesses chart, career trend lines, shot charts by zone, play-type
-and defense-by-category charts, and a rule-based player archetype ("Two-Way Wing",
-"Rim Protector"…) with its definition one click away. Any two or three players
-can be compared side by side. Every chart has a table view.
+Players also get a rule-based archetype ("Two-Way Wing", "Rim Protector"…) with its
+definition one click away, and any two or three players can be compared side by
+side. Every chart has a table view.
 
 ## Shot archetypes
 
@@ -131,6 +144,15 @@ is in [`docs/model-versions.md`](docs/model-versions.md).
   offense; strip him out and his actual teammates rank near the top of the
   league. Every team-context feature subtracts the player's own contribution
   before it reaches the model.
+- **The obvious hot-zone map is mostly noise.** Splitting each of 150 players'
+  seasons into random halves and drawing a spot-by-spot FG% map from each, the
+  halves agreed at a correlation of only 0.16-0.23 however the smoothing was tuned.
+  By zone it is 0.63 for a season and 0.79 over three, so the shot maps colour
+  efficiency by zone, shrunk toward the league by an empirical-Bayes prior fitted
+  per zone (the true spread between players is only 3-5.5 points of FG%). The
+  same test keeps the season-to-season change map honest: a spot is only
+  coloured past two standard errors, which a same-season split lights up on 3%
+  of the floor against 18% for real changes.
 - **An explanation is a claim, and claims can be wrong in ways a metric won't
   catch.** Reading generated output by hand — not just checking that a number
   moved — caught real bugs in the natural-language explanations: a player's own
@@ -185,6 +207,7 @@ python -c "from src.db.database import init_db; init_db()"
 # a full bootstrap across 10+ seasons takes several hours)
 python -m src.ingestion.bootstrap --full
 python -m src.ingestion.game_log_ingestor          # box scores, for season averages
+python -m src.ingestion.advanced_stats_ingestor    # the NBA's own advanced stats
 
 # Train both models
 python -m src.training.train --name shot-quality-v20
@@ -202,7 +225,7 @@ python scripts/refresh_season.py
 ```
 
 `./scripts/dev.sh` starts the FastAPI backend and the React frontend on fresh
-ports, wires them together, and prints the URLs. Tests: `pytest` (271 tests;
+ports, wires them together, and prints the URLs. Tests: `pytest` (287 tests;
 `pytest -m "not slow"` skips the ones that need trained models and the full
 database). See [`COMMANDS.md`](COMMANDS.md) for every ingestion step, ablation
 flag and evaluation tool.
