@@ -346,9 +346,11 @@ export function RankPill({ rank, outOf, pct }: { rank: number; outOf: number; pc
 }
 
 // ── Brand ───────────────────────────────────────────────────────────────────
-// The app icon (public/icon.svg — a basketball whose seams form an eye) and
-// the one navigation bar every page shares. Below 40px the simplified
-// favicon.svg is used: the full icon's highlight and bezel turn to mush.
+// The app icon (public/icon.svg — a shot in flight: ball, a dotted arc, the
+// hoop) and the one navigation bar every page shares. Below 40px the
+// simplified favicon.svg is used: the full icon's small dots and bezel turn
+// to mush. (It replaced a basketball whose seams formed an eye, which read
+// as creepy rather than clever.)
 // The brand pieces also render on the front page and the engine, which don't
 // set --se-accent; without a fallback they'd silently turn white there.
 const GOLD_FALLBACK = "var(--se-accent, #C9A84C)";
@@ -374,12 +376,12 @@ export function BrandLockup({ size = 30, sub }: { size?: number; sub?: ReactNode
   );
 }
 
-export type SiteSection = "engine" | "stats" | "archetypes" | "model";
+export type SiteSection = "engine" | "stats" | "model";
 export const SITE_SECTIONS: { key: SiteSection; href: string; label: string }[] = [
   { key: "engine", href: "/#engine", label: "SHOT ENGINE" },
   { key: "stats", href: "/stats", label: "STAT ENGINE" },
-  { key: "archetypes", href: "/archetypes", label: "ARCHETYPES" },
-  { key: "model", href: "/model-features", label: "MODEL" },
+  // The model's features and the shot archetypes, as two tabs of one page.
+  { key: "model", href: "/model", label: "MODEL" },
 ];
 
 /** The shared top navigation. The current page is marked, not just linked. */

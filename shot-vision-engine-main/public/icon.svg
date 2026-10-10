@@ -1,45 +1,47 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SHOT VISION">
+  <!-- SHOT VISION: a shot in flight. The dotted arc is the path the engine
+       sees before the ball gets there; ball, rim and net say basketball at
+       any size. Ball and rim use the court's own orange; the arc is the
+       app's gold; the NBA red/blue bezel is the one every page carries. -->
   <defs>
-    <radialGradient id="bg" cx="50%" cy="36%" r="78%">
-      <stop offset="0%" stop-color="#1c1a22"/>
-      <stop offset="100%" stop-color="#08080c"/>
+    <radialGradient id="bg" cx="50%" cy="30%" r="80%">
+      <stop offset="0%" stop-color="#1c1a22"/><stop offset="100%" stop-color="#08080c"/>
     </radialGradient>
-    <!-- userSpaceOnUse, not the default bounding box: a bounding-box gradient
-         can't paint a zero-width shape like the vertical seam. -->
-    <linearGradient id="gold" gradientUnits="userSpaceOnUse" x1="0" y1="80" x2="0" y2="416">
-      <stop offset="0%" stop-color="#EACB70"/>
-      <stop offset="100%" stop-color="#B08A32"/>
-    </linearGradient>
-    <radialGradient id="leather" cx="40%" cy="34%" r="75%">
-      <stop offset="0%" stop-color="#5a3414"/>
-      <stop offset="100%" stop-color="#23140a"/>
+    <radialGradient id="ball" cx="36%" cy="30%" r="78%">
+      <stop offset="0%" stop-color="#F6AE62"/><stop offset="100%" stop-color="#C2561E"/>
     </radialGradient>
-    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#C9A84C" stop-opacity="0.22"/>
-      <stop offset="100%" stop-color="#C9A84C" stop-opacity="0"/>
-    </radialGradient>
-    <clipPath id="ball"><circle cx="256" cy="248" r="160"/></clipPath>
+    <clipPath id="b"><circle cx="152" cy="366" r="78"/></clipPath>
   </defs>
-
   <rect width="512" height="512" rx="116" fill="url(#bg)"/>
-  <circle cx="256" cy="248" r="214" fill="url(#glow)"/>
 
-  <!-- Ball: leather, then its seams. The two side seams bow toward each
-       other to form the eye; the vertical seam runs behind the pupil. -->
-  <circle cx="256" cy="248" r="160" fill="url(#leather)"/>
-  <g clip-path="url(#ball)" fill="none" stroke="url(#gold)" stroke-linecap="round">
-    <line x1="256" y1="80" x2="256" y2="416" stroke-width="16"/>
-    <path d="M 90 248 Q 256 112 422 248" stroke-width="20"/>
-    <path d="M 90 248 Q 256 384 422 248" stroke-width="20"/>
+  <!-- The arc: dots growing toward the rim, the shot arriving. -->
+  <g fill="#C9A84C">
+    <circle cx="206" cy="282" r="6.5" opacity="0.55"/>
+    <circle cx="224" cy="232" r="7.5" opacity="0.65"/>
+    <circle cx="247" cy="189" r="8.5" opacity="0.75"/>
+    <circle cx="276" cy="157" r="9.5" opacity="0.85"/>
+    <circle cx="310" cy="146" r="10.5" opacity="0.92"/>
+    <circle cx="343" cy="160" r="11.5"/>
   </g>
-  <circle cx="256" cy="248" r="160" fill="none" stroke="url(#gold)" stroke-width="24"/>
 
-  <!-- Pupil: the target. -->
-  <circle cx="256" cy="248" r="54" fill="url(#gold)"/>
-  <circle cx="256" cy="248" r="24" fill="#08080c"/>
-  <circle cx="274" cy="229" r="9" fill="#F7E9BD"/>
+  <!-- Hoop: backboard, rim, net. -->
+  <rect x="428" y="120" width="15" height="132" rx="5" fill="#E9E4D8"/>
+  <line x1="352" y1="216" x2="428" y2="216" stroke="#E2733A" stroke-width="13" stroke-linecap="round"/>
+  <g stroke="#E9E4D8" stroke-opacity="0.8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 357 223 L 372 292 L 409 292 L 424 223"/>
+    <path d="M 380 223 L 384 292"/><path d="M 401 223 L 397 292"/>
+    <path d="M 363 252 L 418 252"/>
+  </g>
 
-  <!-- NBA red / blue edge — the same bezel every page carries. -->
-  <rect x="146" y="446" width="110" height="10" rx="5" fill="#C8102E"/>
-  <rect x="256" y="446" width="110" height="10" rx="5" fill="#1D428A"/>
+  <!-- Ball. -->
+  <circle cx="152" cy="366" r="78" fill="url(#ball)"/>
+  <g clip-path="url(#b)" fill="none" stroke="#3A1A08" stroke-width="7.5" stroke-linecap="round">
+    <line x1="152" y1="284" x2="152" y2="448"/>
+    <line x1="70" y1="366" x2="234" y2="366"/>
+    <path d="M 98 302 Q 134 366 98 430"/>
+    <path d="M 206 302 Q 170 366 206 430"/>
+  </g>
+
+  <rect x="146" y="462" width="110" height="10" rx="5" fill="#C8102E"/>
+  <rect x="256" y="462" width="110" height="10" rx="5" fill="#1D428A"/>
 </svg>

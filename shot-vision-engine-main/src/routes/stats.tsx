@@ -26,7 +26,7 @@ import {
 // Stat Engine — browse every stat this project has collected, for every
 // player and every team, basic through niche. This answers "what does this
 // PLAYER (or team) actually do"; the model-introspection page that used to
-// live here now lives at /model-features.
+// live here now lives at /model.
 //
 // Three shapes, because they answer different questions:
 //   • leaderboard — sortable, "who leads the league in X, and where does

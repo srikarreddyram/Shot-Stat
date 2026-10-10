@@ -69,7 +69,7 @@ const CURRY = {
 /**
  * The seven shot archetypes found by PCA + K-Means over 2,234,150 shots
  * (models/shot_archetypes_metadata.json, pca_kmeans_v1): share of all shots
- * and FG% within each. The same clusters the /archetypes page draws.
+ * and FG% within each. The same clusters the /model page's archetypes tab draws.
  */
 const ARCHETYPES = {
   shots: 2234150,
@@ -87,7 +87,7 @@ const ARCHETYPES = {
 const PRODUCTS = [
   { key: "engine", name: "SHOT ENGINE", href: "/#engine", blurb: "Where to shoot against any defender — make %, expected points and why." },
   { key: "stats", name: "STAT ENGINE", href: "/stats", blurb: "Every stat for every player and team, ranked, compared and charted." },
-  { key: "archetypes", name: "ARCHETYPES", href: "/archetypes", blurb: "The kinds of shot the league takes, found by clustering 2M+ shots." },
+  { key: "model", name: "MODEL", href: "/model", blurb: "What the model leans on, and the kinds of shot the league takes, clustered from 2M+ shots." },
 ] as const;
 
 const LUKA_BEST = LUKA_ZONES[0];
@@ -408,7 +408,7 @@ export default function SplashPage({ onLaunch }: Props) {
                   </div>
                 ))}
               </div>
-              <SectionCta active={section === 3} delay={1.9} href="/archetypes" marginTop={18}>EXPLORE THE ARCHETYPES →</SectionCta>
+              <SectionCta active={section === 3} delay={1.9} href="/model#archetypes" marginTop={18}>EXPLORE THE ARCHETYPES →</SectionCta>
             </div>
           </SectionOverlay>
 

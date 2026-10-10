@@ -83,7 +83,16 @@ async def lifespan(app: FastAPI):
     import threading
 
     from src.inference.shot_maps import warm_league_cache
-    warm = threading.Thread(target=warm_league_cache, args=(db_engine,), daemon=True)
+
+    def warm_caches():
+        warm_league_cache(db_engine)
+        try:  # the archetype court sample (~1-2 s): same reasoning
+            from src.inference.api.shot_archetypes import archetypes_court
+            archetypes_court(points_per_cluster=300, season=None)
+        except Exception as e:  # optional: the model page computes it on demand
+            print(f"  ⚠ Archetype court warm-up skipped: {e}")
+
+    warm = threading.Thread(target=warm_caches, daemon=True)
     warm.start()
 
     yield

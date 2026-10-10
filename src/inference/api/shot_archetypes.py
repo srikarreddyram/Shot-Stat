@@ -45,6 +45,13 @@ def list_archetypes():
     }
 
 
+# One random sample per (fit, size, season) for the life of the process: the
+# ORDER BY RANDOM() below reads every shot in each cluster (~1 s in all), and
+# a fresh sample per request adds nothing. A re-fit is followed by an API
+# restart, which clears this.
+_court_cache: dict[tuple, dict] = {}
+
+
 @router.get("/archetypes/court")
 def archetypes_court(points_per_cluster: int = Query(250, ge=10, le=1000),
                      season: Optional[str] = None):
@@ -57,6 +64,9 @@ def archetypes_court(points_per_cluster: int = Query(250, ge=10, le=1000),
         raise HTTPException(status_code=503, detail="Database not ready")
 
     from src.analysis.shot_archetypes import MODEL_VERSION
+    key = (MODEL_VERSION, points_per_cluster, season)
+    if key in _court_cache:
+        return _court_cache[key]
     season_clause = "AND s.season = :season" if season else ""
 
     out = {}
@@ -79,7 +89,8 @@ def archetypes_court(points_per_cluster: int = Query(250, ge=10, le=1000),
                 "label": cluster["label"],
                 "points": [dict(r) for r in rows],
             }
-    return {"clusters": out}
+    _court_cache[key] = {"clusters": out}
+    return _court_cache[key]
 
 
 @router.get("/player/{player_id}/archetype-mix")

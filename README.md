@@ -90,13 +90,14 @@ Players also get a rule-based archetype ("Two-Way Wing", "Rim Protector"…) wit
 definition one click away, and any two or three players can be compared side by
 side. Every chart has a table view.
 
-## Shot archetypes
+## The model page
 
-PCA + K-Means over 2.2 million shots finds seven archetypes — from the open
-above-the-break spot-up three (35% of all shots, 36% FG) to the contested alley-oop
-dunk (6%, 87% FG) — drawn on the court.
+What the shot-quality model leans on — every feature, ranked by gain — and the
+**shot archetypes** the league takes, on one page. PCA + K-Means over 2.2 million
+shots finds seven archetypes, from the open above-the-break spot-up three (35% of
+all shots, 36% FG) to the contested alley-oop dunk (6%, 87% FG), drawn on the court.
 
-![Shot archetypes](docs/screenshots/07-archetypes.png)
+![Model page](docs/screenshots/07-model.png)
 
 ## How good is the model
 
