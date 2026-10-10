@@ -60,37 +60,51 @@ class ComparableShotsIndex:
         so "comparable" is computed in the space the shot was actually scored
         in, not re-derived independently.
         """
-        x = feature_row[self.feature_cols].astype(float).to_numpy()[0]
-        x = np.where(np.isnan(x), self._fill_values(), x)
-        x_scaled = (x / self.scale)[None, :]
+        return self.query_many(feature_row.iloc[[0]], [k], exclude_shot_id)[0]
 
-        n_query = min(k + (1 if exclude_shot_id is not None else 0), len(self.meta))
+    def query_many(self, feature_rows: pd.DataFrame, ks: list[int], exclude_shot_id=None) -> list[dict]:
+        """`query` for several rows at once, `ks[i]` neighbours for row i.
+
+        One `kneighbors` call instead of one per row: sklearn re-validates the
+        whole fitted matrix on every call, which was most of the cost of the
+        per-shot-type loop in `_comparable_for_mix`.
+        """
+        empty = {"count": 0, "historical_make_rate": None, "examples": []}
+        extra = 1 if exclude_shot_id is not None else 0
+        n_query = min(max(ks, default=0) + extra, len(self.meta))
         if n_query == 0:
-            return {"count": 0, "historical_make_rate": None, "examples": []}
-        _, idx = self.nn.kneighbors(x_scaled, n_neighbors=n_query)
-        rows = self.meta.iloc[idx[0]]
-        if exclude_shot_id is not None:
-            rows = rows[rows["shot_id"] != exclude_shot_id]
-        rows = rows.head(k)
-        if rows.empty:
-            return {"count": 0, "historical_make_rate": None, "examples": []}
+            return [dict(empty) for _ in ks]
 
-        made = rows["shot_made"].astype(float)
-        examples = [
-            {
-                "player_name": r["player_name"],
-                "game_date": None if pd.isna(r["game_date"]) else str(pd.Timestamp(r["game_date"]).date()),
-                "zone": r["zone"],
-                "opponent": r["def_team"] if pd.notna(r["def_team"]) else None,
-                "made": bool(r["shot_made"]),
-            }
-            for _, r in rows.head(5).iterrows()
-        ]
-        return {
-            "count": int(len(rows)),
-            "historical_make_rate": round(float(made.mean()), 4),
-            "examples": examples,
-        }
+        x = feature_rows[self.feature_cols].astype(float).to_numpy()
+        x = np.where(np.isnan(x), self._fill_values(), x)
+        _, idx = self.nn.kneighbors(x / self.scale, n_neighbors=n_query)
+
+        results = []
+        for row_idx, k in zip(idx, ks):
+            rows = self.meta.iloc[row_idx[: k + extra]]
+            if exclude_shot_id is not None:
+                rows = rows[rows["shot_id"] != exclude_shot_id]
+            rows = rows.head(k)
+            if rows.empty:
+                results.append(dict(empty))
+                continue
+            made = rows["shot_made"].astype(float)
+            examples = [
+                {
+                    "player_name": r["player_name"],
+                    "game_date": None if pd.isna(r["game_date"]) else str(pd.Timestamp(r["game_date"]).date()),
+                    "zone": r["zone"],
+                    "opponent": r["def_team"] if pd.notna(r["def_team"]) else None,
+                    "made": bool(r["shot_made"]),
+                }
+                for _, r in rows.head(5).iterrows()
+            ]
+            results.append({
+                "count": int(len(rows)),
+                "historical_make_rate": round(float(made.mean()), 4),
+                "examples": examples,
+            })
+        return results
 
     def save(self, path: str | Path) -> None:
         joblib.dump(self, path)

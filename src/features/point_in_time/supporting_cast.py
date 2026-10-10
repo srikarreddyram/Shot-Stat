@@ -199,6 +199,16 @@ def lookup_supporting_cast(conn, player_id: str, season: str,
         return empty
 
     params["team"] = team_row[0]
+    # Driven from the team's games rather than the season's shots: the team
+    # and date filters narrow ~20k games to the ~90 this team played before
+    # any shot is read, instead of joining every shot of the season and
+    # discarding the other 29 teams' (~400 ms -> ~20 ms on a cold cache).
+    # The window is only a pre-filter, deliberately wider than any season
+    # (the 2019-20 bubble playoffs ran into October 2020); `s.season` below
+    # is still the exact test.
+    start_year = int(season[:4])
+    params["window_start"] = f"{start_year}-09-01"
+    params["window_end"] = f"{start_year + 1}-11-01"
     row = conn.execute(text(f"""
         SELECT SUM(s.shot_made)                                        AS makes,
                COUNT(*)                                                AS fga,
@@ -212,10 +222,12 @@ def lookup_supporting_cast(conn, player_id: str, season: str,
                         THEN 1 ELSE 0 END)                             AS makes_with_ctx,
                SUM(CASE WHEN sc.is_assisted = 1 AND s.shot_made = 1
                         THEN 1 ELSE 0 END)                             AS assisted
-        FROM shots s
-        JOIN games g ON g.game_id = s.game_id
+        FROM games g
+        CROSS JOIN shots s ON s.game_id = g.game_id
         LEFT JOIN shot_context sc ON sc.shot_id = s.shot_id
-        WHERE s.season = :season
+        WHERE (g.home_team = :team OR g.away_team = :team)
+          AND g.date >= :window_start AND g.date < :window_end
+          AND s.season = :season
           AND s.player_id != :pid
           AND s.home_away IS NOT NULL
           AND s.zone IS NOT NULL AND s.zone != 'Backcourt'

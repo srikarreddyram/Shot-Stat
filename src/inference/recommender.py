@@ -760,11 +760,10 @@ class ShotRecommender:
         alloc = np.floor(w * k).astype(int)
         for i in np.argsort(-(w * k - alloc))[: k - alloc.sum()]:
             alloc[i] += 1
+        order = [i for i in np.argsort(-w) if alloc[i] > 0]
+        batch = self.comparable_shots.query_many(X.iloc[order], [int(alloc[i]) for i in order])
         count, made, examples = 0, 0.0, []
-        for i in np.argsort(-w):
-            if alloc[i] == 0:
-                continue
-            res = self.comparable_shots.query(X.iloc[[i]], k=int(alloc[i]))
+        for res in batch:
             if not res["count"]:
                 continue
             count += res["count"]

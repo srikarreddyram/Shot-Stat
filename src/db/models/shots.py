@@ -56,6 +56,10 @@ class Shot(Base):
         Index("ix_shots_game_id", "game_id"),
         Index("ix_shots_player_season", "player_id", "season"),
         Index("ix_shots_zone", "zone"),
+        # Covers the serving path's matchup→shots join (one shooter in one
+        # game, read for zone and outcome) without touching the table: the
+        # defender-quality lookup drops from ~145 ms to ~15 ms.
+        Index("ix_shots_game_player", "game_id", "player_id", "zone", "shot_made"),
     )
 
     # Relationships
@@ -184,7 +188,10 @@ class ShotOnCourt(Base):
         # floor with. Without this index that is a full scan of ~17.5M rows —
         # measured at 4.25s PER CALL, twice per /explain/matchup request,
         # which was enough on its own to push that endpoint past a timeout.
-        Index("ix_shot_on_court_player_role", "player_id", "role"),
+        # shot_id is carried in the index so that query never visits the
+        # table: a player's ~30k on-court rows are otherwise ~30k random page
+        # reads the first time he is looked up.
+        Index("ix_shot_on_court_player_role_shot", "player_id", "role", "shot_id"),
     )
 
     def __repr__(self):

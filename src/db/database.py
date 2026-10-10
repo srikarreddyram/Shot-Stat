@@ -77,6 +77,12 @@ def init_db(engine=None, echo=False):
         conn.commit()
 
     Base.metadata.create_all(engine)
+    # create_all only builds indexes alongside a NEW table, so an index added
+    # to a model later never reaches an existing database. Create any that are
+    # missing; existing ones are skipped by name.
+    for table in Base.metadata.sorted_tables:
+        for index in table.indexes:
+            index.create(engine, checkfirst=True)
     print(f"✓ Database initialized at {config.DB_PATH}")
     return engine
 

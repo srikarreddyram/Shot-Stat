@@ -199,10 +199,18 @@ python -m src.training.build_comparable_index --model shot-quality-v20
 ```
 
 `./scripts/dev.sh` starts the FastAPI backend and the React frontend on fresh
-ports, wires them together, and prints the URLs. Tests: `pytest` (264 tests;
+ports, wires them together, and prints the URLs. Tests: `pytest` (267 tests;
 `pytest -m "not slow"` skips the ones that need trained models and the full
 database). See [`COMMANDS.md`](COMMANDS.md) for every ingestion step, ablation
 flag and evaluation tool.
+
+**Speed.** `python scripts/benchmark_latency.py --api <backend URL>` times the
+two requests the engine makes against a running server. Scoring the whole court
+for a matchup takes about 0.2 s and a full shot explanation about 0.35 s,
+median over six matchups (up to ~0.7 s the first time a player's data is read
+from disk). Both used to take around 2 s; almost all of that was SQL scanning a
+player's or team's full history, fixed with two covering indexes and queries
+that narrow to the right games before reading any shots.
 
 ## Stack
 
