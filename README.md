@@ -66,9 +66,15 @@ match the NBA's own numbers), a shot map, and the bio and rating cards.
 
 ![Player profile](docs/screenshots/05-player-profile.png)
 
-The **shot map** draws every shot's real coordinates on the engine's hardwood
-court: where he shoots from, and how well in each zone against the league, for
-this season or the last three, regular season or playoffs.
+The **shot map** opens on a replay of his season: every shot, in the order he took
+it, flies from its spot to the rim and leaves a green dot or a red cross, with a
+running game count and make rate.
+
+![Shot replay](docs/screenshots/10-shot-replay.png)
+
+The same card shows where he shoots from (a smooth density of his real shot
+coordinates on the engine's hardwood court) and how well in each zone against the
+league, for this season or the last three, regular season or playoffs.
 
 ![Shot map](docs/screenshots/08-shot-map.png)
 
@@ -86,9 +92,13 @@ on the shot map, and the team's **league rank in every stat, every season**.
 
 ![Team profile](docs/screenshots/06-team-profile.png)
 
-Players also get a rule-based archetype ("Two-Way Wing", "Rim Protector"…) with its
-definition one click away, and any two or three players can be compared side by
-side. Every chart has a table view.
+Every player carries every **archetype** he earns from his measured stats — a
+role on the floor first (Paint Anchor, Point Center, Big Guard, 3&D Wing…), then
+what he is elite at (Rim Protector, Three-Level Scorer…), each with its definition
+one click away; Victor Wembanyama is a Defensive Anchor, Paint Anchor, Stretch Big,
+Rim Protector and Rebounding Specialist. Any two or three players can be compared
+side by side, shot maps included. Every chart has a table view, and every page
+works on a phone.
 
 ## The model page
 
@@ -154,6 +164,13 @@ is in [`docs/model-versions.md`](docs/model-versions.md).
   same test keeps the season-to-season change map honest: a spot is only
   coloured past two standard errors, which a same-season split lights up on 3%
   of the floor against 18% for real changes.
+- **A label system that ranks by fit picks the narrowest label.** Ranking a
+  player's archetypes by how well he fits each one made Rudy Gobert a "Rebounding
+  Specialist" (one trait, 99th percentile) rather than a Paint Anchor (rim
+  protection *and* rebounding, 95th averaged) — the fuller description lost to a
+  part of itself — and Nikola Jokić a "Three-Level Scorer" rather than a Point
+  Center. Labels are now ordered role first, then by how much each one asserts,
+  then by fit, and a player shows every label he earns.
 - **An explanation is a claim, and claims can be wrong in ways a metric won't
   catch.** Reading generated output by hand — not just checking that a number
   moved — caught real bugs in the natural-language explanations: a player's own
@@ -226,7 +243,7 @@ python scripts/refresh_season.py
 ```
 
 `./scripts/dev.sh` starts the FastAPI backend and the React frontend on fresh
-ports, wires them together, and prints the URLs. Tests: `pytest` (287 tests;
+ports, wires them together, and prints the URLs. Tests: `pytest` (298 tests;
 `pytest -m "not slow"` skips the ones that need trained models and the full
 database). See [`COMMANDS.md`](COMMANDS.md) for every ingestion step, ablation
 flag and evaluation tool.
