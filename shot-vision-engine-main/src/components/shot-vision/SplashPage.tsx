@@ -18,6 +18,15 @@ const KEYFRAMES = `
 @keyframes scrollNudge { 0%,100% { opacity:0.3; transform:scaleY(0.8);} 50% { opacity:1; transform:scaleY(1.1);} }
 @keyframes barFill { from { width:0;} }
 @keyframes ambientPulse { 0%,100% { opacity:0.4;} 50% { opacity:0.9;} }
+/* Phones: a section taller than the screen used to centre itself up under
+   the header. Start each one below the header instead, give the copy a real
+   gutter, and drop the rows a phone has no room for. */
+@media (max-width: 640px) {
+  .sv-section { align-items: flex-start !important; padding-top: 124px; box-sizing: border-box; }
+  .sv-section .sv-pad { padding-left: 16px !important; padding-right: 16px !important; padding-top: 0 !important; }
+  .sv-section .sv-sm-hide { display: none !important; }
+  .sv-dots { display: none !important; }
+}
 `;
 
 /** Per-section darkening, biased toward whichever edge the copy sits on. */
@@ -109,7 +118,10 @@ function WordLine({
     <div
       style={{
         fontFamily: "'Bebas Neue', sans-serif",
-        fontSize: size,
+        // Fluid: the design size on a desktop, scaled down with the viewport
+        // so a phone gets a headline rather than one giant word per line
+        // running under the header.
+        fontSize: `min(${size}px, ${(size / 9).toFixed(2)}vw)`,
         color: "#F0F0F0",
         lineHeight: 0.9,
         letterSpacing: "0.01em",
@@ -202,12 +214,19 @@ export default function SplashPage({ onLaunch }: Props) {
               sequence. The same lockup and nav every other page carries, so
               the front page reads as the door to the whole app rather than
               to the shot engine alone. */}
-          <div style={{ position: "absolute", left: 32, top: 28, zIndex: 20, display: "flex", alignItems: "center", gap: 14 }}>
-            <LeagueBrandMark height={32} />
-            <div style={{ width: 1, height: 28, background: "rgba(255,255,255,0.14)" }} />
-            <BrandLockup size={34} sub="NBA INTELLIGENCE" />
-          </div>
-          <div style={{ position: "absolute", right: 32, top: 36, zIndex: 20 }}>
+          {/* One wrapping bar rather than two absolutely positioned corners:
+              on a phone the nav drops under the lockup instead of being
+              drawn over it. */}
+          <div style={{
+            position: "absolute", left: 0, right: 0, top: 0, zIndex: 20,
+            padding: "28px clamp(16px, 2.4vw, 32px) 0", display: "flex", justifyContent: "space-between",
+            alignItems: "center", gap: "12px 24px", flexWrap: "wrap",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <LeagueBrandMark height={32} />
+              <div style={{ width: 1, height: 28, background: "rgba(255,255,255,0.14)" }} />
+              <BrandLockup size={34} sub="NBA INTELLIGENCE" />
+            </div>
             <SiteNav onEngine={onLaunch} />
           </div>
           {/* Same red/blue edge bezel every other page in the app uses (see
@@ -217,8 +236,9 @@ export default function SplashPage({ onLaunch }: Props) {
               about VideoBackdrop, the scrims, or any keyframe above. */}
           <NBAEdgeBezel />
 
-          {/* Nav dots */}
+          {/* Nav dots (desktop only: on a phone they sit on the copy) */}
           <div
+            className="sv-dots"
             style={{
               position: "absolute",
               right: 32,
@@ -257,7 +277,7 @@ export default function SplashPage({ onLaunch }: Props) {
           {/* SECTION 0 — what SHOT VISION is now: three products, one engine */}
           <SectionOverlay active={section === 0} align="center">
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 200, color: "rgba(201,168,76,0.018)", letterSpacing: "0.02em" }}>
+              <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: "min(200px, 26vw)", color: "rgba(201,168,76,0.018)", letterSpacing: "0.02em" }}>
                 VISION
               </div>
             </div>
@@ -297,7 +317,7 @@ export default function SplashPage({ onLaunch }: Props) {
 
           {/* SECTION 1 — SHOT ENGINE */}
           <SectionOverlay active={section === 1} align="left">
-            <div style={{ paddingLeft: "8vw", maxWidth: 580 }}>
+            <div className="sv-pad" style={{ paddingLeft: "8vw", maxWidth: 580 }}>
               <Tag>01 — SHOT ENGINE</Tag>
               <div style={{ marginTop: 20 }}>
                 <WordLine text="Not all shots" active={section === 1} size={88} />
@@ -339,7 +359,7 @@ export default function SplashPage({ onLaunch }: Props) {
 
           {/* SECTION 2 — STAT ENGINE */}
           <SectionOverlay active={section === 2} align="right">
-            <div style={{ paddingRight: "8vw", maxWidth: 580, marginLeft: "auto", textAlign: "right" }}>
+            <div className="sv-pad" style={{ paddingRight: "8vw", maxWidth: 580, marginLeft: "auto", textAlign: "right" }}>
               <Tag>02 — STAT ENGINE</Tag>
               <div style={{ marginTop: 20 }}>
                 <WordLine text="Every stat." active={section === 2} size={88} />
@@ -381,7 +401,7 @@ export default function SplashPage({ onLaunch }: Props) {
 
           {/* SECTION 3 — ARCHETYPES */}
           <SectionOverlay active={section === 3} align="left">
-            <div style={{ paddingLeft: "8vw", maxWidth: 700, paddingTop: 40 }}>
+            <div className="sv-pad" style={{ paddingLeft: "8vw", maxWidth: 700, paddingTop: 40 }}>
               <Tag>03 — SHOT ARCHETYPES</Tag>
               <div style={{ marginTop: 16 }}>
                 <WordLine text="The league takes" active={section === 3} size={74} />
@@ -394,7 +414,7 @@ export default function SplashPage({ onLaunch }: Props) {
               </p>
               <div style={{ marginTop: 16, maxWidth: 520 }}>
                 {ARCHETYPES.rows.map((a, i) => (
-                  <div key={a.label} style={{ marginTop: i === 0 ? 0 : 6 }}>
+                  <div key={a.label} className={i >= 4 ? "sv-sm-hide" : undefined} style={{ marginTop: i === 0 ? 0 : 6 }}>
                     <ComparisonRow
                       label={a.label.toUpperCase()}
                       // Scaled to the most common archetype, so frequency reads at a glance.
@@ -414,7 +434,7 @@ export default function SplashPage({ onLaunch }: Props) {
 
           {/* SECTION 4 — the data, and how honest the models are about it */}
           <SectionOverlay active={section === 4} align="right">
-            <div style={{ paddingRight: "8vw", maxWidth: 900, marginLeft: "auto", textAlign: "right" }}>
+            <div className="sv-pad" style={{ paddingRight: "8vw", maxWidth: 900, marginLeft: "auto", textAlign: "right" }}>
               <Tag>04 — UNDER THE HOOD</Tag>
               <div style={{ marginTop: 20 }}>
                 <WordLine text="2.2 million shots." active={section === 4} size={88} />
@@ -476,6 +496,7 @@ function SectionOverlay({
 }) {
   return (
     <div
+      className={align === "center" ? undefined : "sv-section"}
       style={{
         position: "absolute",
         inset: 0,
