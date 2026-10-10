@@ -132,3 +132,29 @@ def stat_engine_team_seasons(team_id: str):
     if out is None:
         raise HTTPException(status_code=404, detail=f"No box scores for team {team_id}.")
     return out
+
+
+@router.get("/stats/player/{player_id}/shot-map")
+def stat_engine_player_shot_map(player_id: str, season: Optional[str] = None,
+                                season_type: str = "regular", span: int = 1):
+    """Where a player shoots from (a smooth density on a 1-ft grid) and how
+    well vs the league by zone, for one season or the three ending in it.
+    See shot_maps.py for why efficiency is by zone, and the shrinkage."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from sqlalchemy import text
+
+    from src.inference.shot_maps import SEASON_TYPES, player_shot_map
+
+    if season_type not in SEASON_TYPES:
+        raise HTTPException(status_code=422, detail=f"season_type must be one of {sorted(SEASON_TYPES)}.")
+    if span not in (1, 3):
+        raise HTTPException(status_code=422, detail="span must be 1 or 3 seasons.")
+    if season is None:
+        with _state.db_engine.connect() as conn:
+            season = conn.execute(text("SELECT MAX(season) FROM shots WHERE player_id = :pid"),
+                                  {"pid": player_id}).scalar()
+    out = player_shot_map(_state.db_engine, player_id, season, season_type, span) if season else None
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No shots for player {player_id} in {season}.")
+    return out

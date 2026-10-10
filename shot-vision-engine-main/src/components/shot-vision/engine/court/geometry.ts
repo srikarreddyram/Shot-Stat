@@ -133,3 +133,39 @@ export function heatColor(t: number) {
     b: Math.round(a[2] + (b[2] - a[2]) * f),
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diverging ramp — for values with a meaningful zero, like FG% above or below
+// the league from the same spot (the Stat Engine's shot maps).
+//
+// Same multiply-tint construction as HEAT_RAMP, so the wood still shows
+// through: zero is pure white, the identity for multiply, which leaves the
+// floor exactly as it is — "league average" reads as bare boards. Both ends
+// get darker as they get further from zero, cold toward slate blue and hot
+// toward the same oxblood as HEAT_RAMP, so magnitude survives greyscale and
+// the sign is carried by a blue/red hue split that red-green colour
+// blindness preserves. Over #DCB489 the ramp resolves to roughly:
+//
+//   515f69 -> 948a7d -> dcb489 (bare wood) -> d16d29 -> 861919
+export const DIVERGING_RAMP: Array<[number, number, number]> = [
+  [0x5e, 0x86, 0xc4],
+  [0xab, 0xc4, 0xe8],
+  [0xff, 0xff, 0xff],
+  [0xf2, 0x9a, 0x4c],
+  [0x9b, 0x24, 0x2e],
+];
+
+/** `t` in [-1, 1]: -1 coldest, 0 untouched wood, +1 hottest. */
+export function divergingColor(t: number) {
+  const clamped = Math.max(-1, Math.min(1, t));
+  const pos = ((clamped + 1) / 2) * (DIVERGING_RAMP.length - 1);
+  const i = Math.min(DIVERGING_RAMP.length - 2, Math.floor(pos));
+  const f = pos - i;
+  const a = DIVERGING_RAMP[i];
+  const b = DIVERGING_RAMP[i + 1];
+  return {
+    r: Math.round(a[0] + (b[0] - a[0]) * f),
+    g: Math.round(a[1] + (b[1] - a[1]) * f),
+    b: Math.round(a[2] + (b[2] - a[2]) * f),
+  };
+}

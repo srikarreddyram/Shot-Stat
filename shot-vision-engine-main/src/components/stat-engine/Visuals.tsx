@@ -6,10 +6,11 @@ import {
   Bar, C, ChartHeader, F, MiniTable, NUM, Card, RankPill, SectionLabel, ViewMode, tierColor, useViewMode,
 } from "./ui";
 
-// Three season-view visuals, replacing what used to be three more rows in a
-// stat table: a shot chart by zone, a Synergy-style play-type bar chart, and
-// a defensive FG%-allowed-by-category chart. Each reads straight off the
-// PlayerProfile the page already fetched — no extra request.
+// Season-view visuals, replacing what used to be more rows in a stat table:
+// a Synergy-style play-type bar chart and a defensive FG%-allowed-by-category
+// chart. Each reads straight off the PlayerProfile the page already fetched —
+// no extra request. (The shot chart lives in ShotMap.tsx, drawn from real
+// shot locations on the engine's court.)
 
 function findStat(profile: PlayerProfile, key: string) {
   for (const section of profile.sections) {
@@ -26,146 +27,6 @@ function leagueRank(value: number | null, key: string, distributions?: Map<strin
   const pct = percentileOf(value, sorted, key);
   const rank = rankOf(value, sorted, key);
   return rank && pct != null ? <RankPill rank={rank.rank} outOf={rank.outOf} pct={pct} /> : null;
-}
-
-// ── Shot chart by zone ───────────────────────────────────────────────────────
-// Court geometry duplicated from EnginePage.tsx's CourtCanvas / archetypes.tsx
-// on purpose (see those files' own notes) — a small amount of repetition here
-// is the deliberate trade for zero risk to the core recommendation flow this
-// geometry also drives. Peach hardwood, heat as a tint rather than a cover,
-// matching the shot map's established look.
-const FT = {
-  courtWidth: 50, hoopFromBaseline: 5.25, rimRadius: 0.75, restrictedRadius: 4,
-  laneWidth: 16, laneDepth: 19, ftCircleRadius: 6, cornerThreeX: 22,
-  arcRadius: 23.75, visibleDepth: 35,
-};
-const CORNER_JOIN_Y = Math.sqrt(FT.arcRadius ** 2 - FT.cornerThreeX ** 2);
-const COURT_CW = 420;
-const COURT_SCALE = COURT_CW / FT.courtWidth;
-const COURT_CH = Math.round(FT.visibleDepth * COURT_SCALE);
-const HOOP_X = COURT_CW / 2;
-const HOOP_Y = COURT_CH - FT.hoopFromBaseline * COURT_SCALE;
-const ft = (feet: number) => feet * COURT_SCALE;
-const pt = (x: number, y: number) => `${(HOOP_X + ft(x)).toFixed(1)},${(HOOP_Y - ft(y)).toFixed(1)}`;
-
-const COURT_SURFACE = "#DCB489";
-const COURT_LINE = "rgba(92, 58, 30, 0.5)";
-const COURT_LINE_STRONG = "rgba(58, 35, 16, 0.85)";
-const COURT_RIM = "#B4491C";
-
-// Where each zone's badge sits on the court, in feet from the hoop. The
-// court is drawn 35 ft deep so the above-the-break badge clears the top edge.
-const ZONE_BADGE_POS: Record<string, [number, number]> = {
-  rim: [0, 3.2],
-  paint: [0, 11],
-  midrange: [-13, 17],
-  left_corner3: [-21, 3],
-  right_corner3: [21, 3],
-  above_break3: [0, 25.5],
-};
-const ZONE_BADGE_LABEL: Record<string, string> = {
-  rim: "RIM", paint: "PAINT", midrange: "MID", left_corner3: "L CORNER",
-  right_corner3: "R CORNER", above_break3: "3PT",
-};
-
-export function ShotZoneCourt({ profile, distributions, defaultMode = "chart" }: {
-  profile: PlayerProfile; distributions?: Map<string, number[]>; defaultMode?: ViewMode;
-}) {
-  const [mode, setMode] = useViewMode(defaultMode);
-  const zones = Object.keys(ZONE_BADGE_POS).map((slug) => {
-    const pctStat = findStat(profile, `zone_fg_pct_${slug}`);
-    const fgaStat = findStat(profile, `zone_fga_${slug}`);
-    const pct = numericValue(pctStat?.value);
-    const fga = numericValue(fgaStat?.value);
-    return { slug, pct, fga, pos: ZONE_BADGE_POS[slug] };
-  });
-
-  const hasAny = zones.some((z) => z.pct != null);
-  if (!hasAny) return null;
-
-  // League-relative colour needs the league distribution, which this
-  // component doesn't have — so each badge is coloured against a fixed,
-  // honest 30-70% FG% scale instead of a percentile. That is a real,
-  // reader-checkable claim ("above 55% at the rim is good") rather than an
-  // invented comparison this component would have no data to back up.
-  const fixedTier = (pct: number | null) => {
-    if (pct == null) return C.muted;
-    if (pct >= 0.60) return "#16A34A";
-    if (pct >= 0.48) return "#84CC16";
-    if (pct >= 0.38) return "#C9A84C";
-    if (pct >= 0.28) return "#EA580C";
-    return "#DC2626";
-  };
-
-  return (
-    <Card style={{ padding: "16px 20px 18px", marginBottom: 14 }}>
-      <ChartHeader title="Shot chart by zone" mode={mode} onChange={setMode} />
-      <div style={{ fontSize: 11, color: C.faint, marginBottom: 12, lineHeight: 1.5 }}>
-        FG% within each zone this season. Coloured against a fixed scale (60%+ elite, under 28% poor)
-        rather than league percentile — the same bar for every position, since a rim FG% and a
-        three-point FG% are not the same kind of shot.
-      </div>
-      {mode === "table" ? (
-        <MiniTable
-          headers={["Zone", "FG%", "League rank", "Attempts"]}
-          rows={zones.map((z) => [
-            ZONE_BADGE_LABEL[z.slug],
-            <span style={{ color: fixedTier(z.pct) }}>{formatStat(z.pct, "pct")}</span>,
-            leagueRank(z.pct, `zone_fg_pct_${z.slug}`, distributions) ?? "—",
-            z.fga == null ? "—" : z.fga.toFixed(0),
-          ])}
-        />
-      ) : (
-      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <svg viewBox={`0 0 ${COURT_CW} ${COURT_CH}`} style={{ width: "100%", maxWidth: 420, height: "auto", borderRadius: 4, overflow: "hidden" }}>
-          <rect x={0} y={0} width={COURT_CW} height={COURT_CH} fill={COURT_SURFACE} />
-          {/* Court lines: lane, ft circle top, restricted area, three-point line */}
-          <g fill="none" stroke={COURT_LINE} strokeWidth={1.5}>
-            <rect x={HOOP_X - ft(FT.laneWidth / 2)} y={HOOP_Y - ft(FT.laneDepth)} width={ft(FT.laneWidth)} height={ft(FT.laneDepth)} />
-            <path d={`M ${pt(-FT.ftCircleRadius, FT.laneDepth)} A ${ft(FT.ftCircleRadius)} ${ft(FT.ftCircleRadius)} 0 0 1 ${pt(FT.ftCircleRadius, FT.laneDepth)}`} />
-            <path d={`M ${pt(-FT.restrictedRadius, 0)} A ${ft(FT.restrictedRadius)} ${ft(FT.restrictedRadius)} 0 0 1 ${pt(FT.restrictedRadius, 0)}`} />
-            <line x1={HOOP_X - ft(FT.cornerThreeX)} y1={HOOP_Y} x2={HOOP_X - ft(FT.cornerThreeX)} y2={HOOP_Y - ft(CORNER_JOIN_Y)} />
-            <line x1={HOOP_X + ft(FT.cornerThreeX)} y1={HOOP_Y} x2={HOOP_X + ft(FT.cornerThreeX)} y2={HOOP_Y - ft(CORNER_JOIN_Y)} />
-            <path d={`M ${pt(-FT.cornerThreeX, CORNER_JOIN_Y)} A ${ft(FT.arcRadius)} ${ft(FT.arcRadius)} 0 0 1 ${pt(FT.cornerThreeX, CORNER_JOIN_Y)}`} />
-          </g>
-          <circle cx={HOOP_X} cy={HOOP_Y} r={ft(FT.rimRadius)} fill="none" stroke={COURT_RIM} strokeWidth={2} />
-          <line x1={HOOP_X - ft(3)} y1={HOOP_Y + ft(0.6)} x2={HOOP_X + ft(3)} y2={HOOP_Y + ft(0.6)} stroke={COURT_LINE_STRONG} strokeWidth={2} />
-
-          {zones.map((z, i) => {
-            const [x, y] = z.pos;
-            const cx = HOOP_X + ft(x), cy = HOOP_Y - ft(y);
-            const color = fixedTier(z.pct);
-            return (
-              <g
-                key={z.slug}
-                className="se-unfold"
-                style={{ transformOrigin: `${cx}px ${cy}px`, transformBox: "view-box", animationDelay: `${i * 70}ms` }}
-              >
-                <circle cx={cx} cy={cy} r={26} fill={color} fillOpacity={z.pct == null ? 0.08 : 0.22} stroke={color} strokeWidth={1.5} />
-                <text x={cx} y={cy - 3} textAnchor="middle" fill={z.pct == null ? C.muted : "#fff"} style={{ fontFamily: F.display, fontSize: 15 }}>
-                  {z.pct == null ? "—" : `${(z.pct * 100).toFixed(0)}%`}
-                </text>
-                <text x={cx} y={cy + 11} textAnchor="middle" fill={z.pct == null ? C.muted : "rgba(255,255,255,0.85)"} style={{ fontFamily: F.mono, fontSize: 7.5, letterSpacing: "0.08em" }}>
-                  {ZONE_BADGE_LABEL[z.slug]}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-        <div style={{ flex: "1 1 160px", minWidth: 150 }}>
-          {zones.map((z) => (
-            <div key={z.slug} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 0", borderBottom: `1px solid ${C.rule}` }}>
-              <span style={{ fontSize: 11.5, color: C.dim }}>{ZONE_BADGE_LABEL[z.slug]}</span>
-              <span style={{ ...NUM, fontSize: 11, color: C.muted }}>
-                {z.fga == null ? "—" : `${z.fga.toFixed(0)} att`}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-      )}
-    </Card>
-  );
 }
 
 // ── Play-type bar chart ──────────────────────────────────────────────────────

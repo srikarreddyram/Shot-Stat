@@ -4,8 +4,9 @@ import { CareerPanel } from "../components/stat-engine/CareerPanel";
 import { SeasonAverages } from "../components/stat-engine/SeasonAverages";
 import { ComparePlayers } from "../components/stat-engine/ComparePlayers";
 import {
-  ArchetypeCard, DefenseCategoryChart, PlayTypeBars, ShotZoneCourt, StrengthsChart,
+  ArchetypeCard, DefenseCategoryChart, PlayTypeBars, StrengthsChart,
 } from "../components/stat-engine/Visuals";
+import { ShotMapCard } from "../components/stat-engine/ShotMap";
 import { RadarChart, RADAR_W } from "../components/stat-engine/ComparePlayers";
 import {
   C, F, NUM, Bar, Card, DEFAULT_ACCENT, EmptyState,
@@ -705,6 +706,20 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
     () => leagueRows.find((r) => String(r.player_id) === String(playerId)) ?? null,
     [leagueRows, playerId]
   );
+  // Below a stat's attempt minimum a player is shown his number but not
+  // ranked: ranking him against the qualified field alone put a 25-attempt
+  // mid-range shooter at "#198 of 197". An empty distribution is how every
+  // bar and rank on the page already says "not ranked".
+  const rankDistributions = useMemo(() => {
+    if (!playerRow) return distributions;
+    const out = new Map(distributions);
+    for (const key of distributions.keys()) {
+      const column = columnsByKey.get(key);
+      if (column && !meetsQualifier(playerRow, column)) out.set(key, []);
+    }
+    return out;
+  }, [distributions, playerRow, columnsByKey]);
+
   const radarAxes = useMemo(() => {
     if (!playerRow) return [];
     return RADAR_AXES
@@ -759,10 +774,10 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
       <Card style={{ padding: "15px 19px 9px" }}>
         <div style={{ marginBottom: 12 }}><SectionLabel>{section.label}</SectionLabel></div>
         {density === "visual" && section.stats.length > COMPACT_THRESHOLD ? (
-          <CompactStatBars rows={foldVolumes(section.stats, columnsByKey)} distributions={distributions} />
+          <CompactStatBars rows={foldVolumes(section.stats, columnsByKey)} distributions={rankDistributions} />
         ) : (
           foldVolumes(section.stats, columnsByKey).map(({ stat, volume }) => (
-            <StatRow key={stat.key} stat={stat} volume={volume} sorted={distributions.get(stat.key) ?? []} />
+            <StatRow key={stat.key} stat={stat} volume={volume} sorted={rankDistributions.get(stat.key) ?? []} />
           ))
         )}
       </Card>
@@ -838,7 +853,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
       </div>
 
       <div className="se-rise" style={riseDelay(2)}>
-        <ShotZoneCourt profile={profile} distributions={distributions} defaultMode={chartDefault} />
+        <ShotMapCard playerId={playerId} season={profile.season} distributions={rankDistributions} defaultMode={chartDefault} />
       </div>
 
       {/* "Info" sections (Overview, Ratings) belong to neither side of the
@@ -885,7 +900,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
             </Card>
           )}
 
-          <StrengthsChart profile={profile} distributions={distributions} defaultMode={chartDefault} />
+          <StrengthsChart profile={profile} distributions={rankDistributions} defaultMode={chartDefault} />
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
             <Segmented
@@ -927,8 +942,8 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
               </div>
 
               <div key={side} className="se-rise">
-                {side === "offense" && <PlayTypeBars profile={profile} distributions={distributions} defaultMode={chartDefault} />}
-                {side === "defense" && <DefenseCategoryChart profile={profile} distributions={distributions} defaultMode={chartDefault} />}
+                {side === "offense" && <PlayTypeBars profile={profile} distributions={rankDistributions} defaultMode={chartDefault} />}
+                {side === "defense" && <DefenseCategoryChart profile={profile} distributions={rankDistributions} defaultMode={chartDefault} />}
               </div>
 
               {sideSections.length === 0 ? (

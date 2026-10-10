@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ZONES, type GameContext, type HeatmapPoint, type Player, type ZoneResult } from "@/lib/shot-vision-data";
 import {
-  COURT_AREA_H, COURT_CH, COURT_CW, COURT_LINE, COURT_LINE_STRONG, COURT_PLANK, COURT_GRAIN,
-  COURT_RIM, COURT_SURFACE, CORNER_JOIN_Y, FIELD_REACH, FT, HEAT_RAMP, HOOP_X, HOOP_Y, LEGEND_BG,
-  LEGEND_H, courtToCanvas, ft, heatColor, heatSwatch,
+  COURT_AREA_H, COURT_CH, COURT_CW, FIELD_REACH, HEAT_RAMP, LEGEND_BG, LEGEND_H,
+  courtToCanvas, heatColor, heatSwatch,
 } from "./geometry";
 import { drawMatchupBadge, useFontsReady, useHeadshot } from "./badgeDrawing";
+import { drawCourtLines, drawHardwood } from "./courtDrawing";
 import { ShotDetail } from "./ShotDetail";
 
 export function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacker, defender, season, context, selected, setSelected }: { bestKey: string; results: ZoneResult[]; heatmapPoints: HeatmapPoint[]; showProb: boolean; attacker: Player; defender: Player; season: string; context: GameContext; selected: number | null; setSelected: (i: number | null) => void }) {
@@ -119,42 +119,7 @@ export function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacke
     // show the values actually on screen rather than invented endpoints.
     let heatScale: { lo: number; hi: number } | null = null;
 
-    // ── STEP 1: PLAYING SURFACE ───────────────────────────────────────────
-    // Peach hardwood. An earlier version of this had a vertical gradient,
-    // grain lines every 12px and plank seams at 25/50/75% — enough contrast
-    // that the eye had to discard it before it could read the data. The wood
-    // here is deliberately quiet: seams at a realistic plank width and a grain
-    // whisper, both far below the weakest heat step, so the boards read as
-    // texture and never as signal.
-    ctx.fillStyle = COURT_SURFACE;
-    ctx.fillRect(0, 0, cw, ch);
-
-    // Planks run baseline to baseline, i.e. vertically in this view.
-    const PLANK_W = ft(2.5);
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = COURT_PLANK;
-    for (let x = PLANK_W / 2; x < cw; x += PLANK_W) {
-      ctx.beginPath();
-      ctx.moveTo(Math.round(x) + 0.5, 0);
-      ctx.lineTo(Math.round(x) + 0.5, COURT_AREA_H);
-      ctx.stroke();
-    }
-
-    // Grain: short dashes along the planks, offset per plank so the boards
-    // do not line up into visible rows.
-    ctx.strokeStyle = COURT_GRAIN;
-    ctx.setLineDash([9, 15]);
-    let plankIndex = 0;
-    for (let x = PLANK_W / 2; x < cw; x += PLANK_W) {
-      ctx.lineDashOffset = (plankIndex % 4) * 7;
-      ctx.beginPath();
-      ctx.moveTo(Math.round(x - PLANK_W / 3) + 0.5, 0);
-      ctx.lineTo(Math.round(x - PLANK_W / 3) + 0.5, COURT_AREA_H);
-      ctx.stroke();
-      plankIndex += 1;
-    }
-    ctx.setLineDash([]);
-    ctx.lineDashOffset = 0;
+    drawHardwood(ctx, ch);
 
     // ── STEP 2: SHOT-QUALITY FIELD ────────────────────────────────────────
     //
@@ -290,81 +255,8 @@ export function CourtCanvas({ bestKey, results, heatmapPoints, showProb, attacke
       heatScale = { lo, hi };
     }
 
-    // ── STEP 3: COURT LINES ───────────────────────────────────────────────
-    // Every line below is placed from the real dimensions in FT, through the
-    // same transform the data uses, so the arc and the above-the-break cluster
-    // cannot drift apart the way they did before.
-    ctx.globalCompositeOperation = "source-over";
-    ctx.strokeStyle = COURT_LINE;
-    ctx.lineWidth = 1.2;
-
-    const baselineY = HOOP_Y + ft(FT.hoopFromBaseline);
-
-    // THREE-POINT LINE: two straight corner segments joined by the arc.
-    ctx.beginPath();
-    ctx.moveTo(HOOP_X - ft(FT.cornerThreeX), baselineY);
-    ctx.lineTo(HOOP_X - ft(FT.cornerThreeX), HOOP_Y - ft(CORNER_JOIN_Y));
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(HOOP_X + ft(FT.cornerThreeX), baselineY);
-    ctx.lineTo(HOOP_X + ft(FT.cornerThreeX), HOOP_Y - ft(CORNER_JOIN_Y));
-    ctx.stroke();
-
-    // The arc spans exactly the angles where it is outside the corner lines.
-    const arcSweep = Math.acos(FT.cornerThreeX / FT.arcRadius);
-    ctx.beginPath();
-    ctx.arc(HOOP_X, HOOP_Y, ft(FT.arcRadius), Math.PI + arcSweep, -arcSweep, false);
-    ctx.stroke();
-
-    // PAINT
-    ctx.strokeRect(
-      HOOP_X - ft(FT.laneWidth / 2),
-      baselineY - ft(FT.laneDepth),
-      ft(FT.laneWidth),
-      ft(FT.laneDepth),
-    );
-
-    // FREE-THROW CIRCLE — solid away from the basket, dashed toward it.
-    const ftLineY = baselineY - ft(FT.laneDepth);
-    ctx.beginPath();
-    ctx.arc(HOOP_X, ftLineY, ft(FT.ftCircleRadius), Math.PI, 0, false);
-    ctx.stroke();
-    ctx.setLineDash([5, 4]);
-    ctx.beginPath();
-    ctx.arc(HOOP_X, ftLineY, ft(FT.ftCircleRadius), 0, Math.PI, false);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // RESTRICTED AREA
-    ctx.beginPath();
-    ctx.arc(HOOP_X, HOOP_Y, ft(FT.restrictedRadius), Math.PI, 0, false);
-    ctx.stroke();
-
-    // BACKBOARD
-    ctx.strokeStyle = COURT_LINE_STRONG;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(HOOP_X - ft(FT.backboardWidth / 2), HOOP_Y + ft(FT.backboardFromHoop));
-    ctx.lineTo(HOOP_X + ft(FT.backboardWidth / 2), HOOP_Y + ft(FT.backboardFromHoop));
-    ctx.stroke();
-
-    // RIM
-    ctx.strokeStyle = COURT_RIM;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(HOOP_X, HOOP_Y, ft(FT.rimRadius), 0, Math.PI * 2);
-    ctx.stroke();
-
-    // BASELINE + SIDELINES
-    ctx.strokeStyle = COURT_LINE;
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.moveTo(1, baselineY);
-    ctx.lineTo(cw - 1, baselineY);
-    ctx.moveTo(1, 0); ctx.lineTo(1, baselineY);
-    ctx.moveTo(cw - 1, 0); ctx.lineTo(cw - 1, baselineY);
-    ctx.stroke();
+    // ── STEP 3: COURT LINES ── (courtDrawing.ts)
+    drawCourtLines(ctx);
 
     // The floor varnish and the per-zone EP numbers that used to be painted
     // here are both gone. The varnish was a wood effect with nothing left to
