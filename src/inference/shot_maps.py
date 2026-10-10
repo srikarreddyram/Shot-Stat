@@ -459,11 +459,14 @@ def warm_league_cache(engine) -> None:
     """Compute the league breakdowns for the latest season with shots, so the
     first shot map anyone opens does not pay for them (~1-2 s each). Run in a
     background thread at API startup."""
-    with engine.connect() as conn:
-        season = conn.execute(text("SELECT MAX(season) FROM shots")).scalar()
-    if not season:
-        return
-    for span in (1, 3):
-        seasons = season_window(season, span)
-        for subset in (None, SHOT_FAMILIES[0][0], "clutch"):
-            league_zone_rates(engine, seasons, "regular", subset)
+    try:
+        with engine.connect() as conn:
+            season = conn.execute(text("SELECT MAX(season) FROM shots")).scalar()
+        if not season:
+            return
+        for span in (1, 3):
+            seasons = season_window(season, span)
+            for subset in (None, SHOT_FAMILIES[0][0], "clutch"):
+                league_zone_rates(engine, seasons, "regular", subset)
+    except Exception as e:  # an optimisation only: requests compute on demand
+        print(f"  ⚠ Shot-map cache warm-up skipped: {e}")

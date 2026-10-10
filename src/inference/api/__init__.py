@@ -83,9 +83,15 @@ async def lifespan(app: FastAPI):
     import threading
 
     from src.inference.shot_maps import warm_league_cache
-    threading.Thread(target=warm_league_cache, args=(db_engine,), daemon=True).start()
+    warm = threading.Thread(target=warm_league_cache, args=(db_engine,), daemon=True)
+    warm.start()
 
     yield
+
+    # Never let the engine be torn down under a query still in flight: closing
+    # a SQLite connection another thread is using crashes the process (the
+    # test suite's fixtures dispose the engine right after shutdown).
+    warm.join(timeout=60)
 
 
 # ── App setup ────────────────────────────────────────────────────────────────
