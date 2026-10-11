@@ -78,6 +78,14 @@ league, for this season or the last three, regular season or playoffs.
 
 ![Shot map](docs/screenshots/08-shot-map.png)
 
+Under it, the **game log**: every game of the season with its full box score,
+newest first, each season high picked out. Pick a game and it opens above the
+list: the box score against the season average, that game's shots replayed
+quarter by quarter, and each zone's shooting against the season's. A game's shots
+are exactly its box score's field goals (box scores go back to 2016-17).
+
+![Game log](docs/screenshots/11-game-log.png)
+
 **Advanced stats** opens the rest: the NBA's own advanced numbers (usage, true
 shooting, assist/rebound/turnover rates, on-court ratings, PIE) ranked against the
 league and season by season; more shot maps (by shot type, clutch time, the shots
@@ -88,7 +96,9 @@ lines, play-type and defense-by-category charts, and every tracking stat.
 ![More shot maps](docs/screenshots/09-shot-map-gallery.png)
 
 Team profiles follow the same split, with the team's shots and its opponents'
-on the shot map, and the team's **league rank in every stat, every season**.
+on the shot map, a game log that opens each game into both teams' totals, the
+players' lines and either side's shots, and the team's **league rank in every
+stat, every season**.
 
 ![Team profile](docs/screenshots/06-team-profile.png)
 
@@ -243,7 +253,7 @@ python scripts/refresh_season.py
 ```
 
 `./scripts/dev.sh` starts the FastAPI backend and the React frontend on fresh
-ports, wires them together, and prints the URLs. Tests: `pytest` (300 tests;
+ports, wires them together, and prints the URLs. Tests: `pytest` (306 tests;
 `pytest -m "not slow"` skips the ones that need trained models and the full
 database). See [`COMMANDS.md`](COMMANDS.md) for every ingestion step, ablation
 flag and evaluation tool.
