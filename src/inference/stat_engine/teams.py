@@ -7,6 +7,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.inference.player_ratings import resolve_rating_season
+from src.inference.seasons import stat_engine_season
 from .formatting import _clean
 from .players import build_player_stat_table
 
@@ -22,7 +23,7 @@ def build_team_stat_table(engine, season: str | None = None) -> pd.DataFrame:
     different name would be the same mistake the old frontend rating
     formula made — presenting an invented number as if it were measured.
     """
-    season = resolve_rating_season(engine, season or "2026-27")
+    season = resolve_rating_season(engine, season) if season else stat_engine_season(engine)
 
     teams = pd.read_sql(
         "SELECT team_id, team_name, team_abbrev, def_rating FROM team_stats WHERE season = ?",
@@ -60,7 +61,7 @@ def team_full_profile(engine, team_id: str, season: str | None = None) -> dict |
     """A team's real stat plus its roster, each player carrying their own
     full stat row — a team profile IS its roster here, not a separate
     invented team-level number set. See build_team_stat_table's docstring."""
-    season = resolve_rating_season(engine, season or "2026-27")
+    season = resolve_rating_season(engine, season) if season else stat_engine_season(engine)
 
     team_row = pd.read_sql(
         "SELECT team_id, team_name, team_abbrev, def_rating FROM team_stats "

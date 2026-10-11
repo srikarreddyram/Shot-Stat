@@ -32,11 +32,15 @@ def stat_engine_players(season: Optional[str] = None):
     what each column means and which section it belongs to."""
     if _state.db_engine is None:
         raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.seasons import season_status
     from src.inference.stat_engine import build_player_stat_table, player_column_metadata
 
     table = build_player_stat_table(_state.db_engine, season)
     return {
         "season": table.iloc[0]["season"] if not table.empty else season,
+        # Where the newest season stands, so the page can say why it opened
+        # on last season and offer the new one (see seasons.py).
+        "season_status": season_status(_state.db_engine),
         "columns": player_column_metadata(table.columns),
         "players": _records(table),
     }
@@ -101,8 +105,10 @@ def stat_engine_player_career(player_id: str, season: Optional[str] = None):
         raise HTTPException(status_code=503, detail="Database not loaded.")
     from src.inference.career_stats import career_panel
     from src.inference.player_ratings import resolve_rating_season
+    from src.inference.seasons import stat_engine_season
 
-    resolved = resolve_rating_season(_state.db_engine, season or "2026-27")
+    resolved = (resolve_rating_season(_state.db_engine, season) if season
+                else stat_engine_season(_state.db_engine))
     return career_panel(_state.db_engine, player_id, resolved)
 
 

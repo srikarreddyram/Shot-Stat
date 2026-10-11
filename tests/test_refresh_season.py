@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-from refresh_season import plan, select  # noqa: E402
+from refresh_season import plan, preseason, select  # noqa: E402
 
 
 def _order():
@@ -42,3 +42,12 @@ def test_from_only_and_skip():
     assert "contest" not in [st.name for st in select(steps, None, None, ["contest"])]
     with pytest.raises(SystemExit):
         select(steps, "nope", None, [])
+
+
+def test_before_opening_night_only_rosters_refresh():
+    kept, skipped = preseason(plan("2026-27"))
+    assert [st.name for st in kept] == ["schema", "games", "rosters", "physicals"]
+    # Everything that reads games or shots waits for the first game.
+    names = {st.name for st in skipped}
+    assert {"shots", "pbp", "zone_stats", "game_logs", "comparable"} <= names
+    assert len(kept) + len(skipped) == len(plan("2026-27"))

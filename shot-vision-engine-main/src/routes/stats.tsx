@@ -8,6 +8,7 @@ import {
 } from "../components/stat-engine/Visuals";
 import { ShotMapCard, ShotMapGallery, TeamShotMapCard } from "../components/stat-engine/ShotMap";
 import { GameLogCard } from "../components/stat-engine/GameLog";
+import { NewSeasonBanner, SeasonStatus } from "../components/stat-engine/NewSeasonBanner";
 import { RadarChart, RADAR_W } from "../components/stat-engine/ComparePlayers";
 import {
   C, F, NUM, Bar, Card, DEFAULT_ACCENT, EmptyState,
@@ -122,6 +123,10 @@ function StatEnginePage() {
   const [archetypeCatalogue, setArchetypeCatalogue] = useState<ArchetypeCatalogueEntry[]>([]);
   const [archetypeByPlayer, setArchetypeByPlayer] = useState<Map<string, PlayerArchetype>>(new Map());
   const [season, setSeason] = useState<string | null>(null);
+  // The season the page shows: null is the engine's own default, which stays
+  // on last season until the new one is a few weeks old (seasons.py).
+  const [viewSeason, setViewSeason] = useState<string | null>(null);
+  const [seasonStatus, setSeasonStatus] = useState<SeasonStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -135,12 +140,16 @@ function StatEnginePage() {
         return r.json();
       });
 
-    type PlayersResponse = { columns?: Column[]; players?: Row[]; season?: string };
+    type PlayersResponse = { columns?: Column[]; players?: Row[]; season?: string; season_status?: SeasonStatus };
     type TeamsResponse = { columns?: Column[]; teams?: Row[]; season?: string };
 
-    Promise.all([get("/stats/players"), get("/stats/teams"), get("/stats/archetypes")])
+    setLoading(true);
+    setError(null);
+    const query = viewSeason ? `?season=${encodeURIComponent(viewSeason)}` : "";
+    Promise.all([get(`/stats/players${query}`), get(`/stats/teams${query}`), get(`/stats/archetypes${query}`)])
       .then(([p, t, a]: [PlayersResponse, TeamsResponse, ArchetypesResponse]) => {
         if (cancelled) return;
+        setSeasonStatus(p.season_status ?? null);
         setPlayerCols(p.columns ?? []);
         setPlayerRows(p.players ?? []);
         setTeamCols(t.columns ?? []);
@@ -156,7 +165,7 @@ function StatEnginePage() {
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [viewSeason]);
 
   const teamNames = useMemo(() => {
     const map = new Map<string, string>();
@@ -225,6 +234,10 @@ function StatEnginePage() {
             )
           ) : (
             <>
+              {seasonStatus && season && (
+                <NewSeasonBanner status={seasonStatus} showing={season}
+                                 onShow={(s) => setViewSeason(s === seasonStatus.default ? null : s)} />
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
                 <Segmented
                   value={mode}
@@ -717,7 +730,10 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
     let cancelled = false;
     setProfile(null);
     setError(null);
-    const query = season ? `?season=${encodeURIComponent(season)}` : "";
+    // No season picked: the one the page's leaderboard shows, so the ranks
+    // below are always against the same league as the numbers.
+    const want = season ?? currentSeason;
+    const query = want ? `?season=${encodeURIComponent(want)}` : "";
     fetch(`${API_BASE}/stats/player/${encodeURIComponent(playerId)}${query}`)
       .then((r) => {
         if (!r.ok) throw new Error(`engine returned ${r.status}`);
@@ -726,7 +742,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
       .then((d: PlayerProfile) => { if (!cancelled) setProfile(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [playerId, season]);
+  }, [playerId, season, currentSeason]);
 
   // Sorted values per column, once, so each stat row can locate itself in the
   // league without re-scanning the whole table. Also covers every stat
@@ -1006,7 +1022,7 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
           </div>
 
           {view === "career" ? (
-            <CareerPanel playerId={playerId} side={side} defaultMode={chartDefault} />
+            <CareerPanel playerId={playerId} season={profile.season} side={side} defaultMode={chartDefault} />
           ) : (
             <>
               <div style={{ fontSize: 11.5, color: C.faint, marginBottom: 16, lineHeight: 1.6, maxWidth: 780 }}>
@@ -1242,12 +1258,14 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
   const [profile, setProfile] = useState<TeamProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advanced, toggleAdvanced] = useAdvancedOpen();
+  // The season the page's leaderboard shows, so the profile matches it.
+  const leagueSeason = teamRows.length ? String(teamRows[0].season ?? "") : "";
 
   useEffect(() => {
     let cancelled = false;
     setProfile(null);
     setError(null);
-    fetch(`${API_BASE}/stats/team/${encodeURIComponent(teamId)}`)
+    fetch(`${API_BASE}/stats/team/${encodeURIComponent(teamId)}${leagueSeason ? `?season=${encodeURIComponent(leagueSeason)}` : ""}`)
       .then((r) => {
         if (!r.ok) throw new Error(`engine returned ${r.status}`);
         return r.json();
@@ -1255,7 +1273,7 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
       .then((d: TeamProfile) => { if (!cancelled) setProfile(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [teamId]);
+  }, [teamId, leagueSeason]);
 
   const leagueRow = useMemo(
     () => teamRows.find((r) => String(r.team_id) === String(teamId)) ?? null,

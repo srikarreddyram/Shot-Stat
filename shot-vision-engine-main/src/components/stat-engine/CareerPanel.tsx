@@ -48,8 +48,12 @@ const HEADLINE_TRENDS: Record<Side, { key: string; color: string }[]> = {
   advanced: [],
 };
 
-export function CareerPanel({ playerId, side, defaultMode = "chart" }: {
-  playerId: string; side: Side; defaultMode?: ViewMode;
+export function CareerPanel({ playerId, season, side, defaultMode = "chart" }: {
+  playerId: string;
+  /** The profile's season: "this season" and "last season" are counted from it. */
+  season?: string;
+  side: Side;
+  defaultMode?: ViewMode;
 }) {
   const [trendMode, setTrendMode] = useViewMode(defaultMode);
   const [data, setData] = useState<CareerPanelData | null>(null);
@@ -59,7 +63,7 @@ export function CareerPanel({ playerId, side, defaultMode = "chart" }: {
     let cancelled = false;
     setData(null);
     setError(null);
-    fetch(`${API_BASE}/stats/player/${encodeURIComponent(playerId)}/career`)
+    fetch(`${API_BASE}/stats/player/${encodeURIComponent(playerId)}/career${season ? `?season=${encodeURIComponent(season)}` : ""}`)
       .then((r) => {
         if (!r.ok) throw new Error(`engine returned ${r.status}`);
         return r.json();
@@ -67,7 +71,7 @@ export function CareerPanel({ playerId, side, defaultMode = "chart" }: {
       .then((d: CareerPanelData) => { if (!cancelled) setData(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Could not load"); });
     return () => { cancelled = true; };
-  }, [playerId]);
+  }, [playerId, season]);
 
   if (error) return <div style={{ color: BAD, fontSize: 13 }}>{error}</div>;
   if (!data) return <div style={{ color: C.muted, fontSize: 13 }}>Loading career history…</div>;

@@ -462,14 +462,16 @@ def team_shot_map(engine, team_id: str, season: str, side: str = "offense",
 
 
 def warm_league_cache(engine) -> None:
-    """Compute the league breakdowns for the latest season with shots, so the
-    first shot map anyone opens does not pay for them (~1-2 s each). Run in a
-    background thread at API startup."""
+    """Compute the league breakdowns for the season the Stat Engine opens on,
+    so the first shot map anyone opens does not pay for them (~1-2 s each).
+    Run in a background thread at API startup."""
+    from src.inference.seasons import season_status
+
     try:
-        with engine.connect() as conn:
-            season = conn.execute(text("SELECT MAX(season) FROM shots")).scalar()
-        if not season:
+        status = season_status(engine)
+        if not status["newest"]:
             return
+        season = status["default"]
         for span in (1, 3):
             seasons = season_window(season, span)
             for subset in (None, SHOT_FAMILIES[0][0], "clutch"):

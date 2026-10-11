@@ -55,7 +55,10 @@ explanation says so instead of hiding it.
 
 Every stat the project collects — box score, shooting by zone, play types,
 creation, defense by shot type, hustle stats — for every player and team, ranked
-against the league and colour-coded by tier.
+against the league and colour-coded by tier. In a new season's first weeks it
+stays on the last full season until teams have played 10 games, since a handful
+of games is too few to rank anyone on, and offers the new season so far one
+click away.
 
 ![Stat Engine](docs/screenshots/04-stat-engine.png)
 
@@ -249,11 +252,12 @@ python -m src.training.build_comparable_index --model shot-quality-v20
 ./scripts/dev.sh
 
 # During the season: pull every game since the last refresh, in one step
+# (before opening night it refreshes rosters only)
 python scripts/refresh_season.py
 ```
 
 `./scripts/dev.sh` starts the FastAPI backend and the React frontend on fresh
-ports, wires them together, and prints the URLs. Tests: `pytest` (306 tests;
+ports, wires them together, and prints the URLs. Tests: `pytest` (311 tests;
 `pytest -m "not slow"` skips the ones that need trained models and the full
 database). See [`COMMANDS.md`](COMMANDS.md) for every ingestion step, ablation
 flag and evaluation tool.

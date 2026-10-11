@@ -20,6 +20,11 @@ Each step runs as its own `python -m` process, so a step behaves exactly as
 it does when run by hand (see COMMANDS.md). If one fails the script stops and
 prints the --from command that resumes there.
 
+Before a season's first game there is nothing to fetch but rosters: once the
+game list comes back empty, the script refreshes rosters and new players'
+measurements and skips the rest, rather than spending an hour asking the NBA
+for hundreds of players' empty shot charts.
+
 Restart the API afterwards: the comparable-shots index is loaded at startup.
 """
 from __future__ import annotations
@@ -105,6 +110,27 @@ def plan(season: str, model: str = DEFAULT_MODEL) -> list[Step]:
     ]
 
 
+# Steps with work to do before a season's first game: the schema, the game
+# list itself (to find out), and who is on which roster — trades, signings,
+# rookies — with the new players' measurements.
+PRESEASON_STEPS = ("schema", "games", "rosters", "physicals")
+
+
+def preseason(steps: list[Step]) -> tuple[list[Step], list[Step]]:
+    """Split `steps` into those worth running before opening night and
+    those that need games."""
+    return ([st for st in steps if st.name in PRESEASON_STEPS],
+            [st for st in steps if st.name not in PRESEASON_STEPS])
+
+
+def games_played(season: str) -> int:
+    """Regular-season games of `season` in the database so far."""
+    from src.db.database import get_engine
+    from src.inference.seasons import regular_season_games
+
+    return regular_season_games(get_engine(), season)
+
+
 def select(steps: list[Step], start: str | None, only: list[str] | None,
            skip: list[str]) -> list[Step]:
     names = [st.name for st in steps]
@@ -143,9 +169,26 @@ def main() -> None:
     if args.dry_run:
         return
 
+    def before_opening_night(queue: list[Step]) -> list[Step]:
+        kept, skipped = preseason(queue)
+        if skipped:
+            print(f"\nNo {args.season} games have been played yet, so only rosters are refreshed. "
+                  f"Skipping: {', '.join(st.name for st in skipped)}.\n"
+                  f"Run this again after opening night for the rest.", flush=True)
+        return kept
+
+    # The game list is the test: read it after the games step refreshes it,
+    # or straight away when that step isn't part of this run.
+    queue = list(steps)
+    if all(st.name != "games" for st in queue) and games_played(args.season) == 0:
+        queue = before_opening_night(queue)
+
     timings = []
-    for i, st in enumerate(steps, 1):
-        print(f"\n{'━' * 70}\n  [{i}/{len(steps)}] {st.name} — {st.what}\n{'━' * 70}", flush=True)
+    i = 0
+    while queue:
+        st = queue.pop(0)
+        i += 1
+        print(f"\n{'━' * 70}\n  [{i}/{i + len(queue)}] {st.name} — {st.what}\n{'━' * 70}", flush=True)
         t = time.time()
         code = subprocess.call(_command(st), cwd=ROOT)
         timings.append((st.name, time.time() - t))
@@ -153,11 +196,13 @@ def main() -> None:
             print(f"\n✗ {st.name} failed (exit {code}). Fix it, then resume with:\n"
                   f"    python scripts/refresh_season.py --season {args.season} --from {st.name}")
             sys.exit(code)
+        if st.name == "games" and games_played(args.season) == 0:
+            queue = before_opening_night(queue)
 
     print(f"\n✓ {args.season} refreshed.\n")
     for name, secs in timings:
         print(f"  {name:<{width}}  {secs / 60:6.1f} min")
-    if any(st.name == "comparable" for st in steps):
+    if any(name == "comparable" for name, _ in timings):
         print("\nRestart the API (or ./scripts/dev.sh) so it loads the new comparable index.")
 
 

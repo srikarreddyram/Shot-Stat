@@ -13,6 +13,7 @@ import pandas as pd
 from src.features.creation import load_creation_profiles
 from src.features.defensive_activity import load_defensive_activity_profiles
 from src.inference.player_ratings import rating_lookup, resolve_rating_season
+from src.inference.seasons import stat_engine_season
 from .formatting import _clean
 from .metadata import (
     DEF_CATEGORY_SLUG,
@@ -48,13 +49,15 @@ _TABLE_CACHE: "weakref.WeakKeyDictionary[object, dict[str, pd.DataFrame]]" = wea
 
 def build_player_stat_table(engine, season: str | None = None) -> pd.DataFrame:
     """
-    One row per player rostered in `season` (default: the most recent season
-    with real box-score data — see resolve_rating_season), every stat this
+    One row per player rostered in `season` (default: the season the Stat
+    Engine opens on — see seasons.py — and an asked-for season with no shots
+    yet falls back to the latest that has some, via resolve_rating_season),
+    every stat this
     project tracks. Basic identity/shooting on the left, advanced tracking-
     derived and defensive-activity stats on the right, our ratings and NBA
     2K's last. Cached per engine and season (see _TABLE_CACHE).
     """
-    season = resolve_rating_season(engine, season or "2026-27")
+    season = resolve_rating_season(engine, season) if season else stat_engine_season(engine)
     per_engine = _TABLE_CACHE.setdefault(engine, {})
     if season not in per_engine:
         per_engine[season] = _build_player_stat_table(engine, season)

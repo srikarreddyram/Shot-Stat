@@ -45,6 +45,8 @@ Three deliberate choices:
 """
 from __future__ import annotations
 
+import weakref
+
 import numpy as np
 import pandas as pd
 
@@ -328,6 +330,9 @@ def compute_ratings(engine, season: str) -> pd.DataFrame:
 _CACHE: dict[str, pd.DataFrame] = {}
 
 
+_RESOLVED: "weakref.WeakKeyDictionary[object, dict[str, str]]" = weakref.WeakKeyDictionary()
+
+
 def resolve_rating_season(engine, season: str) -> str:
     """
     The most recent season at or before `season` that actually has shots.
@@ -341,11 +346,17 @@ def resolve_rating_season(engine, season: str) -> str:
     """
     from sqlalchemy import text
 
-    with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT MAX(season) FROM shots WHERE season <= :season
-        """), {"season": season}).fetchone()
-    return (row[0] if row and row[0] else season)
+    per_engine = _RESOLVED.setdefault(engine, {})
+    if season not in per_engine:
+        # ~150 ms of SQL (MAX over the shots table), and every Stat Engine
+        # request that names a season comes through here. Cached like the
+        # tables built from it: it only changes when data is ingested.
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT MAX(season) FROM shots WHERE season <= :season
+            """), {"season": season}).fetchone()
+        per_engine[season] = row[0] if row and row[0] else season
+    return per_engine[season]
 
 
 def ratings_for_season(engine, season: str) -> pd.DataFrame:

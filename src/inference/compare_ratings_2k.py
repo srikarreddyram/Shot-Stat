@@ -48,6 +48,7 @@ from src.db.database import get_engine
 from src.inference.player_ratings import (
     compute_ratings, resolve_rating_season, to_rating_band,
 )
+from src.inference.seasons import stat_engine_season
 
 
 def build_comparison(engine, season: str) -> pd.DataFrame:
@@ -77,7 +78,7 @@ def build_comparison(engine, season: str) -> pd.DataFrame:
 
 def report(season: str | None = None, top: int = 15):
     engine = get_engine()
-    season = season or resolve_rating_season(engine, "2026-27")
+    season = season or stat_engine_season(engine)
     df = build_comparison(engine, season)
 
     if df.empty:
