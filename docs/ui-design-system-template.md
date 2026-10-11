@@ -1,6 +1,6 @@
 # UI Design System — reusable template
 
-Extracted from Shot Vision's frontend (`shot-vision-engine-main/`, React 19 +
+Extracted from Shot Vision's frontend (`frontend/`, React 19 +
 TanStack Start + Vite, inline-style components, no CSS framework beyond
 Tailwind utilities for a handful of pages). Everything below is written to be
 copy-portable into a different project: the specific hex values and copy are

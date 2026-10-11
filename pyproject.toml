@@ -11,7 +11,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-exclude = ["shot-vision-engine-main", "data", "models"]
+exclude = ["frontend", "data", "models"]
 
 [tool.ruff.lint]
 # Keep the bar low for a first CI pass on an existing codebase: catch real bugs

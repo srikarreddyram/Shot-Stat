@@ -24,7 +24,7 @@ set -euo pipefail
 set -m
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRONTEND="$ROOT/shot-vision-engine-main"
+FRONTEND="$ROOT/frontend"
 RUNTIME="$ROOT/.dev-runtime"
 PIDFILE="$RUNTIME/pids"
 ENVFILE="$FRONTEND/.env.local"

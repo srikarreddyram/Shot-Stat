@@ -1196,7 +1196,7 @@ class ShotRecommender:
         out["ep_vs_own_average"] = out["expected_points"] - own_average
 
         # ── Backwards-compatible fields ──────────────────────────────────
-        # The React client (shot-vision-engine-main) reads these names. They
+        # The React client (frontend) reads these names. They
         # are kept as aliases over the new quantities rather than dropped, so
         # the redesigned engine is a drop-in for the existing UI; the client
         # can adopt `attainability`, `ep_low`/`ep_high` and `ep_vs_own_average`

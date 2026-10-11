@@ -40,8 +40,7 @@ nba_api (stats.nba.com)
 └────────┬─────────┘
          ▼
 ┌─────────────────┐
-│  shot-vision-    │  React frontend — the interviewer-facing surface
-│  engine-main/    │
+│   frontend/      │  React frontend — the interviewer-facing surface
 └──────────────────┘
 ```
 
@@ -255,7 +254,7 @@ a change to how a player card renders can never accidentally change a prediction
 
 ---
 
-## `shot-vision-engine-main/` — the frontend
+## `frontend/` — the React app
 
 React + TanStack Start. Structured as a cinematic splash (real numbers pulled live
 from the API — "2.1M shots, 10 seasons" — not hardcoded copy) leading into the

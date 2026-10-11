@@ -22,7 +22,7 @@ cd /Users/tejsr/Projects/NBA_Shot_Predictor
 ```
 
 That is the whole thing. It allocates two fresh ports from the kernel, writes
-the backend's port into `shot-vision-engine-main/.env.local` so the frontend
+the backend's port into `frontend/.env.local` so the frontend
 knows where to look, starts both, and prints the URLs. Ctrl-C stops both and
 removes the env file. Ports are different on every run by design — there is no
 fixed number left to collide with.
@@ -51,12 +51,12 @@ Still fine, but then the two ports are yours to keep in sync:
 
 ```bash
 uvicorn src.inference.api:app --reload --port 8000        # terminal 1
-cd shot-vision-engine-main && npm run dev                 # terminal 2
+cd frontend && npm run dev                 # terminal 2
 ```
 
 `src/lib/api.ts` falls back to `http://127.0.0.1:8000`, so a backend on 8000
 needs no configuration. On any other port, set `VITE_API_BASE` in
-`shot-vision-engine-main/.env.local` and restart Vite — env files are read only
+`frontend/.env.local` and restart Vite — env files are read only
 at startup. Note that `dev.sh` overwrites that file on every run.
 
 ### "Engine offline" on the splash page

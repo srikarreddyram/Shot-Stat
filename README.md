@@ -214,7 +214,7 @@ nba_api → ingestion/ (28 scripts) → SQLite (21 tables, 3.5M shots, 16 season
                                     Stat Engine, season averages)
                                           │
                                           ▼
-                    shot-vision-engine-main/  (React / TanStack Start)
+                    frontend/  (React / TanStack Start)
 ```
 
 The guarantee the codebase is built around: `src/features/spec/` computes every
