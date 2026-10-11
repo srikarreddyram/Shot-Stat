@@ -9,6 +9,7 @@ import {
   ShotList,
   ShotMetric,
   SubsetMap,
+  ZONE_SHORT,
   useShotMap,
 } from "../../lib/shot-maps";
 import { ShotFilter, ShotReplay } from "./ShotReplay";
@@ -56,15 +57,6 @@ const VS_LEAGUE_SCALE = 0.06;
 /** Below this many shots a subset's headline gap is shown but not coloured:
  *  two dunks are not a dunking record. */
 const SMALL_SAMPLE = 25;
-
-const ZONE_SHORT: Record<string, string> = {
-  "Restricted Area": "Rim",
-  "In The Paint (Non-RA)": "Paint",
-  "Mid-Range": "Mid-range",
-  "Left Corner 3": "Left corner 3",
-  "Right Corner 3": "Right corner 3",
-  "Above the Break 3": "Above the break 3",
-};
 
 // The Stat Engine's own zone FG% columns, for the league rank.
 const ZONE_SLUG: Record<string, string> = {

@@ -263,3 +263,75 @@ def stat_engine_team_shot_map(team_id: str, season: str, side: str = "offense",
     if out is None:
         raise HTTPException(status_code=404, detail=f"No shots for team {team_id} in {season}.")
     return out
+
+
+# ── Game by game ───────────────────────────────────────────────────────────
+def _game_log_args(season_type: str):
+    from src.inference.game_logs import SEASON_TYPES
+
+    if season_type not in SEASON_TYPES:
+        raise HTTPException(status_code=422, detail=f"season_type must be one of {sorted(SEASON_TYPES)}.")
+
+
+@router.get("/stats/player/{player_id}/games")
+def stat_engine_player_games(player_id: str, season: Optional[str] = None, season_type: str = "regular"):
+    """Every game of a player's season (box scores from 2016-17 on), newest
+    first, with the season's averages and highs over those games."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from sqlalchemy import text
+
+    from src.inference.game_logs import player_game_log
+
+    _game_log_args(season_type)
+    if season is None:
+        with _state.db_engine.connect() as conn:
+            season = conn.execute(text("SELECT MAX(season) FROM player_game_logs WHERE player_id = :pid"),
+                                  {"pid": player_id}).scalar()
+    out = player_game_log(_state.db_engine, player_id, season, season_type) if season else None
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No box scores for player {player_id} in {season}.")
+    return out
+
+
+@router.get("/stats/player/{player_id}/games/{game_id}")
+def stat_engine_player_game(player_id: str, game_id: str):
+    """One game: the box score against the season average, and every shot."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.game_logs import player_game_detail
+
+    out = player_game_detail(_state.db_engine, player_id, game_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} did not play in game {game_id}.")
+    return out
+
+
+@router.get("/stats/team/{team_id}/games")
+def stat_engine_team_games(team_id: str, season: str, season_type: str = "regular"):
+    """Every game of a team's season, newest first, with its box score."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.game_logs import team_game_log
+
+    _game_log_args(season_type)
+    out = team_game_log(_state.db_engine, team_id, season, season_type)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"No box scores for team {team_id} in {season}.")
+    return out
+
+
+@router.get("/stats/team/{team_id}/games/{game_id}")
+def stat_engine_team_game(team_id: str, game_id: str, side: str = "offense"):
+    """One game: both box scores, the team's player lines, and every shot
+    the team (side=offense) or its opponent (side=defense) took."""
+    if _state.db_engine is None:
+        raise HTTPException(status_code=503, detail="Database not loaded.")
+    from src.inference.game_logs import team_game_detail
+
+    if side not in ("offense", "defense"):
+        raise HTTPException(status_code=422, detail="side must be offense or defense.")
+    out = team_game_detail(_state.db_engine, team_id, game_id, side)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Team {team_id} did not play in game {game_id}.")
+    return out

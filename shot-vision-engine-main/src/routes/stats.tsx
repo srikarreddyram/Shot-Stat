@@ -7,6 +7,7 @@ import {
   ArchetypeCard, DefenseCategoryChart, PlayTypeBars, StrengthsChart,
 } from "../components/stat-engine/Visuals";
 import { ShotMapCard, ShotMapGallery, TeamShotMapCard } from "../components/stat-engine/ShotMap";
+import { GameLogCard } from "../components/stat-engine/GameLog";
 import { RadarChart, RADAR_W } from "../components/stat-engine/ComparePlayers";
 import {
   C, F, NUM, Bar, Card, DEFAULT_ACCENT, EmptyState,
@@ -101,6 +102,9 @@ const TABLE_CSS = `
 /* The pinned region needs a deliberate edge, or the seam where the sticky
    columns occlude the scrolling ones reads as a rendering artefact. */
 .se-table th.se-col-name, .se-table td.se-col-name { border-right: 1px solid rgba(201,168,76,0.13); }
+/* The game log's chosen game: tinted in the accent, opaque like the rest. */
+.se-table tbody tr.se-picked td { background: color-mix(in srgb, var(--se-accent) 15%, ${C.surface}); }
+.se-table tbody tr.se-picked td:first-child { box-shadow: inset 3px 0 0 var(--se-accent); }
 .se-scroll { overflow: auto; max-height: 70vh; border-radius: 6px; }
 .se-scroll::-webkit-scrollbar { height: 9px; width: 9px; }
 .se-scroll::-webkit-scrollbar-thumb { background: rgba(201,168,76,0.22); border-radius: 5px; }
@@ -898,6 +902,10 @@ function PlayerProfileView({ playerId, leagueRows, leagueColumns, teamNames, onB
         <ShotMapCard playerId={playerId} season={profile.season} distributions={rankDistributions} defaultMode={chartDefault} />
       </div>
 
+      <div className="se-rise" style={riseDelay(3)}>
+        <GameLogCard kind="player" id={playerId} season={profile.season} />
+      </div>
+
       {/* "Info" sections (Overview, Ratings) belong to neither side of the
           ball — shown once here, above the split, rather than duplicated
           into both tabs or hidden behind either one. */}
@@ -1319,6 +1327,10 @@ function TeamProfileView({ teamId, teamRows, teamCols, onBack, onOpenPlayer }: {
 
       <div className="se-rise" style={riseDelay(1)}>
         <TeamShotMapCard teamId={teamId} season={profile.season} />
+      </div>
+
+      <div className="se-rise" style={riseDelay(2)}>
+        <GameLogCard kind="team" id={teamId} season={profile.season} onOpenPlayer={onOpenPlayer} />
       </div>
 
       <Card style={{ padding: "15px 19px 12px", marginBottom: 16 }}>

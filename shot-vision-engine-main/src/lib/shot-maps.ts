@@ -7,6 +7,16 @@ import { useEffect, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
+/** The NBA's shot zones, by the short names the tables use. */
+export const ZONE_SHORT: Record<string, string> = {
+  "Restricted Area": "Rim",
+  "In The Paint (Non-RA)": "Paint",
+  "Mid-Range": "Mid-range",
+  "Left Corner 3": "Left corner 3",
+  "Right Corner 3": "Right corner 3",
+  "Above the Break 3": "Above the break 3",
+};
+
 export type ShotGrid = { x0: number; y0: number; cell: number; nx: number; ny: number };
 
 export type ShotMapZone = {

@@ -12,11 +12,11 @@ import {
 } from "../shot-vision/engine/court/geometry";
 import { F } from "./ui";
 
-// The shot replay: every shot of a player's season played back in the order
-// he took it. Each ball leaves its spot, arcs to the rim (a shadow on the
-// floor and a ball that grows with height give the arc in a top-down view),
-// and leaves a mark where it was taken — green for a make, a red cross for a
-// miss — until the floor holds the whole season. Under prefers-reduced-motion
+// The shot replay: every shot of a season (or of one game) played back in
+// the order taken. Each ball leaves its spot, arcs to the rim (a shadow on
+// the floor and a ball that grows with height give the arc in a top-down
+// view), and leaves a mark where it was taken — green for a make, a red cross
+// for a miss — until the floor holds them all. Under prefers-reduced-motion
 // the finished chart is drawn straight away.
 
 export type ShotFilter = "all" | "made" | "missed";
@@ -26,6 +26,16 @@ const MISSED = "#C0392B";
 const BALL = "#E07B39";
 const BALL_EDGE = "#7A3A12";
 const FLIGHT_MS = 540;
+
+/** What the strip counts through: the games of a season, or the periods of
+ *  one game. */
+export type ReplayUnit = "game" | "period";
+
+function progressLabel(unit: ReplayUnit, at: number, of: number) {
+  if (at <= 0) return "";
+  if (unit === "game") return of > 0 ? `GAME ${at} / ${of}` : "";
+  return at <= 4 ? `Q${at}` : at === 5 ? "OT" : `${at - 4}OT`;
+}
 
 function drawMark(ctx: CanvasRenderingContext2D, x: number, y: number, made: boolean) {
   if (made) {
@@ -73,8 +83,7 @@ function drawStrip(
   ctx: CanvasRenderingContext2D,
   made: number,
   taken: number,
-  game: number,
-  games: number,
+  progress: string,
   thinned: boolean,
   filter: ShotFilter,
 ) {
@@ -93,7 +102,7 @@ function drawStrip(
   ctx.fillText("MISSED", 72, mid);
   ctx.textAlign = "center";
   ctx.fillStyle = "#71807A";
-  ctx.fillText(games > 0 ? `GAME ${game} / ${games}` : "", COURT_CW / 2 + 12, mid);
+  ctx.fillText(progress, COURT_CW / 2 + 12, mid);
   ctx.textAlign = "right";
   ctx.fillStyle = "#E9E4D8";
   // With one outcome filtered out, a make rate is meaningless (0/424):
@@ -110,10 +119,17 @@ export function ShotReplay({
   data,
   filter,
   label,
+  unit = "game",
+  perShotMs = 7,
 }: {
-  data: ShotList;
+  /** The shots' 4th field is the game number (unit "game") or the period. */
+  data: Pick<ShotList, "shots" | "attempts" | "games">;
   filter: ShotFilter;
   label: string;
+  unit?: ReplayUnit;
+  /** Launch spacing before the 2.6-7 s clamp: a season's thousands of shots
+   *  need it tiny, one game's few dozen can be followed one by one. */
+  perShotMs?: number;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [run, setRun] = useState(0);
@@ -148,7 +164,7 @@ export function ShotReplay({
       ctx.clearRect(0, 0, COURT_CW, ch);
       ctx.drawImage(court, 0, 0);
       ctx.drawImage(marks, 0, 0);
-      drawStrip(ctx, made, landed, game, data.games, thinned, filter);
+      drawStrip(ctx, made, landed, progressLabel(unit, game, data.games), thinned, filter);
     };
 
     const reduce =
@@ -165,7 +181,7 @@ export function ShotReplay({
     }
 
     // Launches spread over a few seconds whatever the season's size.
-    const span = Math.min(7000, Math.max(2600, n * 7));
+    const span = Math.min(7000, Math.max(2600, n * perShotMs));
     const step = n > 1 ? span / (n - 1) : 0;
     const pulses: { t: number; made: boolean }[] = [];
     let landed = 0;
@@ -204,7 +220,7 @@ export function ShotReplay({
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [data, filter, run, ch]);
+  }, [data, filter, run, ch, unit, perShotMs]);
 
   return (
     <div style={{ position: "relative" }}>
