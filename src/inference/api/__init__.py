@@ -5,9 +5,9 @@ This package used to be a single 1,261-line api.py. It is now this
 __init__.py (app setup, shared state, lifespan, and the one /health
 endpoint that reports that state directly) plus one router module per
 domain — recommend.py, explanations.py, players.py, teams.py, matchup.py,
-live.py, shot_archetypes.py, model_features.py, stat_engine_routes.py,
-media.py, player_archetypes.py — each a few hundred lines at most, findable
-by name instead of by scrolling.
+shot_archetypes.py, model_features.py, stat_engine_routes.py, media.py,
+player_archetypes.py — each a few hundred lines at most, findable by name
+instead of by scrolling.
 
 THE SHARED-STATE PATTERN, AND WHY: `recommender`, `db_engine` and
 `latest_season` start as None below and are only ever filled in once, at
@@ -160,7 +160,6 @@ from .explanations import router as _explanations_router
 from .players import router as _players_router
 from .teams import router as _teams_router
 from .matchup import router as _matchup_router
-from .live import router as _live_router
 from .shot_archetypes import router as _shot_archetypes_router
 from .model_features import router as _model_features_router
 from .stat_engine_routes import router as _stat_engine_router
@@ -173,7 +172,6 @@ for _router in (
     _players_router,
     _teams_router,
     _matchup_router,
-    _live_router,
     _shot_archetypes_router,
     _model_features_router,
     _stat_engine_router,

@@ -1,8 +1,8 @@
 """
 Tests for src/analysis/shot_archetypes.py's pure logic — labeling and column
 selection. No DB, no fitted model: those are exercised by actually running
-`--fit`, which is documented in docs/streaming.md's sibling doc rather than
-re-run here (it rebuilds the full training feature matrix, a few minutes of
+`python -m src.analysis.shot_archetypes --fit` (see that module's docstring)
+rather than re-run here (it rebuilds the full training feature matrix, a few minutes of
 work, and writes 2M+ DB rows — too heavy for routine test runs).
 """
 import json

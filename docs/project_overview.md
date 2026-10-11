@@ -129,10 +129,8 @@ shot, and whether this player would ever *take* it.
   is tested against the raw model's own log-loss/ECE on unseen shots and
   rejected outright if it doesn't actually improve it; v20's raw output
   already beat its own calibrated version.
-- **Backtesting, ablation, and R** — every feature group can be dropped and
-  re-measured in isolation; a separate R script re-derives the
-  defender-quality signal's significance via logistic regression + a
-  likelihood-ratio test, a check that owes nothing to gradient boosting.
+- **Backtesting and ablation** — every feature group can be dropped and
+  re-measured in isolation.
 - **20 tracked model versions** — every training run writes a timestamped
   manifest recording exactly what it scored; nothing is overwritten, so a
   regression is always traceable to the run that caused it.
@@ -201,5 +199,4 @@ locate.
 **Frontend** — React 19, TanStack Start/Router, Vite, Tailwind CSS 4, Radix
 UI, Recharts / hand-rolled SVG
 
-**Testing & tooling** — pytest, Playwright, Ruff, Kafka (optional streaming
-demo), Apache Spark (parity-checked point-in-time job), joblib/tqdm
+**Testing & tooling** — pytest, Playwright, Ruff, joblib/tqdm

@@ -223,11 +223,6 @@ recommender call the same function. `tests/test_train_serve_parity.py` asserts t
 two paths agree on identical input — the failure it exists to catch already
 happened once, silently, before this layer existed.
 
-Alongside the main pipeline: a Kafka path that scores shots as live events
-([`docs/streaming.md`](docs/streaming.md)), a PySpark reimplementation of the
-point-in-time features (`spark_jobs/`), and R scripts that cross-check the
-defender signal (`r/`).
-
 ## Running it
 
 ```bash
@@ -257,7 +252,7 @@ python scripts/refresh_season.py
 ```
 
 `./scripts/dev.sh` starts the FastAPI backend and the React frontend on fresh
-ports, wires them together, and prints the URLs. Tests: `pytest` (311 tests;
+ports, wires them together, and prints the URLs. Tests: `pytest` (307 tests;
 `pytest -m "not slow"` skips the ones that need trained models and the full
 database). See [`COMMANDS.md`](COMMANDS.md) for every ingestion step, ablation
 flag and evaluation tool.
@@ -278,7 +273,6 @@ pandas/numpy
 **ML:** point-in-time feature engineering, empirical-Bayes shrinkage, monotone
 constraints, TreeSHAP explanations, nearest-neighbour precedent, PCA + K-Means,
 rolling-origin backtesting
-**Also:** Kafka, PySpark, R
 
 ## Documentation and roadmap
 

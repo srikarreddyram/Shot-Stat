@@ -43,8 +43,8 @@ This used to be one 1,701-line point_in_time.py. It is now:
     __init__.py            — this file: re-exports everything
 
 This __init__.py re-exports everything (including several underscore-
-prefixed "private" helpers that tests and spark_jobs/export_shot_zone_counts.py
-reach into directly) so every existing `from src.features.point_in_time
+prefixed "private" helpers that tests reach into directly) so every
+existing `from src.features.point_in_time
 import X` — and every `import src.features.point_in_time as pit; pit.X` —
 keeps working unchanged.
 """
